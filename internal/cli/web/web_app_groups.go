@@ -111,9 +111,8 @@ Example:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups list")
 			}
@@ -174,9 +173,8 @@ Example:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups create")
 			}
@@ -244,9 +242,8 @@ Example:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups assign")
 			}
@@ -315,9 +312,8 @@ Example:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups unassign")
 			}
@@ -382,9 +378,8 @@ Example:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups set")
 			}
@@ -444,9 +439,8 @@ Example:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups delete")
 			}

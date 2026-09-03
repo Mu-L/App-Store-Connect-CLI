@@ -183,6 +183,39 @@ The CSR contains your public key. Keep the private key secure - you'll need it t
 * **Common Name:** Any descriptive name
 * The CLI accepts CSR files in PEM format or base64-encoded
 
+## [experimental] Export an Apple Push Identity
+
+Package an Apple-issued APNs or Website Push certificate with the matching
+private key as a password-protected PKCS#12 identity:
+
+```bash
+# 1. Generate a private key and CSR
+asc certificates csr generate \
+  --key-out "./push/push.key" \
+  --csr-out "./push/push.csr"
+
+# 2. Upload ./push/push.csr through Apple's Developer website and download
+#    the resulting certificate as ./push/push.cer.
+
+# 3. Package the certificate and matching key
+asc certificates export \
+  --certificate "./push/push.cer" \
+  --private-key "./push/push.key" \
+  --csr "./push/push.csr" \
+  --password-file "./secrets/push.p12.password" \
+  --p12-out "./push/push.p12"
+```
+
+The experimental export command is local-only. It validates the X.509 certificate, private
+key, and optional CSR before writing exactly one key and leaf certificate to
+the PKCS#12 file. The certificate must currently be valid, and the output is
+written with restrictive permissions. Passwords and key material are never
+printed. Replacing an existing output requires both `--force` and `--confirm`.
+
+The public App Store Connect API does not issue Apple Push Services or Website
+Push ID certificates. Renewal therefore remains explicit: obtain a new
+certificate through Apple's Developer website and run this command again.
+
 ## Update Certificate
 
 Enable or disable a certificate:
