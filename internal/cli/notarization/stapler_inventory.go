@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
@@ -129,6 +130,13 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.
 	}
 	file, err := target.open()
 	if err != nil {
+		if staplerInventoryPathVanished(err) {
+			// The retained descriptor still pins the validated inode and the
+			// pathname was checked immediately before this open, so a pathname
+			// that no longer resolves proves the artifact changed rather than an
+			// operational filesystem failure.
+			return staplerRegularFileFingerprint{}, errStaplerInventoryChanged
+		}
 		return staplerRegularFileFingerprint{}, err
 	}
 	defer file.Close()
@@ -283,6 +291,13 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 
 	selected, selectedInfo, err := openStaplerInventoryDirectory(filesystemRoot, target.relative, target.identity)
 	if err != nil {
+		if staplerInventoryPathVanished(err) {
+			// The retained descriptor still pins the validated bundle and the
+			// pathname was checked immediately before this open, so a pathname
+			// that no longer resolves proves the artifact changed rather than an
+			// operational filesystem failure.
+			return staplerDirectoryInventory{}, errStaplerInventoryChanged
+		}
 		return staplerDirectoryInventory{}, err
 	}
 	defer selected.Close()
@@ -518,6 +533,15 @@ func openStaplerInventoryDirectory(filesystemRoot *os.Root, relative string, exp
 	}
 	owned = false
 	return current, info, nil
+}
+
+// staplerInventoryPathVanished reports whether a failure to reopen a pathname
+// that was already validated proves the selected artifact changed. A missing
+// component or a parent that is no longer a directory can only mean the path
+// was removed or replaced after that check, so the caller reports the
+// identity-change signal instead of a generic operational failure.
+func staplerInventoryPathVanished(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // staplerInventoryEntryVanished reports whether a filesystem failure observed

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -845,5 +847,93 @@ func TestStaplerRegularFileFingerprintRejectsFileRemovedBeforeFinalRebind(t *tes
 	var identityErr *staplerTargetIdentityError
 	if !errors.As(err, &identityErr) {
 		t.Fatalf("captureRegularFileFingerprintAtStage() error = %T %v, want identity error", err, err)
+	}
+}
+
+func TestStaplerRegularFileFingerprintRejectsFileRemovedBeforeStageOpen(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(targetPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+	if err := target.verifyIdentity("before stapling"); err != nil {
+		t.Fatalf("verify retained identity: %v", err)
+	}
+	// The retained descriptor keeps the inode alive, so the pinned identity
+	// still matches while the pathname no longer resolves.
+	if err := os.Remove(targetPath); err != nil {
+		t.Fatalf("remove target: %v", err)
+	}
+
+	_, err = target.captureRegularFileFingerprintAtStage(context.Background(), "before stapling")
+	if err == nil {
+		t.Fatal("captureRegularFileFingerprintAtStage() = nil, want stage-open removal rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureRegularFileFingerprintAtStage() error = %T %v, want identity error", err, err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureRegularFileFingerprintAtStage() error = %T %v, a vanished pathname must not read as a filesystem-inspection failure", err, err)
+	}
+}
+
+func TestStaplerDirectoryInventoryRejectsBundleRemovedBeforeStageOpen(t *testing.T) {
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetPath, "Info.plist"), []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write bundle file: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+	if err := target.verifyIdentity("before stapling"); err != nil {
+		t.Fatalf("verify retained identity: %v", err)
+	}
+	if err := os.RemoveAll(targetPath); err != nil {
+		t.Fatalf("remove bundle: %v", err)
+	}
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before stapling")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want stage-open removal rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, a vanished pathname must not read as a filesystem-inspection failure", err, err)
+	}
+}
+
+func TestStaplerInventoryPathVanishedCoversMissingAndNonDirectoryComponents(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "missing component", err: &fs.PathError{Op: "openat", Path: "MyApp.dmg", Err: syscall.ENOENT}, want: true},
+		{name: "parent is not a directory", err: &fs.PathError{Op: "openat", Path: "MyApp.dmg", Err: syscall.ENOTDIR}, want: true},
+		{name: "permission revoked", err: &fs.PathError{Op: "openat", Path: "MyApp.dmg", Err: syscall.EACCES}, want: false},
+		{name: "descriptor limit", err: &fs.PathError{Op: "openat", Path: "MyApp.dmg", Err: syscall.EMFILE}, want: false},
+		{name: "no error", err: nil, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := staplerInventoryPathVanished(test.err); got != test.want {
+				t.Fatalf("staplerInventoryPathVanished(%v) = %v, want %v", test.err, got, test.want)
+			}
+		})
 	}
 }
