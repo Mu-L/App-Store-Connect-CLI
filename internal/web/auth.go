@@ -108,6 +108,12 @@ type AuthSession struct {
 	AppleIDSessionID string
 	SCNT             string
 
+	// cachedUpdatedAt is the UpdatedAt stamp of the cached entry this session was
+	// loaded from, zero for a freshly logged-in session. It lets a caller that
+	// proves the loaded jar unusable delete only that entry, leaving a
+	// replacement another process persisted in the meantime intact.
+	cachedUpdatedAt time.Time
+
 	// Prepared 2FA delivery state so callers can request code delivery before prompting.
 	twoFactorMethod        string
 	twoFactorPhoneID       int
@@ -197,6 +203,58 @@ func (e *sessionInfoStatusError) HTTPStatusCode() int {
 		return 0
 	}
 	return e.Status
+}
+
+// TwoFactorFinalizationError reports that Apple accepted the submitted 2FA code
+// but the follow-up App Store Connect session bootstrap failed. It is distinct
+// from a rejected verification code: the code was already consumed, so callers
+// must not describe this as a 2FA verification failure.
+type TwoFactorFinalizationError struct {
+	Status int
+	Err    error
+}
+
+func (e *TwoFactorFinalizationError) Error() string {
+	if e == nil {
+		return "session bootstrap after 2fa failed"
+	}
+	if e.Status > 0 {
+		return fmt.Sprintf("session bootstrap returned status %d", e.Status)
+	}
+	if e.Err != nil {
+		return fmt.Sprintf("session bootstrap failed: %v", e.Err)
+	}
+	return "session bootstrap after 2fa failed"
+}
+
+func (e *TwoFactorFinalizationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *TwoFactorFinalizationError) HTTPStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.Status
+}
+
+// IsStaleSessionAfterTwoFactor reports whether a 2FA submission failed only
+// because the reused cookie jar no longer authenticates against App Store
+// Connect. Callers may discard the cached session and retry a fresh login once.
+func IsStaleSessionAfterTwoFactor(err error) bool {
+	var finalizeErr *TwoFactorFinalizationError
+	if !errors.As(err, &finalizeErr) {
+		return false
+	}
+	switch finalizeErr.Status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *APIError) Error() string {
@@ -1408,7 +1466,14 @@ func finalizeTwoFactor(ctx context.Context, session *AuthSession) error {
 
 	info, err := getSessionInfo(ctx, session.Client)
 	if err != nil {
-		return err
+		// The 2FA code was already accepted, so this is a session bootstrap
+		// failure, not a verification failure. Carry the HTTP status so callers
+		// can recognize a stale cookie jar and retry fresh.
+		var statusErr *sessionInfoStatusError
+		if errors.As(err, &statusErr) {
+			return &TwoFactorFinalizationError{Status: statusErr.Status, Err: err}
+		}
+		return &TwoFactorFinalizationError{Err: err}
 	}
 	applySessionInfo(session, info)
 	return nil

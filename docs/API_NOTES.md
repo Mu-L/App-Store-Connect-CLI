@@ -40,6 +40,15 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Region codes reference: https://developer.apple.com/help/app-store-connect/reference/financial-report-regions-and-currencies/
 - Use `asc finance regions` to see all available region codes
 
+## Tax Categories and Transaction Tax Reports
+
+Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec version 4.4.1):
+
+- There is no tax-category endpoint, and no tax-category attribute on `apps`, `appInfos`, or `inAppPurchases`. The App Store Connect UI is the only way to read or set an app or in-app purchase tax category.
+- `GET /v1/financeReports` accepts only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and `GET /v1/salesReports` has no tax report type, so Transaction Tax reports cannot be generated or downloaded through the public API.
+- Both surfaces still need a live web-session endpoint capture before any `asc web` command can be shipped: the request method, path, headers, request body, and response body for the App Information tax category read and write, and for the Payments and Financial Reports "Create Reports" Transaction Tax generate, poll, and download calls. See issue #2299.
+- `asc capabilities --area monetization` reports the tax category gap, and `asc capabilities --status not-public-api` reports both gaps.
+
 ## Sandbox Testers
 
 - `asc web sandbox create` requires `--first-name`, `--last-name`, `--email`, `--password`, and `--territory`

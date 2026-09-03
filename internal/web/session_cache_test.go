@@ -2311,3 +2311,125 @@ func containsString(values []string, target string) bool {
 	}
 	return false
 }
+
+// A process that proves its loaded jar unusable must not delete by Apple ID
+// alone: another process can persist a valid replacement while the first is
+// still working through 2FA, and deleting that leaves no cached session at all.
+func TestDeleteSessionIfMatchesPreservesAConcurrentlyRefreshedSession(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	persist := func(token string) {
+		t.Helper()
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatalf("cookiejar.New error: %v", err)
+		}
+		targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+		jar.SetCookies(targetURL, []*http.Cookie{
+			{Name: "myacinfo", Value: token, Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+		})
+		if err := PersistSession(&AuthSession{Client: &http.Client{Jar: jar}, UserEmail: "user@example.com"}); err != nil {
+			t.Fatalf("PersistSession error: %v", err)
+		}
+	}
+
+	persist("stale-token")
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+	if loaded.cachedUpdatedAt.IsZero() {
+		t.Fatal("expected the loaded session to carry the cached entry stamp")
+	}
+
+	// A concurrent process replaces the entry while this one is busy.
+	time.Sleep(2 * time.Millisecond)
+	persist("fresh-token")
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected the newer cached session to be preserved")
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || !ok {
+		t.Fatalf("expected the replacement session to survive, ok=%v error=%v", ok, err)
+	}
+}
+
+// The proven-stale entry itself must still go, or the next invocation reloads
+// it and burns another 2FA code against the same failure.
+func TestDeleteSessionIfMatchesRemovesTheEntryItLoaded(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: "stale-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	if err := PersistSession(&AuthSession{Client: &http.Client{Jar: jar}, UserEmail: "user@example.com"}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the unchanged stale entry to be deleted")
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil {
+		t.Fatalf("LoadCachedSession error: %v", err)
+	} else if ok {
+		t.Fatal("expected the stale cached session to be gone")
+	}
+}
+
+// A caller with no stamp to compare (a freshly logged-in session) keeps the
+// unconditional delete rather than silently skipping it.
+func TestDeleteSessionIfMatchesFallsBackWhenNoStampIsAvailable(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: "stale-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	if err := PersistSession(&AuthSession{Client: &http.Client{Jar: jar}, UserEmail: "user@example.com"}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", &AuthSession{UserEmail: "user@example.com"})
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the unconditional delete without a stamp to compare")
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil {
+		t.Fatalf("LoadCachedSession error: %v", err)
+	} else if ok {
+		t.Fatal("expected the cached session to be gone")
+	}
+}

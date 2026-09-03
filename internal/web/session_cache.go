@@ -1129,6 +1129,7 @@ func loadSessionFromPersistedSession(sess persistedSession) (*AuthSession, bool,
 		Client:          newWebHTTPClient(jar),
 		UserEmail:       strings.TrimSpace(sess.UserEmail),
 		DeveloperTeamID: strings.TrimSpace(sess.DeveloperTeamID),
+		cachedUpdatedAt: sess.UpdatedAt,
 	}, true, nil
 }
 
@@ -1342,6 +1343,44 @@ func DeleteSession(username string) error {
 		err = nil
 	}
 	return joinDeleteErrors(err, deleteLegacyIrisSessionArtifacts(key))
+}
+
+// DeleteSessionIfMatches removes the cached web session for username only while
+// the stored entry is still the one loaded carries. A caller that proves its
+// loaded cookie jar unusable would otherwise delete by Apple ID alone and take
+// out a valid replacement that a concurrent process persisted while it was
+// working through 2FA, leaving no cached session at all. Reporting whether the
+// delete happened lets the caller stay quiet when a newer entry was preserved.
+//
+// The read and the delete are not atomic, so this narrows the window rather
+// than closing it. When the current entry cannot be read, or the caller has no
+// stamp to compare, the unconditional delete stands: a proven-stale jar left on
+// disk is reloaded by the next invocation and burns another 2FA code against
+// the same failure.
+func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return false, nil
+	}
+	if loaded == nil || loaded.cachedUpdatedAt.IsZero() {
+		return true, DeleteSession(username)
+	}
+
+	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendOff {
+		return false, nil
+	}
+	current, ok, err := readSessionBySelection(selection, webSessionCacheKey(username))
+	if err != nil {
+		return true, DeleteSession(username)
+	}
+	if !ok {
+		return false, nil
+	}
+	if !current.UpdatedAt.Equal(loaded.cachedUpdatedAt) {
+		return false, nil
+	}
+	return true, DeleteSession(username)
 }
 
 // DeleteAllSessions removes all cached web sessions.
