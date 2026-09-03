@@ -86,6 +86,10 @@ type Root struct {
 	// statPublishedFileForTest injects a transient descriptor Stat result after
 	// publication without changing production callers.
 	statPublishedFileForTest func(file *os.File) (os.FileInfo, error)
+	// closePublishedFileForTest injects a post-verification close result without
+	// widening the production API. Tests close the descriptor themselves before
+	// returning the injected error so the branch remains leak-free.
+	closePublishedFileForTest func(file *os.File) error
 	// postPublicationLstatForTest replaces the first published-entry Lstat in
 	// tests so transient identity-observation failures can be exercised without
 	// widening the production API.
@@ -1566,9 +1570,16 @@ func (r Root) writeFileIfSame(
 		return publishedInfo, quarantineLeftAfterPublication(fmt.Errorf("published file identity changed after publication"))
 	}
 	if !retainPublishedIdentity {
-		if err := publishedFile.Close(); err != nil {
+		closePublished := func() error { return publishedFile.Close() }
+		if r.closePublishedFileForTest != nil {
+			closePublished = func() error { return r.closePublishedFileForTest(publishedFile) }
+		}
+		if err := closePublished(); err != nil {
 			closePublishedFile = false
 			cleanupErr := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData)
+			if cleanupErr == nil {
+				cleanupErr = r.syncConditionalParentDirectory(parent)
+			}
 			return publishedInfo, errors.Join(fmt.Errorf("close published file after identity verification: %w", err), cleanupErr)
 		}
 		closePublishedFile = false
