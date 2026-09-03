@@ -16,9 +16,13 @@ func registerAllOutputRenderers() {
 	registerRows(xcodeInstallResultRows)
 	registerDirect(webAgreementsStatusTables)
 	registerRows(webAgreementsAcceptRows)
+	registerRows(webAgreementDownloadRows)
 	registerRows(webAppDeleteRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
+	registerRows(webAppGroupDeleteRows)
+	registerRows(webAppGroupUnassignRows)
+	registerRows(webAppGroupSetRows)
 	registerRows(webAPIKeysListRows)
 	registerRows(webAPIKeyGetRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
@@ -159,6 +163,15 @@ func registerAllOutputRenderers() {
 	})
 	registerRows(subscriptionAvailabilityRows)
 	registerRowsWithSingleResourceAdapter(subscriptionPlanAvailabilitiesRows)
+	registerDirect(func(v *SubscriptionPlanAvailabilitySetResult, render func([]string, [][]string)) error {
+		h, r := subscriptionPlanAvailabilitySetSummaryRows(v)
+		render(h, r)
+		th, tr := subscriptionPlanAvailabilitySetTerritoryRows(v)
+		if len(tr) > 0 {
+			render(th, tr)
+		}
+		return nil
+	})
 	registerRows(subscriptionGracePeriodRows)
 	registerRowsWithSingleResourceAdapter(territoriesRows)
 	registerRowsErr(territoryAgeRatingsRows)
