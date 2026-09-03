@@ -262,10 +262,10 @@ func summarizeSubmissionItemRelated(related []webcore.ReviewSubmissionItemRelati
 }
 
 func summarizeHTMLBodyForTable(plain, raw string) string {
-	body := strings.TrimSpace(plain)
-	if body == "" {
-		body = strings.TrimSpace(raw)
+	if plain = strings.TrimSpace(plain); plain != "" {
+		return normalizeReviewShowValue(plain)
 	}
+	body := strings.TrimSpace(raw)
 	body = strings.NewReplacer(
 		"<br>", "\n",
 		"<br/>", "\n",

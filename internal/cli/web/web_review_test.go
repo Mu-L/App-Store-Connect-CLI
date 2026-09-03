@@ -233,6 +233,18 @@ func TestSummarizeMessageForTableStripsHTMLAndLinks(t *testing.T) {
 	}
 }
 
+func TestSummarizeHTMLBodyForTablePreservesPlainAngleBrackets(t *testing.T) {
+	got := summarizeHTMLBodyForTable("a < b > c", "<p>a &lt; b &gt; c</p>")
+	if got != "a < b > c" {
+		t.Fatalf("plain text with comparison operators = %q, want %q", got, "a < b > c")
+	}
+
+	got = summarizeHTMLBodyForTable("", "<p>a &lt; b &gt; c</p>")
+	if got != "a < b > c" {
+		t.Fatalf("raw HTML fallback = %q, want %q", got, "a < b > c")
+	}
+}
+
 func assertRowContains(t *testing.T, rows [][]string, section, field, value string) {
 	t.Helper()
 	for _, row := range rows {
