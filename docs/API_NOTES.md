@@ -175,6 +175,13 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - App Store Connect API 4.4.1 adds `/v1/subscriptionPricePoints/{id}/adjustedEqualizations`. Although OpenAPI models `filter[planType]` as an unconstrained string array, the live endpoint rejects `UPFRONT` and reports `MONTHLY` as the only supported value.
 - Monthly commitment remains unavailable in the United States and Singapore; the CLI removes `USA` and `SGP` from requested monthly-commitment territories before writing plan availability.
 
+## Subscription Plan Availability
+
+- Reading: `GET /v1/subscriptions/{id}/planAvailabilities` accepts `include=availableTerritories`, but `limit[availableTerritories]` is capped at 50 while a plan can be available in every storefront. The complete set comes from `GET /v1/subscriptionPlanAvailabilities/{id}/relationships/availableTerritories`, whose `limit` maximum is 200 with cursor pagination. `asc subscriptions pricing plan-availability show` prints Apple's include envelope unmodified and warns on stderr when paging metadata shows the include was truncated.
+- Writing: `PATCH /v1/subscriptionPlanAvailabilities/{id}` replaces the `availableTerritories` linkage array wholesale, so the request body must carry the complete desired territory set, not a delta. `SubscriptionPlanAvailabilityUpdateRequest` accepts only `availableInNewTerritories` as a mutable attribute; `planType` is create-only through `POST /v1/subscriptionPlanAvailabilities`. After a write, `set` verifies territories through the paginated relationship endpoint and `availableInNewTerritories` through a fresh `GET /v1/subscriptionPlanAvailabilities/{id}` rather than the mutation response.
+- Apple's internal web (iris) API uses the same resource, path shape, and PATCH body; `asc web subscriptions availability remove-from-sale` uses it only because emptying `availableTerritories` removes an approved subscription from sale, which Apple restricts to the Account Holder. Everything else about plan availability is available through the public API, so `asc subscriptions pricing plan-availability show|set` uses the public endpoints.
+- `availableInNewTerritories` is not supported for `MONTHLY` plan availability.
+
 ## Developer Portal Agreements (web session)
 
 - The public API has no agreements endpoint. `asc web agreements` uses the cookie-authenticated Developer Portal account services: `POST /services-account/QH65B2/account/getAgreementHistory` and `POST /services-account/QH65B2/account/acceptAgreements`, both with a JSON body carrying `teamId` (accept also carries an `agreementIds` array, so several agreements can be accepted in one request). They answer HTTP 200 even on failure; `resultCode` carries the outcome (`0` success).
