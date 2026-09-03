@@ -167,6 +167,30 @@ type webAuthStatus struct {
 	TeamID           string `json:"teamId,omitempty"`
 	ProviderID       int64  `json:"providerId,omitempty"`
 	PublicProviderID string `json:"publicProviderId,omitempty"`
+	DeveloperTeamID  string `json:"developerTeamId,omitempty"`
+}
+
+func expiredWebAuthStatus(appleID string) webAuthStatus {
+	status := webAuthStatus{
+		Authenticated: false,
+		AppleID:       strings.TrimSpace(appleID),
+	}
+	cached, ok, err := loadExpiredWebAuthCache(status.AppleID)
+	if err == nil && ok && cached != nil {
+		if status.AppleID == "" {
+			status.AppleID = strings.TrimSpace(cached.UserEmail)
+		}
+		status.DeveloperTeamID = strings.TrimSpace(cached.DeveloperTeamID)
+	}
+	status.PasswordStored = storedWebPasswordStatus(status.AppleID)
+	return status
+}
+
+func loadExpiredWebAuthCache(appleID string) (*webcore.AuthSession, bool, error) {
+	if appleID != "" {
+		return loadCachedSessionFn(appleID)
+	}
+	return loadLastCachedSessionFn()
 }
 
 func signalProcessInterrupt() error {
@@ -1176,18 +1200,21 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
-
 			warnDeprecatedTwoFactorCodeFlag(*twoFactorCode)
 			selection := webcore.ProviderSelection{
 				ProviderID:       *providerID,
 				PublicProviderID: *publicProviderID,
 			}
-			session, source, err := callResolveSessionForProviderSelection(requestCtx, *appleID, "", *twoFactorCode, *twoFactorCodeCommand, selection)
+			session, source, err := callResolveSessionForProviderSelection(ctx, *appleID, "", *twoFactorCode, *twoFactorCodeCommand, selection)
 			if err != nil {
 				return err
 			}
+
+			// Provider selection is a request, so its budget starts once the
+			// interactive login finished.
+			requestCtx, cancel := newWebRequestContext(ctx)
+			defer cancel()
+
 			if err := selectResolvedWebSessionProvider(requestCtx, session, selection); err != nil {
 				return err
 			}
@@ -1200,6 +1227,7 @@ Examples:
 				TeamID:           session.TeamID,
 				ProviderID:       session.ProviderID,
 				PublicProviderID: session.PublicProviderID,
+				DeveloperTeamID:  session.DeveloperTeamID,
 			}
 			return shared.PrintOutput(status, *output.Output, *output.Pretty)
 		},
@@ -1242,17 +1270,8 @@ If --apple-id is not provided, this checks the last cached session.
 			}
 			if err != nil {
 				if errors.Is(err, webcore.ErrCachedSessionExpired) {
-					statusAppleID := trimmedAppleID
-					if statusAppleID == "" {
-						if cached, cachedOK, cacheErr := loadLastCachedSessionFn(); cacheErr == nil && cachedOK && cached != nil {
-							statusAppleID = strings.TrimSpace(cached.UserEmail)
-						}
-					}
-					return shared.PrintOutput(webAuthStatus{
-						Authenticated:  false,
-						PasswordStored: storedWebPasswordStatus(statusAppleID),
-						AppleID:        statusAppleID,
-					}, *output.Output, *output.Pretty)
+					status := expiredWebAuthStatus(trimmedAppleID)
+					return shared.PrintOutput(status, *output.Output, *output.Pretty)
 				}
 				return fmt.Errorf("web auth status failed: %w", err)
 			}
@@ -1272,6 +1291,7 @@ If --apple-id is not provided, this checks the last cached session.
 				TeamID:           session.TeamID,
 				ProviderID:       session.ProviderID,
 				PublicProviderID: session.PublicProviderID,
+				DeveloperTeamID:  session.DeveloperTeamID,
 			}, *output.Output, *output.Pretty)
 		},
 	}

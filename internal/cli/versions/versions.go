@@ -99,10 +99,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("versions list: --limit must be between 1 and 200")
+				return shared.UsageError("versions list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("versions list: %w", err)
+				return shared.UsageErrorf("versions list: %v", err)
 			}
 			if *latest && strings.TrimSpace(*next) != "" {
 				return shared.UsageError("versions list: --latest fetches all pages itself and cannot be combined with --next")

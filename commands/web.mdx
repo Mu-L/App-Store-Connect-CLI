@@ -77,7 +77,9 @@ Apple Account web-session lifecycle and capability inspection.
 Available commands:
 
 * `asc web auth login` - create or refresh the cached web session
-* `asc web auth status` - inspect the current session state
+* `asc web auth status` - inspect the current session state, including the
+  selected App Store Connect provider and any persisted Developer Portal team ID
+  (`developerTeamId`)
 * `asc web auth capabilities` - inspect web-visible capability metadata
 * `asc web auth logout` - clear the cached web session
 
@@ -108,6 +110,7 @@ Example:
 
 ```bash  theme={null}
 asc web agreements status
+asc web agreements status --developer-team "TEAM_ID"
 asc web agreements download --agreement-id "AGREEMENT_ID" --out ./agreement.pdf
 asc web agreements accept --agreement-id "AGREEMENT_ID" --confirm
 asc web agreements accept --agreement-id "AGREEMENT_ID" --agreement-id "OTHER_AGREEMENT_ID" --confirm
@@ -225,7 +228,10 @@ Available commands:
 Currently supported capability IDs for `enable`: `PRIVATE_CLOUD_COMPUTE`.
 Existing settings and relationships are preserved. If the requested capability
 is already enabled, the command returns an already-enabled result without
-sending a PATCH.
+sending a PATCH. `enable` accepts `--developer-team` (Developer Portal team ID
+or exact team name) when the Apple Account belongs to more than one portal
+team. `sync-app-clip` uses App Store Connect iris endpoints, not Developer
+Portal, so it does not take `--developer-team`.
 
 Both commands require `--confirm` because a changed App ID invalidates existing
 provisioning profiles. `sync-app-clip` reads the current capability graph first
@@ -239,6 +245,7 @@ Example:
 asc web bundle-ids capabilities enable \
   --bundle-id "BUNDLE_RESOURCE_ID" \
   --capability "PRIVATE_CLOUD_COMPUTE" \
+  --developer-team "TEAM_ID" \
   --confirm
 
 asc web bundle-ids capabilities sync-app-clip \
@@ -262,6 +269,11 @@ Available commands:
 * `asc web app-groups unassign` - remove one group from a Bundle ID; removing the last group disables `APP_GROUPS`
 * `asc web app-groups set` - converge a Bundle ID on exactly the `--group` values passed and report an added/removed diff
 * `asc web app-groups delete` - delete a group registration; refuses while any Bundle ID still references the group
+
+Pass `--developer-team` with a Developer Portal team ID (or exact team name)
+when the Apple Account belongs to multiple portal teams and none matches the
+selected App Store Connect provider. The resolved team is persisted on the web
+session for later portal commands.
 
 Use the opaque IDs returned by the list commands for assignment:
 
@@ -349,7 +361,8 @@ App-centric review, rejection, and subscription-selection inspection.
 Available commands:
 
 * `asc web review list` - list review submissions for an app
-* `asc web review show` - inspect one submission and related messages/screenshots
+* `asc web review show` - inspect one submission and related messages/screenshots, including app-scoped Resolution Center threads the selected submission does not cover
+* `asc web review threads` - list every Resolution Center thread on an app, including binary, metadata, and informational threads; `--drafts` reads each unsent draft (`--plain-text` projects HTML to plain text)
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
 

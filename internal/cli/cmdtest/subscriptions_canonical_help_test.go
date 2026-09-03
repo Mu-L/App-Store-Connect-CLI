@@ -371,14 +371,16 @@ func TestCanonicalWrapperErrorsUseCanonicalPaths(t *testing.T) {
 			wantErr: "subscriptions offers win-back list: --next must be an App Store Connect URL",
 		},
 		{
-			name:    "subscriptions promoted-purchases next validation",
-			args:    []string{"subscriptions", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
-			wantErr: "subscriptions promoted-purchases list: --next must be an App Store Connect URL",
+			name:       "subscriptions promoted-purchases next validation",
+			args:       []string{"subscriptions", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
+			wantErr:    "subscriptions promoted-purchases list: --next must be an App Store Connect URL",
+			usageError: true,
 		},
 		{
-			name:    "iap promoted-purchases next validation",
-			args:    []string{"iap", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
-			wantErr: "iap promoted-purchases list: --next must be an App Store Connect URL",
+			name:       "iap promoted-purchases next validation",
+			args:       []string{"iap", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
+			wantErr:    "iap promoted-purchases list: --next must be an App Store Connect URL",
+			usageError: true,
 		},
 		{
 			name:    "subscriptions offers offer-codes values auth error",
