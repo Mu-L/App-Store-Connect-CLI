@@ -316,6 +316,60 @@ func TestWriteFileRefusesFinalSymlink(t *testing.T) {
 	}
 }
 
+func TestCheckWriteFileMatchesWriteFileConstraints(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+
+	if err := root.CheckWriteFile(filepath.Join("nested", "missing.pdf")); err != nil {
+		t.Fatalf("CheckWriteFile(missing) error = %v, want nil", err)
+	}
+
+	readOnly := filepath.Join(dir, "readonly.pdf")
+	mustWrite(t, readOnly, "original")
+	if err := os.Chmod(readOnly, 0o400); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	if err := root.CheckWriteFile("readonly.pdf"); err != nil {
+		t.Fatalf("CheckWriteFile(read-only regular file) error = %v, want nil because WriteFile replaces by rename", err)
+	}
+	if err := root.WriteFile("readonly.pdf", []byte("replaced"), 0o600); err != nil {
+		t.Fatalf("WriteFile(read-only regular file) error = %v", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(dir, "somedir"), 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := root.CheckWriteFile("somedir"); err == nil {
+		t.Fatal("CheckWriteFile(directory) error = nil, want not-a-regular-file error")
+	}
+	if err := root.CheckWriteFile("."); !errors.Is(err, ErrEscapesRoot) {
+		t.Fatalf("CheckWriteFile(root) error = %v, want ErrEscapesRoot", err)
+	}
+}
+
+func TestCheckWriteFileRefusesSymlinks(t *testing.T) {
+	requireSymlinks(t)
+
+	dir := t.TempDir()
+	sentinelDir := t.TempDir()
+	sentinelPath := filepath.Join(sentinelDir, "sentinel.txt")
+	mustWrite(t, sentinelPath, "original")
+	if err := os.Symlink(sentinelPath, filepath.Join(dir, "out.pdf")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	if err := os.Symlink(sentinelDir, filepath.Join(dir, "nested")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	root := mustRoot(t, dir)
+	if err := root.CheckWriteFile("out.pdf"); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("CheckWriteFile(final symlink) error = %v, want ErrSymlink", err)
+	}
+	if err := root.CheckWriteFile(filepath.Join("nested", "sentinel.txt")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("CheckWriteFile(symlinked parent) error = %v, want ErrSymlink", err)
+	}
+}
+
 func TestWriteFileRefusesSymlinkedParent(t *testing.T) {
 	requireSymlinks(t)
 
