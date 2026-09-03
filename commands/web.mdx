@@ -381,9 +381,11 @@ different contracts:
 * Use `asc web subscriptions pricing adjusted-equalizations view` when you need
   the web-session `/iris` MONTHLY price matrix or Apple's normalized
   `missingTerritories` diagnostic after an equalization failure. This workflow
-  requires a cached web session (`asc web auth login`) and accepts the
-  workflow-specific `--price-point-id` and `--plan-type MONTHLY` inputs. It
-  prints a computed JSON result rather than Apple's public JSON:API envelope.
+  requires web-session authentication and accepts the workflow-specific
+  `--price-point-id` and `--plan-type MONTHLY` inputs. It can reuse a session
+  cached by `asc web auth login` or authenticate through the standard
+  web-session flags and environment variables. It prints a computed JSON
+  result rather than Apple's public JSON:API envelope.
 * Use `asc subscriptions pricing price-points adjusted-equalizations` for
   API-key automation, pagination, territory filters, or `proceeds` fields.
   Its first page requires `--price-point-id`, `--upfront-price-point-id`, and
@@ -393,7 +395,7 @@ different contracts:
 Role requirement: removing an approved auto-renewable subscription from sale requires an Account Holder web session. App Store Connect rejects Admin and App Manager users for this action.
 
 For standard monthly-commitment setup, use `asc subscriptions pricing monthly-commitment enable`.
-Use `asc web subscriptions pricing` for App Store Connect paired pricing and adjusted-equalization workflows.
+Use `asc web subscriptions pricing` for web-session paired pricing and normalized adjusted-equalization diagnostics.
 
 Example:
 
