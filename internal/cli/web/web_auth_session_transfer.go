@@ -173,11 +173,13 @@ func WebAuthImportCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web auth import", flag.ExitOnError)
 
 	filePath := fs.String("file", "", "Path to a session bundle produced by \"asc web auth export\" (required)")
+	appleID := fs.String("apple-id", "", "Require the bundle to belong to this Apple Account email")
+	overwrite := fs.Bool("overwrite", false, "Replace an existing cached session for the bundle Apple Account")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "import",
-		ShortUsage: "asc web auth import --file FILE",
+		ShortUsage: "asc web auth import --file FILE [--apple-id EMAIL] [--overwrite]",
 		ShortHelp:  "Import a web session bundle into the session cache.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
@@ -186,16 +188,20 @@ Load a session bundle written by "asc web auth export" into the same cache
 instead of repeating two-factor verification.
 
 The bundle is checked before anything is stored: the document kind and version
-must match, cookies must belong to Apple's supported session origins, and
-expired cookies are dropped. A bundle with no usable cookie is refused without
-writing to the cache. The imported session also becomes the last cached
-session, so "asc web" commands resume it without --apple-id.
+must match, cookies must belong to Apple's supported session origins, cookie
+domains must be storable for those origins, and expired cookies are dropped. A
+bundle with no usable cookie is refused without writing to the cache. Pass
+--apple-id to refuse a bundle that belongs to a different Apple Account. Pass
+--overwrite to replace a cached session that already exists for that account.
+The imported session also becomes the last cached session, so "asc web"
+commands resume it without --apple-id.
 
 Importing does not contact Apple. Run "asc web auth status" afterwards to
 confirm the session is still accepted.
 
 Examples:
   asc web auth import --file ./web-session.json
+  asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
   asc web auth import --file ./web-session.json --output json`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -216,6 +222,17 @@ Examples:
 			bundle, err := webcore.DecodeSessionBundle(payload)
 			if err != nil {
 				return fmt.Errorf("web auth import failed: %w", err)
+			}
+			trimmedAppleID := strings.TrimSpace(*appleID)
+			if trimmedAppleID != "" && !strings.EqualFold(trimmedAppleID, bundle.AppleID) {
+				return fmt.Errorf("web auth import failed: bundle appleId %s does not match --apple-id %s", bundle.AppleID, trimmedAppleID)
+			}
+			existing, ok, err := webcore.LoadCachedSession(bundle.AppleID)
+			if err != nil {
+				return fmt.Errorf("web auth import failed: %w", err)
+			}
+			if ok && existing != nil && !*overwrite {
+				return fmt.Errorf("web auth import failed: a cached web session for %s already exists; pass --overwrite to replace it", bundle.AppleID)
 			}
 			summary, err := webcore.ImportSessionBundle(bundle)
 			if err != nil {

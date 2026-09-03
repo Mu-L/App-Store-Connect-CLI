@@ -30,7 +30,7 @@ func TestWebAuthImportSubcommandIsRegistered(t *testing.T) {
 	if sub == nil {
 		t.Fatalf("expected web auth import to be registered")
 	}
-	for _, flagName := range []string{"file", "output"} {
+	for _, flagName := range []string{"file", "apple-id", "overwrite", "output"} {
 		if sub.FlagSet.Lookup(flagName) == nil {
 			t.Fatalf("expected --%s flag", flagName)
 		}
@@ -331,6 +331,100 @@ func TestWebAuthImportReportsMissingFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "open --file") {
 		t.Fatalf("expected an open failure for --file, got stderr=%q", stderr)
+	}
+}
+
+func TestWebAuthImportRefusesExistingSessionWithoutOverwrite(t *testing.T) {
+	isolateWebSessionCache(t)
+	workDir := t.TempDir()
+	bundlePath := writeWebSessionBundleFixture(t, workDir, "session.json", webSessionBundleFixture)
+
+	var code int
+	_, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("first import exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
+	}
+
+	_, stderr = captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--output", "json"}, "1.0.0")
+	})
+	if code == cmd.ExitSuccess {
+		t.Fatalf("expected import to refuse an existing cached session; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "--overwrite") {
+		t.Fatalf("expected --overwrite guidance, got stderr=%q", stderr)
+	}
+
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--overwrite", "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("import --overwrite exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
+	}
+	if strings.Contains(stdout, "super-secret-token") {
+		t.Fatalf("import receipt leaked a cookie value: %q", stdout)
+	}
+}
+
+func TestWebAuthImportRejectsAppleIDMismatch(t *testing.T) {
+	isolateWebSessionCache(t)
+	bundlePath := writeWebSessionBundleFixture(t, t.TempDir(), "session.json", webSessionBundleFixture)
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "auth", "import",
+			"--file", bundlePath,
+			"--apple-id", "other@example.com",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitError {
+		t.Fatalf("exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitError, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "--apple-id") {
+		t.Fatalf("expected an Apple Account mismatch error, got stderr=%q", stderr)
+	}
+	if strings.Contains(stderr, "super-secret-token") {
+		t.Fatalf("mismatch error leaked a cookie value: %q", stderr)
+	}
+}
+
+func TestWebAuthImportRejectsCookieDomainTheJarCannotStore(t *testing.T) {
+	contents := `{
+  "kind": "asc-web-session",
+  "version": 1,
+  "exportedAt": "2026-09-02T10:00:00Z",
+  "appleId": "user@example.com",
+  "cookies": [
+    {"url": "https://appstoreconnect.apple.com/", "name": "myacinfo", "value": "super-secret-token", "domain": "evil.example"}
+  ]
+}
+`
+	cacheDir := isolateWebSessionCache(t)
+	bundlePath := writeWebSessionBundleFixture(t, t.TempDir(), "session.json", contents)
+
+	var code int
+	_, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitError {
+		t.Fatalf("exit code = %d, want %d; stderr=%q", code, cmd.ExitError, stderr)
+	}
+	if !strings.Contains(stderr, "domain") {
+		t.Fatalf("expected a domain rejection, got stderr=%q", stderr)
+	}
+	if strings.Contains(stderr, "super-secret-token") {
+		t.Fatalf("domain error leaked a cookie value: %q", stderr)
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("refused import wrote to the session cache: %v", entries)
 	}
 }
 

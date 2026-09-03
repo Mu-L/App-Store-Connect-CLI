@@ -284,3 +284,101 @@ func TestDecodeSessionBundleRejectsMalformedJSON(t *testing.T) {
 		t.Fatal("DecodeSessionBundle(nil) error = nil, want a decode failure")
 	}
 }
+
+func TestImportSessionBundleRejectsCookieDomainTheJarCannotStore(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Domain = "evil.example"
+
+	if err := bundle.Validate(); !errors.Is(err, ErrSessionCookieNotStorable) {
+		t.Fatalf("Validate() error = %v, want ErrSessionCookieNotStorable", err)
+	}
+	if _, err := ImportSessionBundle(bundle); !errors.Is(err, ErrSessionCookieNotStorable) {
+		t.Fatalf("ImportSessionBundle() error = %v, want ErrSessionCookieNotStorable", err)
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || ok {
+		t.Fatalf("LoadCachedSession() = (%v, %v), want no cached session after a refused import", ok, err)
+	}
+}
+
+func TestImportSessionBundleConvertsPositiveMaxAgeToAbsoluteExpiry(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Expires = nil
+	bundle.Cookies[0].MaxAge = 60
+
+	before := time.Now().UTC()
+	summary, err := ImportSessionBundle(bundle)
+	if err != nil {
+		t.Fatalf("ImportSessionBundle() error = %v", err)
+	}
+	after := time.Now().UTC()
+	if summary.CookieCount != 1 || summary.SkippedExpired != 0 {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+
+	key := webSessionCacheKey("user@example.com")
+	sess, ok, err := readSessionFromFile(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the imported session", ok, err)
+	}
+	got := sess.Cookies["https://appstoreconnect.apple.com/"]
+	if len(got) != 1 {
+		t.Fatalf("imported cookies = %#v, want 1 cookie", sess.Cookies)
+	}
+	if got[0].MaxAge != 0 {
+		t.Fatalf("MaxAge = %d, want 0 after converting to an absolute expiry", got[0].MaxAge)
+	}
+	if got[0].Expires.IsZero() {
+		t.Fatal("Expires is zero, want an absolute deadline derived from MaxAge")
+	}
+	wantEarliest := before.Add(60 * time.Second)
+	wantLatest := after.Add(60 * time.Second)
+	if got[0].Expires.Before(wantEarliest) || got[0].Expires.After(wantLatest) {
+		t.Fatalf("Expires = %v, want between %v and %v", got[0].Expires, wantEarliest, wantLatest)
+	}
+}
+
+func TestImportSessionBundleDoesNotMergeDifferentAppleIDs(t *testing.T) {
+	withFileSessionCache(t)
+	firstExpires := time.Now().Add(time.Hour)
+	persistTestSession(
+		t, "first@example.com",
+		&http.Cookie{Name: "myacinfo", Value: "first-token", Path: "/", Expires: firstExpires},
+	)
+
+	bundle := validTestBundle(time.Now().Add(2 * time.Hour))
+	bundle.AppleID = "second@example.com"
+	bundle.Cookies[0].Name = "myacinfo"
+	bundle.Cookies[0].Value = "second-token"
+
+	if _, err := ImportSessionBundle(bundle); err != nil {
+		t.Fatalf("ImportSessionBundle() error = %v", err)
+	}
+
+	first, ok, err := LoadCachedSession("first@example.com")
+	if err != nil || !ok || first == nil {
+		t.Fatalf("LoadCachedSession(first) = (%v, %v, %v), want the original session", first, ok, err)
+	}
+	target, _ := url.Parse("https://appstoreconnect.apple.com/")
+	firstValues := map[string]string{}
+	for _, cookie := range first.Client.Jar.Cookies(target) {
+		firstValues[cookie.Name] = cookie.Value
+	}
+	if firstValues["myacinfo"] != "first-token" {
+		t.Fatalf("first account cookies = %#v, want the original value", firstValues)
+	}
+
+	second, ok, err := LoadCachedSession("second@example.com")
+	if err != nil || !ok || second == nil {
+		t.Fatalf("LoadCachedSession(second) = (%v, %v, %v), want the imported session", second, ok, err)
+	}
+
+	last, ok, err := LoadLastCachedSession()
+	if err != nil || !ok || last == nil {
+		t.Fatalf("LoadLastCachedSession() = (%v, %v, %v), want the imported session", last, ok, err)
+	}
+	if last.UserEmail != "second@example.com" {
+		t.Fatalf("last session UserEmail = %q, want second@example.com", last.UserEmail)
+	}
+}

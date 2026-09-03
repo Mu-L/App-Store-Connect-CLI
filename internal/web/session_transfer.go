@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"sort"
 	"strings"
@@ -30,6 +32,10 @@ var (
 	// ErrSessionBundleUnusable reports that a bundle carries no unexpired
 	// cookie for a supported Apple origin.
 	ErrSessionBundleUnusable = errors.New("web session bundle has no unexpired cookies")
+
+	// ErrSessionCookieNotStorable reports that a cookie names a supported
+	// origin but a Domain the session jar will not store for that origin.
+	ErrSessionCookieNotStorable = errors.New("web session bundle cookie cannot be stored for its origin")
 )
 
 // SessionBundle is the portable representation of a cached Apple web session.
@@ -95,6 +101,42 @@ func canonicalSessionCookieURL(raw string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// cookieStorableForOrigin reports whether the session cookie jar will keep
+// this cookie for the canonical Apple origin. A matching URL is not enough:
+// cookiejar.SetCookies drops Domain values that do not belong to that host.
+func cookieStorableForOrigin(origin string, cookie SessionBundleCookie) bool {
+	if strings.TrimSpace(cookie.Name) == "" {
+		return false
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u == nil {
+		return false
+	}
+	path := strings.TrimSpace(cookie.Path)
+	if path == "" {
+		path = "/"
+	}
+	u.Path = path
+	jar.SetCookies(u, []*http.Cookie{{
+		Name:    cookie.Name,
+		Value:   "1",
+		Path:    cookie.Path,
+		Domain:  cookie.Domain,
+		Secure:  cookie.Secure,
+		Expires: time.Now().Add(time.Hour),
+	}})
+	for _, got := range jar.Cookies(u) {
+		if got.Name == cookie.Name && got.Value == "1" {
+			return true
+		}
+	}
+	return false
 }
 
 func cookieExpiry(expires *time.Time) time.Time {
@@ -190,13 +232,13 @@ func exportBundleCookies(sess persistedSession, now time.Time) []SessionBundleCo
 				Value:    cookie.Value,
 				Path:     cookie.Path,
 				Domain:   cookie.Domain,
-				MaxAge:   cookie.MaxAge,
 				Secure:   cookie.Secure,
 				HTTPOnly: cookie.HttpOnly,
 				SameSite: cookie.SameSite,
 			}
-			if !cookie.Expires.IsZero() {
-				expires := cookie.Expires.UTC()
+			expires, maxAge := absoluteCookieDeadline(cookie.Expires, cookie.MaxAge, now)
+			exported.MaxAge = maxAge
+			if !expires.IsZero() {
 				exported.Expires = &expires
 			}
 			cookies = append(cookies, exported)
@@ -247,7 +289,8 @@ func (b *SessionBundle) Validate() error {
 		if strings.TrimSpace(cookie.Name) == "" {
 			return fmt.Errorf("web session bundle cookie %d is missing name", index)
 		}
-		if _, ok := canonicalSessionCookieURL(cookie.URL); !ok {
+		canonical, ok := canonicalSessionCookieURL(cookie.URL)
+		if !ok {
 			return fmt.Errorf(
 				"web session bundle cookie %q has unsupported url %q (supported origins: %s)",
 				cookie.Name,
@@ -255,8 +298,30 @@ func (b *SessionBundle) Validate() error {
 				strings.Join(SupportedSessionBundleOrigins(), ", "),
 			)
 		}
+		if !cookieStorableForOrigin(canonical, cookie) {
+			return fmt.Errorf(
+				"%w: cookie %q has domain %q that the session jar cannot store for %q",
+				ErrSessionCookieNotStorable,
+				cookie.Name,
+				cookie.Domain,
+				canonical,
+			)
+		}
 	}
 	return nil
+}
+
+// absoluteCookieDeadline converts a positive MaxAge into an absolute expiry
+// so later cache loads cannot resurrect the cookie by applying the same
+// relative lifetime again.
+func absoluteCookieDeadline(expires time.Time, maxAge int, now time.Time) (time.Time, int) {
+	if maxAge > 0 {
+		return now.Add(time.Duration(maxAge) * time.Second).UTC(), 0
+	}
+	if expires.IsZero() {
+		return time.Time{}, maxAge
+	}
+	return expires.UTC(), maxAge
 }
 
 // normalize converts a validated bundle into the cache representation, leaving
@@ -280,13 +345,14 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 		if !ok {
 			continue
 		}
+		expires, maxAge := absoluteCookieDeadline(cookieExpiry(cookie.Expires), cookie.MaxAge, now)
 		persisted := pCookie{
 			Name:     cookie.Name,
 			Value:    cookie.Value,
 			Path:     cookie.Path,
 			Domain:   cookie.Domain,
-			Expires:  cookieExpiry(cookie.Expires),
-			MaxAge:   cookie.MaxAge,
+			Expires:  expires,
+			MaxAge:   maxAge,
 			Secure:   cookie.Secure,
 			HttpOnly: cookie.HTTPOnly,
 			SameSite: cookie.SameSite,
@@ -295,8 +361,16 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 			summary.SkippedExpired++
 			continue
 		}
+		normalizedCookie := cookie
+		normalizedCookie.MaxAge = maxAge
+		if !expires.IsZero() {
+			expiresCopy := expires
+			normalizedCookie.Expires = &expiresCopy
+		} else {
+			normalizedCookie.Expires = nil
+		}
 		out.Cookies[canonical] = append(out.Cookies[canonical], persisted)
-		kept = append(kept, cookie)
+		kept = append(kept, normalizedCookie)
 	}
 	if len(kept) == 0 {
 		return persistedSession{}, SessionImportSummary{}, ErrSessionBundleUnusable

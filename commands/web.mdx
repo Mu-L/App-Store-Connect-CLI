@@ -96,6 +96,7 @@ reuse a session created elsewhere.
 ```bash  theme={null}
 asc web auth export --output-path ./web-session.json --apple-id "user@example.com"
 asc web auth import --file ./web-session.json
+asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
 asc web auth status
 ```
 
@@ -106,9 +107,12 @@ existing destination file.
 
 Import validates the bundle before writing anything: the document kind and
 version must match, cookies must belong to Apple's supported session origins,
-and expired cookies are dropped. A bundle with no usable cookie is refused
-without touching the cache. Importing does not contact Apple, so run
-`asc web auth status` afterwards to confirm the session is still accepted.
+cookie domains must be storable for those origins, and expired cookies are
+dropped. A bundle with no usable cookie is refused without touching the cache.
+Pass `--apple-id` to refuse a bundle that belongs to a different Apple Account.
+Pass `--overwrite` to replace a cached session that already exists for that
+account. Importing does not contact Apple, so run `asc web auth status`
+afterwards to confirm the session is still accepted.
 
 ### `asc web agreements`
 
