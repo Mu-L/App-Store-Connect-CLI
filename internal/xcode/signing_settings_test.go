@@ -5984,3 +5984,168 @@ func TestSigningPathLexicallyContainedDoesNotTrustCaseFoldedWindowsRel(t *testin
 		t.Fatalf("case-variant Windows root %q was authorized from a case-folded Rel result", variantPath)
 	}
 }
+
+// TestSigningPlanConvergesAfterApplyingPromotedDependentNoOp proves the staged
+// resolution pass reaches a real fixed point: after the plan it produced is
+// applied, replanning the same manifest against the mutated project yields a
+// ready plan with no further changes. A pass that over-promoted a no-op, or
+// that promoted against a staged view diverging from what apply publishes,
+// would keep emitting target-level writes on every replan.
+func TestSigningPlanConvergesAfterApplyingPromotedDependentNoOp(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = com.example.old\r\nPROVISIONING_PROFILE_SPECIFIER = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{
+				"PROVISIONING_PROFILE_SPECIFIER":"com.example.old",
+				"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+			}},
+			{"name":"Release","settings":{
+				"PROVISIONING_PROFILE_SPECIFIER":"com.example.old",
+				"PRODUCT_BUNDLE_IDENTIFIER":"com.example.new"
+			}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	promoted := 0
+	for _, change := range plan.Changes {
+		if change.Setting == "PROVISIONING_PROFILE_SPECIFIER" {
+			if change.Source != "pbxproj" {
+				t.Fatalf("profile change = %#v, want promoted target-level write", change)
+			}
+			promoted++
+		}
+	}
+	if promoted != 2 {
+		t.Fatalf("promoted profile changes = %d, want one per requested configuration: %#v", promoted, plan.Changes)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+
+	replan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "replan"),
+	})
+	if err != nil {
+		t.Fatalf("replan BuildSigningPlan() error = %v", err)
+	}
+	if !replan.Ready {
+		t.Fatalf("replan blockers = %#v", replan.Blockers)
+	}
+	if len(replan.Changes) != 0 {
+		t.Fatalf("replan changes = %#v, want a converged plan with no further writes", replan.Changes)
+	}
+}
+
+// TestSigningPlanPromotesNoOpThroughStagedEscapedXCConfigValue binds the staged
+// xcconfig overlay to the editor's quoting rules. The dependent no-op below can
+// only be classified correctly if the staged bytes written by editXCConfig parse
+// back to the exact requested identity; a lossy round trip would either hide the
+// promotion or block the plan with a staged-value mismatch.
+func TestSigningPlanPromotesNoOpThroughStagedEscapedXCConfigValue(t *testing.T) {
+	const escapedIdentity = `iPhone Distribution: Acme "Corp" \ Ltd`
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "CODE_SIGN_IDENTITY = Apple Development\r\nPROVISIONING_PROFILE_SPECIFIER = \"$(CODE_SIGN_IDENTITY)\"\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	manifest, err := json.Marshal(map[string]any{
+		"schemaVersion": 1,
+		"targets": []any{map[string]any{
+			"name": "App",
+			"configurations": []any{
+				map[string]any{"name": "Debug", "settings": map[string]any{
+					"CODE_SIGN_IDENTITY":             escapedIdentity,
+					"PROVISIONING_PROFILE_SPECIFIER": "Apple Development",
+				}},
+				map[string]any{"name": "Release", "settings": map[string]any{
+					"CODE_SIGN_IDENTITY":             escapedIdentity,
+					"PROVISIONING_PROFILE_SPECIFIER": "Apple Development",
+				}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	writeSigningSettingsTestFile(t, settingsPath, string(manifest))
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	for _, change := range plan.Changes {
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			if change.Source != "xcconfig" || change.NewValue == nil || *change.NewValue != escapedIdentity {
+				t.Fatalf("identity change = %#v, want escaped xcconfig write", change)
+			}
+		case "PROVISIONING_PROFILE_SPECIFIER":
+			if change.Source != "pbxproj" || change.NewValue == nil || *change.NewValue != "Apple Development" {
+				t.Fatalf("profile change = %#v, want promoted target-level literal", change)
+			}
+		default:
+			t.Fatalf("unexpected change = %#v", change)
+		}
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	identity, _, err := updated.resolveSetting(configuration, "CODE_SIGN_IDENTITY")
+	if err != nil {
+		t.Fatalf("resolve applied identity: %v", err)
+	}
+	if identity != escapedIdentity {
+		t.Fatalf("applied identity = %q, want %q", identity, escapedIdentity)
+	}
+	profile, _, err := updated.resolveSetting(configuration, "PROVISIONING_PROFILE_SPECIFIER")
+	if err != nil {
+		t.Fatalf("resolve applied profile: %v", err)
+	}
+	if profile != "Apple Development" {
+		t.Fatalf("applied profile = %q, want the preserved no-op value", profile)
+	}
+}
