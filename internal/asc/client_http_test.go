@@ -1716,6 +1716,45 @@ func TestGetAppStoreVersions_WithFilters(t *testing.T) {
 	}
 }
 
+func TestGetAppStoreVersionsDecodesDownloadable(t *testing.T) {
+	response := jsonResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"downloadable":false}},{"type":"appStoreVersions","id":"version-2","attributes":{"downloadable":true}},{"type":"appStoreVersions","id":"version-3","attributes":{"downloadable":null}}]}`)
+	client := newTestClient(t, func(req *http.Request) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("expected GET, got %s", req.Method)
+		}
+		if req.URL.Path != "/v1/apps/123/appStoreVersions" {
+			t.Fatalf("expected path /v1/apps/123/appStoreVersions, got %s", req.URL.Path)
+		}
+		assertAuthorized(t, req)
+	}, response)
+
+	versions, err := client.GetAppStoreVersions(context.Background(), "123")
+	if err != nil {
+		t.Fatalf("GetAppStoreVersions() error: %v", err)
+	}
+	if len(versions.Data) != 3 {
+		t.Fatalf("expected 3 versions, got %d", len(versions.Data))
+	}
+
+	want := []struct {
+		set   bool
+		value bool
+	}{
+		{set: true, value: false},
+		{set: true, value: true},
+		{set: false},
+	}
+	for i, expected := range want {
+		got := versions.Data[i].Attributes.Downloadable
+		if (got != nil) != expected.set {
+			t.Fatalf("version %d downloadable presence = %v, want %v", i, got != nil, expected.set)
+		}
+		if got != nil && *got != expected.value {
+			t.Fatalf("version %d downloadable = %v, want %v", i, *got, expected.value)
+		}
+	}
+}
+
 func TestGetPreReleaseVersions_WithFilters(t *testing.T) {
 	response := jsonResponse(http.StatusOK, `{"data":[{"type":"preReleaseVersions","id":"1","attributes":{"version":"1.0.0","platform":"IOS"},"relationships":{"app":{"data":{"type":"apps","id":"app-1"}}},"links":{"self":"https://api.appstoreconnect.apple.com/v1/preReleaseVersions/1"}}],"included":[{"type":"apps","id":"app-1"}],"links":{"self":"https://api.appstoreconnect.apple.com/v1/preReleaseVersions"},"meta":{"paging":{"total":1,"limit":5}}}`)
 	client := newTestClient(t, func(req *http.Request) {

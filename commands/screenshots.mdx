@@ -127,6 +127,57 @@ asc screenshots run --plan .asc/screenshots.json
 }
 ```
 
+### Run a Screenshot Matrix
+
+Capture one existing screenshot plan across device, locale, appearance, and
+content-variant axes with bounded local concurrency:
+
+```bash  theme={null}
+asc screenshots matrix --plan .asc/screenshots-matrix.json --max-concurrency 2 --output json --pretty
+```
+
+Targets must already exist and be booted simulators. The command does not build,
+install, create, boot, clone, or delete simulators, and it does not upload
+screenshots. After validation succeeds, the command writes raw artifacts plus
+an offline `review/manifest.json` and `review/index.html`, including failed or
+canceled cells.
+
+The matrix plan is a separate JSON/JSONC file. Its four axes are expanded in
+declaration order, with a maximum of 256 cells:
+
+```jsonc
+{
+  "version": 1,
+  "base_plan": "screenshots.json",
+  "devices": [
+    {"id": "iphone-17-pro", "udid": "SIMULATOR_UDID"},
+    {"id": "ipad-pro-13", "udid": "ANOTHER_SIMULATOR_UDID"}
+  ],
+  "locales": ["en-US", "ja-JP"],
+  "appearances": ["light", "dark"],
+  "content_variants": [
+    {"id": "default"},
+    {"id": "empty", "launch_arguments": ["--fixture", "empty"]}
+  ],
+  "execution": {"max_concurrency": 2, "max_attempts": 2, "retry_backoff_ms": 500},
+  "output": {
+    "raw_dir": "./screenshots/matrix/raw",
+    "framed_dir": "./screenshots/matrix/framed",
+    "review_dir": "./screenshots/matrix/review",
+    "frame": {"enabled": false}
+  }
+}
+```
+
+Framing is disabled in this example because an iPad must never be represented
+by an iPhone frame. When framing is enabled, every matrix device needs an
+explicit supported mapping; syntax is checked by the frame-device parser and
+family compatibility is checked against the actual simulator during preflight.
+Use `--max-attempts` and `--retry-backoff` to override the plan. Retries apply
+only to execution and framing; validation, cancellation, and cleanup failures
+are reported without retrying. See [the matrix design note](https://github.com/rorkai/App-Store-Connect-CLI/blob/main/docs/design/screenshots-matrix.md)
+for the complete result, privacy, and review contracts.
+
 ### List Frame Devices
 
 Show all supported frame device profiles:
