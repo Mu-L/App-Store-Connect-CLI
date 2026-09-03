@@ -59,6 +59,13 @@ func TestTestFlightValidationDiagnosticsPreserveContracts(t *testing.T) {
 			wantCode:   shared.DiagnosticConflictingInput,
 		},
 		{
+			name:       "beta groups query surface with build id",
+			command:    BetaGroupsListCommand,
+			args:       []string{"--build-id", "build-1", "--fields", "name"},
+			wantStderr: "Error: testflight groups query filters, sparse fields, includes, and relationship limits cannot be used with --build-id; membership lookup queries the build's app relationships directly\n",
+			wantCode:   shared.DiagnosticConflictingInput,
+		},
+		{
 			name:       "beta groups global and app conflict",
 			command:    BetaGroupsListCommand,
 			args:       []string{"--global", "--app", "app-1"},

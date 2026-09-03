@@ -1215,6 +1215,39 @@ func (r Root) CheckWriteFilePreservingMode(name string) error {
 	return nil
 }
 
+// CheckWriteFile performs the non-mutating checks required before WriteFile
+// creates or replaces a destination by rename: parents must be contained and
+// unsymlinked, and the destination must be absent or a regular, non-symlinked
+// file. Unlike CheckWriteFilePreservingMode it does not require the existing
+// file to be writable or singly linked, because a rename replaces the name
+// without touching the old inode.
+func (r Root) CheckWriteFile(name string) error {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return err
+	}
+	if resolved == r.path {
+		return fmt.Errorf("%w: %q is the trusted root itself", ErrEscapesRoot, name)
+	}
+	if err := r.checkParentComponents(resolved); err != nil {
+		return err
+	}
+	info, err := os.Lstat(resolved)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return symlinkError(resolved)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", resolved)
+	}
+	return nil
+}
+
 // CheckCreateNewFile performs the non-mutating checks required before
 // CreateNewFile publishes a destination. Missing parents are accepted because
 // the eventual rooted write creates them; existing files and symlinks are not.

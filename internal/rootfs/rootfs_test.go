@@ -91,6 +91,9 @@ func TestResolveAcceptsAbsolutePathInsideRoot(t *testing.T) {
 }
 
 func TestRootPreservesWhitespaceInValidPathNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Win32 path APIs strip trailing spaces and dots from file names")
+	}
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "trusted ")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -310,6 +313,60 @@ func TestWriteFileRefusesFinalSymlink(t *testing.T) {
 	}
 	if got := mustRead(t, sentinelPath); got != "original" {
 		t.Fatalf("sentinel content = %q, want %q", got, "original")
+	}
+}
+
+func TestCheckWriteFileMatchesWriteFileConstraints(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+
+	if err := root.CheckWriteFile(filepath.Join("nested", "missing.pdf")); err != nil {
+		t.Fatalf("CheckWriteFile(missing) error = %v, want nil", err)
+	}
+
+	readOnly := filepath.Join(dir, "readonly.pdf")
+	mustWrite(t, readOnly, "original")
+	if err := os.Chmod(readOnly, 0o400); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	if err := root.CheckWriteFile("readonly.pdf"); err != nil {
+		t.Fatalf("CheckWriteFile(read-only regular file) error = %v, want nil because WriteFile replaces by rename", err)
+	}
+	if err := root.WriteFile("readonly.pdf", []byte("replaced"), 0o600); err != nil {
+		t.Fatalf("WriteFile(read-only regular file) error = %v", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(dir, "somedir"), 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := root.CheckWriteFile("somedir"); err == nil {
+		t.Fatal("CheckWriteFile(directory) error = nil, want not-a-regular-file error")
+	}
+	if err := root.CheckWriteFile("."); !errors.Is(err, ErrEscapesRoot) {
+		t.Fatalf("CheckWriteFile(root) error = %v, want ErrEscapesRoot", err)
+	}
+}
+
+func TestCheckWriteFileRefusesSymlinks(t *testing.T) {
+	requireSymlinks(t)
+
+	dir := t.TempDir()
+	sentinelDir := t.TempDir()
+	sentinelPath := filepath.Join(sentinelDir, "sentinel.txt")
+	mustWrite(t, sentinelPath, "original")
+	if err := os.Symlink(sentinelPath, filepath.Join(dir, "out.pdf")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	if err := os.Symlink(sentinelDir, filepath.Join(dir, "nested")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	root := mustRoot(t, dir)
+	if err := root.CheckWriteFile("out.pdf"); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("CheckWriteFile(final symlink) error = %v, want ErrSymlink", err)
+	}
+	if err := root.CheckWriteFile(filepath.Join("nested", "sentinel.txt")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("CheckWriteFile(symlinked parent) error = %v, want ErrSymlink", err)
 	}
 }
 
@@ -581,6 +638,9 @@ func TestCreateNewFileAtomicRefusesRacingDestination(t *testing.T) {
 }
 
 func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not authoritative on Windows")
+	}
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	if err := root.CreateNewFileAtomic("plan.json", []byte("planned"), 0o600); err != nil {
@@ -2290,6 +2350,7 @@ func TestOpenAbsoluteRootNoFollowFailsClosedOutsideCurrentDirectory(t *testing.T
 }
 
 func TestOpenAbsoluteRootNoFollowRejectsReplacedCurrentDirectoryPath(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -2390,6 +2451,7 @@ func TestContainsPathUsesPinnedRootIdentity(t *testing.T) {
 }
 
 func TestContainsAnchoredPathRejectsPathSubstitution(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent := t.TempDir()
 	bundle := filepath.Join(parent, "bundle")
 	artifact := filepath.Join(bundle, "state")
@@ -2479,6 +2541,9 @@ func TestOpenRootRejectsSelectedPathSwappedBeforeOpen(t *testing.T) {
 		{name: "intermediate directory", rootRelative: filepath.Join("selected", "root"), swapRelative: "selected", outsideRoot: "root"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.outsideRoot != "" {
+				requireDirectoryRenameWhileOpen(t)
+			}
 			parent, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -2604,6 +2669,7 @@ func TestOpenRootDoesNotAdoptDirectoryCreatedAfterNew(t *testing.T) {
 }
 
 func TestRootedWriteRejectsIntermediateDirectoryReplacedBeforeOpen(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -2948,6 +3014,13 @@ func temporaryLeftovers(t *testing.T, dir string) []string {
 		}
 	}
 	return leftovers
+}
+
+func requireDirectoryRenameWhileOpen(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot rename a directory while an os.Root handle to it or a descendant is open")
+	}
 }
 
 func requireSymlinks(t *testing.T) {
