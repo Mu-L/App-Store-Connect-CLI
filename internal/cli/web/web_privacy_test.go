@@ -2142,6 +2142,95 @@ func TestWebPrivacyApplyRerunAfterConvergenceIsANoOp(t *testing.T) {
 	}
 }
 
+func TestWebPrivacyApplyDoesNotReportSuccessWhenSkippedDeletesRemain(t *testing.T) {
+	fixture := handlertest.New(t)
+	var mutations int
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req); ok {
+			return resp, nil
+		}
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, `{"data":[
+				{
+					"id": "usage-email",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_NOT_LINKED_TO_YOU"}}
+					}
+				},
+				{
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"EMAIL_ADDRESS"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"APP_FUNCTIONALITY"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_NOT_LINKED_TO_YOU"}}
+					}
+				},
+				{
+					"id": "usage-purchase",
+					"type": "appDataUsages",
+					"relationships": {
+						"category": {"data": {"type":"appDataUsageCategories","id":"PURCHASE_HISTORY"}},
+						"purpose": {"data": {"type":"appDataUsagePurposes","id":"ANALYTICS"}},
+						"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_LINKED_TO_YOU"}}
+					}
+				}
+			]}`), nil
+		case req.Method == http.MethodPost || req.Method == http.MethodPatch || req.Method == http.MethodDelete:
+			mutations++
+			return fixture.Response("did not expect %s %s when only an ID-less leftover remains", req.Method, req.URL.Path), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	path := writePrivacyDeclarationForTest(t)
+	cmd := WebPrivacyApplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--app", privacyTestAppID,
+		"--file", path,
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var execErr error
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+	if execErr == nil {
+		t.Fatal("an ID-less leftover is not a successful apply")
+	}
+	if mutations != 0 {
+		t.Fatalf("expected no mutations when the leftover has no usage id, got %d", mutations)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse receipt JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload["applied"] != false {
+		t.Fatalf("skipped deletes must not report applied=true: %#v", payload["applied"])
+	}
+	if payload["changed"] != false {
+		t.Fatalf("no executable mutation ran, so changed must be false: %#v", payload["changed"])
+	}
+	skipped, ok := payload["skippedDeletes"].([]any)
+	if !ok || len(skipped) != 1 {
+		t.Fatalf("expected one skipped delete, got %#v", payload["skippedDeletes"])
+	}
+	if !strings.Contains(stderr, "without a confirmed change") {
+		t.Fatalf("stderr must not call this a successful apply: %q", stderr)
+	}
+	if !strings.Contains(stderr, "skipped deletes have no usage id, so a rerun cannot remove them") {
+		t.Fatalf("stderr must say the leftover cannot be rerun away: %q", stderr)
+	}
+}
+
 func TestPrivacyApplyStepsRunPrerequisiteDeletesBeforeCreates(t *testing.T) {
 	steps := privacyApplySteps(privacyPlanOutput{
 		Adds: []privacyPlanChange{

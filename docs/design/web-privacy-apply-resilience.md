@@ -109,14 +109,19 @@ Apple response body reaches stdout or stderr.
 `apply` re-plans from live remote state on every invocation, so rerunning the
 same file after a partial failure converges: already-committed steps are absent
 from the new plan and are never re-created. A fully converged rerun performs no
-mutation and reports `applied: true`, `changed: false`.
+mutation and reports `applied: true`, `changed: false`. A leftover
+`skippedDeletes` entry is not convergence: `applied` stays `false` and the
+command exits non-zero even when every executable mutation succeeded or there
+were none to run. Those tuples have no usage id, so a rerun cannot delete
+them.
 
 ## Compatibility
 
 All output changes are additive: `changed`, `unknownActions`,
 `notAppliedActions`, and `recheck` on the apply receipt, and `staleTokens` on
 the plan payload. `applied` keeps its meaning - the whole plan committed - and
-is now reachable as `false` on the partial path. `changed` is omitted when an
+is now reachable as `false` on the partial path, including a no-mutation
+apply that still has skipped deletes. `changed` is omitted when an
 attempted action is still unresolved, so automation cannot read a failed
 recheck as a confirmed no-op. `--allow-deletes` and `--confirm` gating is
 unchanged, and no prompt is introduced.

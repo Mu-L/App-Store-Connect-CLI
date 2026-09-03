@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ var (
 		dataProtectionNotLinked:    {},
 		dataProtectionTracking:     {},
 	}
+	errPrivacySkippedDeletesRemain = errors.New("remote declaration includes usages without a usage id that apply cannot delete")
 )
 
 type privacyDeclarationFile struct {
@@ -2082,6 +2084,14 @@ Examples:
 			payload.Actions = result.Applied
 			payload.UnknownActions = result.Unknown
 			payload.NotAppliedActions = result.NotApplied
+
+			if applyErr == nil && len(payload.SkippedDeletes) > 0 {
+				// Executable mutations may have succeeded, but an ID-less
+				// leftover is a known mismatch no rerun can delete. Treat that
+				// as an unsuccessful apply instead of applied:true.
+				payload.Applied = false
+				applyErr = errPrivacySkippedDeletesRemain
+			}
 
 			if applyErr != nil {
 				if renderErr := shared.PrintOutputWithRenderers(
