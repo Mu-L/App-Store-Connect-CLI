@@ -101,6 +101,7 @@ type AuthSession struct {
 	ProviderName     string
 	TeamID           string
 	UserEmail        string
+	DeveloperTeamID  string
 
 	// Continuation state needed after a 409 SRP completion response.
 	ServiceKey       string
@@ -156,12 +157,14 @@ type Client struct {
 	baseURL            string
 	developerPortalURL string
 
-	developerSessionMu sync.Mutex
-	developerCSRF      string
-	developerCSRFTS    string
-	developerTeamID    string
-	publicProviderID   string
-	providerName       string
+	developerSessionMu    sync.Mutex
+	developerCSRF         string
+	developerCSRFTS       string
+	developerTeamID       string
+	developerTeamSelector string
+	publicProviderID      string
+	providerName          string
+	session               *AuthSession
 
 	// Requests are intentionally throttled to reduce pressure on fragile, unofficial
 	// web-session endpoints and avoid bursty behavior against user accounts.
@@ -429,13 +432,16 @@ func parseSigninInitResponse(data []byte) (*signinInitResponse, error) {
 
 // NewClient creates an internal web API client from an authenticated session.
 func NewClient(session *AuthSession) *Client {
-	return &Client{
+	client := &Client{
 		httpClient:         session.Client,
 		baseURL:            irisV1BaseURL,
 		publicProviderID:   strings.TrimSpace(session.PublicProviderID),
 		providerName:       strings.TrimSpace(session.ProviderName),
+		developerTeamID:    strings.TrimSpace(session.DeveloperTeamID),
+		session:            session,
 		minRequestInterval: resolveWebMinRequestInterval(),
 	}
+	return client
 }
 
 // Login performs Apple ID SRP authentication and returns a web session.
