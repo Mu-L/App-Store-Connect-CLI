@@ -85,13 +85,11 @@ Examples:
 				return shared.MissingRequiredUsageError("--app")
 			}
 
-			session, err := resolveWebSessionForCommand(ctx, authFlags)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
+			defer cancel()
 			if err != nil {
 				return err
 			}
-
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
 
 			var result *webcore.AppDistribution
 			err = withWebSpinner("Fetching app distribution method", func() error {
