@@ -1827,3 +1827,61 @@ func TestRootIdentityReleaseFileDropsAndClosesRetainedDescriptor(t *testing.T) {
 		t.Fatalf("Close() error = %v after releasing a retained descriptor", err)
 	}
 }
+
+func TestRemoveFileIfSameIdentityRejectsInPlaceQuarantineWrite(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "receipt.json")
+	const original = `{"completed":true}`
+	const concurrent = `{"completed":fals}`
+	if len(original) != len(concurrent) {
+		t.Fatalf("fixture lengths differ: %d vs %d", len(original), len(concurrent))
+	}
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := root.CaptureFile("receipt.json")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	// Overwrite the quarantined inode in place, keeping its length, after the
+	// verification handle closed but before the final recheck and unlink.
+	var wrote bool
+	root.beforeConditionalQuarantineRemovalForTest = func(parent *os.Root, quarantineName string) {
+		file, openErr := parent.OpenFile(quarantineName, os.O_WRONLY, 0)
+		if openErr != nil {
+			t.Fatalf("open quarantined file: %v", openErr)
+		}
+		if _, writeErr := file.WriteAt([]byte(concurrent), 0); writeErr != nil {
+			t.Fatalf("overwrite quarantined file: %v", writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close quarantined file: %v", closeErr)
+		}
+		wrote = true
+	}
+
+	err = root.RemoveFileIfSameIdentity("receipt.json", identity)
+	if !errors.Is(err, ErrQuarantineCleanupUncertain) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrQuarantineCleanupUncertain", err)
+	}
+	if errors.Is(err, ErrFileIdentityRemoved) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, must not claim the file was removed", err)
+	}
+	if !wrote {
+		t.Fatal("quarantine removal seam was not invoked")
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".asc-tmp-rollback-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine entries = %v, want the concurrently edited copy preserved", matches)
+	}
+	if got := mustRead(t, matches[0]); got != concurrent {
+		t.Fatalf("preserved quarantine content = %q, want the concurrent edit %q", got, concurrent)
+	}
+}

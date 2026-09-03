@@ -2828,22 +2828,59 @@ func (r Root) removeExpectedIdentityQuarantine(parent *os.Root, quarantineName s
 	if err := expected.validateOwner(r.selectedIdentity); err != nil {
 		return quarantineCleanupUncertain(quarantineName, "validate quarantined file identity before removal", err)
 	}
+	// Hold the verified descriptor through the recheck. Another process may
+	// still own an open descriptor to this inode, so a path-based Lstat alone
+	// cannot tell an untouched quarantine from one that was written in place
+	// after verification.
 	file, info, err := r.openExpectedIdentityRootedFile(parent, quarantineName, expected)
 	if err != nil {
 		return quarantineCleanupUncertain(quarantineName, "verify quarantined file before removal", err)
 	}
-	if err := file.Close(); err != nil {
-		return quarantineCleanupUncertain(quarantineName, "close quarantined file before removal", err)
+	uncertain := func(operation string, cause error) error {
+		return errors.Join(
+			quarantineCleanupUncertain(quarantineName, operation, cause),
+			file.Close(),
+		)
 	}
 	if r.beforeConditionalQuarantineRemovalForTest != nil {
 		r.beforeConditionalQuarantineRemovalForTest(parent, quarantineName)
 	}
 	latest, err := parent.Lstat(quarantineName)
 	if err != nil {
-		return quarantineCleanupUncertain(quarantineName, "recheck quarantined file before removal", err)
+		return uncertain("recheck quarantined file before removal", err)
 	}
-	if !os.SameFile(info, latest) || latest.Mode() != info.Mode() {
-		return quarantineCleanupUncertain(quarantineName, "quarantined file identity changed before removal", nil)
+	if !sameFileIdentitySnapshot(info, latest) {
+		return uncertain("quarantined file identity changed before removal", nil)
+	}
+	finalInfo, err := file.Stat()
+	if err != nil {
+		return uncertain("restat quarantined file before removal", err)
+	}
+	if !sameFileIdentitySnapshot(info, finalInfo) {
+		return uncertain("quarantined file metadata changed before removal", nil)
+	}
+	finalMultipleLinks, err := hasMultipleHardLinks(file, finalInfo)
+	if err != nil {
+		return uncertain("reinspect quarantined file links before removal", err)
+	}
+	if finalMultipleLinks != expected.multipleHardLinks {
+		return uncertain("quarantined file hard-link state changed before removal", nil)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return uncertain("rewind quarantined file before removal", err)
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, int64(len(expected.data))+1))
+	if err != nil {
+		return uncertain("re-read quarantined file before removal", err)
+	}
+	if !bytes.Equal(contents, expected.data) {
+		return uncertain("quarantined file contents changed before removal", nil)
+	}
+	// The descriptor must be released before the unlink so the contract holds
+	// on platforms that refuse to remove an entry with an open handle. Only the
+	// close-to-unlink interval remains, which is the documented portable limit.
+	if err := file.Close(); err != nil {
+		return quarantineCleanupUncertain(quarantineName, "close quarantined file before removal", err)
 	}
 	if err := parent.Remove(quarantineName); err != nil {
 		return quarantineCleanupUncertain(quarantineName, "remove quarantined file", err)

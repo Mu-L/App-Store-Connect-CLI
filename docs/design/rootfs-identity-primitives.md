@@ -97,8 +97,9 @@ enumerates or manipulates the library-owned random staging/quarantine names is
 outside this portable capability boundary.
 
 The final quarantine unlink still has no portable identity-coupled primitive.
-The implementation revalidates the retained identity and removes only after a
-matching observation; if the quarantine disappears, changes identity, or
+The implementation holds the verified descriptor through the recheck,
+compares the complete snapshot and hard-link state, re-reads the live bytes,
+and removes only after a matching observation; if the quarantine disappears, changes identity, or
 cannot be removed, it performs no further cleanup mutation and returns
 `ErrQuarantineCleanupUncertain` with recoverable evidence. The remaining
 name-based unlink interval is an explicit Unix/Darwin limitation, not an
