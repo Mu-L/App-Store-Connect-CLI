@@ -1076,10 +1076,11 @@ func resolvePrivacyApplyResult(result privacyApplyResult, remote map[string]priv
 				continue
 			}
 			// The targeted id is gone, but the tuple may still be present
-			// without an id. The planner records that as a skipped delete, so
-			// treating the mutation as committed would put it in actions and
-			// set changed=true while the extra declaration remains.
-			if state, exists := remote[action.Key]; exists && len(state.UsageIDs) == 0 {
+			// without an id — alone or beside another identified usage.
+			// That leftover is a skipped delete; treating the mutation as
+			// committed would put it in actions and set changed=true while
+			// the extra declaration remains.
+			if state, exists := remote[action.Key]; exists && (len(state.UsageIDs) == 0 || state.IDLessCount > 0) {
 				resolved.Unknown = append(resolved.Unknown, action)
 				continue
 			}
@@ -1966,7 +1967,9 @@ DATA_NOT_COLLECTED and collected tuples cannot coexist, so that delete must run
 first and an interruption after it can leave a tuple missing until a rerun.
 A mid-sequence failure re-reads remote state, prints a receipt that splits every
 step into applied, unknown, and not applied, and exits non-zero. Rerunning the
-same file converges and reports changed=false once nothing is left to do.
+same file converges and reports changed=false once nothing executable is left,
+except leftover usages Apple returned without a usage id: those stay in
+skippedDeletes and need manual cleanup.
 
 Examples:
   asc web privacy apply --app "123456789" --file "./privacy.json"
