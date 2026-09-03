@@ -743,12 +743,23 @@ func (c *Client) GetCiWorkflowRaw(ctx context.Context, workflowID string, includ
 	return json.RawMessage(data), nil
 }
 
-// CreateCiWorkflow creates a CI workflow from a JSON payload.
-func (c *Client) CreateCiWorkflow(ctx context.Context, payload json.RawMessage) (*CiWorkflowResponse, error) {
+// CreateCiWorkflowRaw creates a CI workflow and returns Apple's unmodified response body.
+// The typed CiWorkflowResponse drops false/empty attributes through omitempty, so JSON
+// output for duplicate must print this envelope instead of a reconstructed struct.
+func (c *Client) CreateCiWorkflowRaw(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return nil, fmt.Errorf("empty workflow payload")
 	}
 	data, err := c.do(ctx, "POST", "/v1/ciWorkflows", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(data), nil
+}
+
+// CreateCiWorkflow creates a CI workflow from a JSON payload.
+func (c *Client) CreateCiWorkflow(ctx context.Context, payload json.RawMessage) (*CiWorkflowResponse, error) {
+	data, err := c.CreateCiWorkflowRaw(ctx, payload)
 	if err != nil {
 		return nil, err
 	}

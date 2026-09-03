@@ -107,7 +107,7 @@ func TestXcodeCloudWorkflowsDuplicateCopiesSourceConfiguration(t *testing.T) {
 				return nil, fixture.Errorf("read POST body: %w", err)
 			}
 			created = json.RawMessage(body)
-			return jsonHTTPResponse(http.StatusCreated, `{"data":{"type":"ciWorkflows","id":"wf-copy","attributes":{"name":"TestFlight Deploy Copy","isEnabled":false}}}`), nil
+			return jsonHTTPResponse(http.StatusCreated, `{"data":{"type":"ciWorkflows","id":"wf-copy","attributes":{"name":"TestFlight Deploy Copy","isEnabled":false,"unknownFutureField":true}}}`), nil
 		default:
 			return nil, fixture.Errorf("unexpected request: %s %s", req.Method, req.URL.String())
 		}
@@ -131,7 +131,11 @@ func TestXcodeCloudWorkflowsDuplicateCopiesSourceConfiguration(t *testing.T) {
 
 	var response struct {
 		Data struct {
-			ID string `json:"id"`
+			ID         string `json:"id"`
+			Attributes struct {
+				IsEnabled          *bool `json:"isEnabled"`
+				UnknownFutureField *bool `json:"unknownFutureField"`
+			} `json:"attributes"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
@@ -139,6 +143,12 @@ func TestXcodeCloudWorkflowsDuplicateCopiesSourceConfiguration(t *testing.T) {
 	}
 	if response.Data.ID != "wf-copy" {
 		t.Fatalf("expected created workflow id wf-copy, got %q", response.Data.ID)
+	}
+	if response.Data.Attributes.IsEnabled == nil || *response.Data.Attributes.IsEnabled {
+		t.Fatalf("expected stdout to preserve isEnabled=false from the create envelope, got %q", stdout)
+	}
+	if response.Data.Attributes.UnknownFutureField == nil || !*response.Data.Attributes.UnknownFutureField {
+		t.Fatalf("expected stdout to preserve unmodeled create-response fields, got %q", stdout)
 	}
 
 	var payload struct {

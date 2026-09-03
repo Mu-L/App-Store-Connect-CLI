@@ -47,6 +47,60 @@ func TestBuildCiWorkflowDuplicatePayloadPreservesUnknownActionFields(t *testing.
 	}
 }
 
+func TestBuildCiWorkflowDuplicatePayloadOmitsNullFields(t *testing.T) {
+	source := `{
+  "data": {
+    "type": "ciWorkflows",
+    "id": "wf-source",
+    "attributes": {
+      "name": "Deploy",
+      "description": "",
+      "actions": [{"name": "Archive", "actionType": "ARCHIVE", "destination": null, "testConfiguration": null, "scheme": "App", "platform": "IOS", "isRequiredToPass": true}],
+      "isEnabled": true,
+      "clean": true,
+      "containerFilePath": "App.xcodeproj",
+      "tagStartCondition": null,
+      "branchStartCondition": {"source": {"patterns": [{"pattern": "main"}]}, "filesAndFoldersRule": null, "autoCancel": true}
+    },
+    "relationships": {
+      "product": {"data": {"type": "ciProducts", "id": "prod-1"}},
+      "repository": {"data": {"type": "scmRepositories", "id": "repo-1"}},
+      "xcodeVersion": {"data": {"type": "ciXcodeVersions", "id": "xcode-1"}},
+      "macOsVersion": {"data": {"type": "ciMacOsVersions", "id": "macos-1"}}
+    }
+  }
+}`
+
+	payload, err := buildCiWorkflowDuplicatePayload(json.RawMessage(source), ciWorkflowDuplicateOptions{
+		name:             "Copy",
+		sourceWorkflowID: "wf-source",
+	})
+	if err != nil {
+		t.Fatalf("buildCiWorkflowDuplicatePayload error: %v", err)
+	}
+
+	var decoded struct {
+		Data struct {
+			Attributes map[string]json.RawMessage `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if _, ok := decoded.Data.Attributes["tagStartCondition"]; ok {
+		t.Fatalf("expected null tagStartCondition to be omitted, got %s", payload)
+	}
+	if strings.Contains(string(decoded.Data.Attributes["actions"]), "null") {
+		t.Fatalf("expected null action fields to be omitted, got %s", decoded.Data.Attributes["actions"])
+	}
+	if strings.Contains(string(decoded.Data.Attributes["branchStartCondition"]), "null") {
+		t.Fatalf("expected null filesAndFoldersRule to be omitted, got %s", decoded.Data.Attributes["branchStartCondition"])
+	}
+	if string(decoded.Data.Attributes["description"]) != `""` {
+		t.Fatalf("expected empty description to be preserved, got %s", decoded.Data.Attributes["description"])
+	}
+}
+
 func TestBuildCiWorkflowDuplicatePayloadDescriptionHandling(t *testing.T) {
 	tests := []struct {
 		name          string

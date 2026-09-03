@@ -1,6 +1,7 @@
 package xcodecloud
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/peterbourgon/ff/v3/ffcli"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
@@ -63,7 +65,7 @@ func buildCiWorkflowDuplicatePayload(source json.RawMessage, opts ciWorkflowDupl
 	}
 
 	for _, key := range []string{"containerFilePath", "actions"} {
-		if len(attributes[key]) == 0 {
+		if isEmptyJSON(attributes[key]) {
 			return nil, fmt.Errorf("source workflow %s is missing required attribute %q", opts.sourceWorkflowID, key)
 		}
 	}
@@ -92,6 +94,19 @@ func buildCiWorkflowDuplicatePayload(source json.RawMessage, opts ciWorkflowDupl
 	if len(attributes["clean"]) == 0 {
 		attributes["clean"] = json.RawMessage("false")
 	}
+
+	cleaned := map[string]json.RawMessage{}
+	for key, value := range attributes {
+		omitted, keep, err := omitJSONNulls(value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to copy attribute %q: %w", key, err)
+		}
+		if !keep {
+			continue
+		}
+		cleaned[key] = omitted
+	}
+	attributes = cleaned
 
 	relationships := map[string]json.RawMessage{}
 	var missing []string
@@ -141,6 +156,62 @@ func buildCiWorkflowDuplicatePayload(source json.RawMessage, opts ciWorkflowDupl
 	}
 
 	return payload, nil
+}
+
+func isEmptyJSON(value json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(value)
+	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
+}
+
+func omitJSONNulls(raw json.RawMessage) (json.RawMessage, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, false, nil
+	}
+
+	var value any
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return nil, false, err
+	}
+	omitted, keep := omitNulls(value)
+	if !keep {
+		return nil, false, nil
+	}
+	encoded, err := json.Marshal(omitted)
+	if err != nil {
+		return nil, false, err
+	}
+	return encoded, true, nil
+}
+
+func omitNulls(value any) (any, bool) {
+	if value == nil {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			next, keep := omitNulls(item)
+			if !keep {
+				continue
+			}
+			out[key] = next
+		}
+		return out, true
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			next, keep := omitNulls(item)
+			if !keep {
+				continue
+			}
+			out = append(out, next)
+		}
+		return out, true
+	default:
+		return typed, true
+	}
 }
 
 // XcodeCloudWorkflowsDuplicateCommand returns the xcode-cloud workflows duplicate subcommand.
@@ -209,12 +280,28 @@ Examples:
 				return fmt.Errorf("xcode-cloud workflows duplicate: %w", err)
 			}
 
-			resp, err := client.CreateCiWorkflow(requestCtx, payload)
+			data, err := client.CreateCiWorkflowRaw(requestCtx, payload)
 			if err != nil {
 				return fmt.Errorf("xcode-cloud workflows duplicate: failed to create copy: %w", err)
 			}
 
-			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
+			return printCiWorkflowDuplicateOutput(data, *output.Output, *output.Pretty)
 		},
 	}
+}
+
+func printCiWorkflowDuplicateOutput(data json.RawMessage, format string, pretty bool) error {
+	resolved, err := shared.ValidateOutputFormat(format, pretty)
+	if err != nil {
+		return err
+	}
+	if resolved == "json" {
+		return shared.PrintOutput(json.RawMessage(data), format, pretty)
+	}
+
+	var resp asc.CiWorkflowResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("failed to parse created workflow: %w", err)
+	}
+	return shared.PrintOutput(&resp, format, pretty)
 }
