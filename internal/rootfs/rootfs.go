@@ -2321,6 +2321,9 @@ func (r Root) openExpectedIdentityRootedFile(parent *os.Root, name string, expec
 	if info.Mode().Perm() != expected.info.Mode().Perm() {
 		return nil, nil, fmt.Errorf("%w: file permissions changed", ErrFileIdentityChanged)
 	}
+	if !info.ModTime().Equal(expected.info.ModTime()) {
+		return nil, nil, fmt.Errorf("%w: file modification time changed", ErrFileIdentityChanged)
+	}
 	currentMultipleLinks, err := hasMultipleHardLinks(file, info)
 	if err != nil {
 		return nil, nil, fmt.Errorf("inspect current file links: %w", err)

@@ -931,6 +931,36 @@ func TestReplaceFileIfSameRejectsMetadataChangeBeforePublishedIdentityBaseline(t
 	}
 }
 
+func TestReplaceFileIfSameRejectsModTimeChangeBeforeQuarantine(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	changed := identity.Info().ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(path, changed, changed); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("updated"), 0o640, true)
+	if installed != nil {
+		t.Fatal("ReplaceFileIfSame() returned an identity after mtime drift")
+	}
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != "original" {
+		t.Fatalf("destination content = %q, want original", got)
+	}
+}
+
 func TestReplaceFileIfSameRetainsTokenWhenDestinationDisappearsAfterPublication(t *testing.T) {
 	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
