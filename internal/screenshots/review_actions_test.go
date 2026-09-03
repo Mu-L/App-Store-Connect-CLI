@@ -677,6 +677,27 @@ func TestOpenReviewRejectsOversizedHTMLWithBoundManifest(t *testing.T) {
 	}
 }
 
+func TestOpenReviewRecognizesCaseVariantMatrixHTML(t *testing.T) {
+	outputDir := t.TempDir()
+	if !matrixFilesystemCaseInsensitive(outputDir) {
+		t.Skip("filesystem is case-sensitive")
+	}
+	if _, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{
+		Result:    &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}},
+		OutputDir: outputDir,
+	}); err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v", err)
+	}
+	htmlPath := filepath.Join(outputDir, "INDEX.HTML")
+	result, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: outputDir, HTMLPath: htmlPath, DryRun: true})
+	if err != nil {
+		t.Fatalf("OpenReview() error = %v, want case-insensitive matrix HTML to use the bound pair", err)
+	}
+	if result == nil || result.HTMLPath != htmlPath {
+		t.Fatalf("OpenReview() result = %+v, want HTML path %q", result, htmlPath)
+	}
+}
+
 func TestApproveReview_AllReady(t *testing.T) {
 	outputDir := t.TempDir()
 	manifestPath := filepath.Join(outputDir, defaultReviewManifestName)

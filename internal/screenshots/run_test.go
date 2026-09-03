@@ -104,6 +104,26 @@ func TestRunPlanPreservesLiteralOutputDirectorySpelling(t *testing.T) {
 	}
 }
 
+func TestRunPlanUsesDefaultOutputDirForWhitespaceOnly(t *testing.T) {
+	waitMS := 1
+	plan := &Plan{
+		Version: 1,
+		App:     PlanApp{BundleID: "com.example.app", OutputDir: "   "},
+		Steps:   []PlanStep{{Action: ActionWait, DurationMS: &waitMS}},
+	}
+	result, err := RunPlan(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("RunPlan() error = %v", err)
+	}
+	want, err := filepath.Abs("./screenshots/raw")
+	if err != nil {
+		t.Fatalf("resolve default output directory: %v", err)
+	}
+	if result.OutputDir != want {
+		t.Fatalf("RunPlan() OutputDir = %q, want default %q", result.OutputDir, want)
+	}
+}
+
 func TestRunPlan_ScreenshotStepsDoNotRelaunchApp(t *testing.T) {
 	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()

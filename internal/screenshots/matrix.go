@@ -728,6 +728,7 @@ type matrixPrivateAttemptRoot struct {
 	child             *os.Root
 	parentID          os.FileInfo
 	identity          os.FileInfo
+	namespaceID       os.FileInfo
 	output            *rootfs.Root
 	parentLocked      bool
 	childLocked       bool
@@ -1081,9 +1082,16 @@ func createMatrixPrivateAttemptRoot() (matrixPrivateAttemptRoot, error) {
 		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
 		return matrixPrivateAttemptRoot{}, errors.Join(closeErr, unlockErr, cleanupErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
 	}
+	namespaceID, namespaceErr := grandparent.Stat(".")
+	if namespaceErr != nil {
+		unlockErr := errors.Join(unlockMatrixPrivateAttemptDirectory(grandparent), unlockMatrixPrivateAttemptParent(parent))
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		return matrixPrivateAttemptRoot{}, errors.Join(namespaceErr, unlockErr, cleanupErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+	}
 	return matrixPrivateAttemptRoot{
 		root: root, path: path, grandparent: grandparent,
 		parent: parent, pinned: pinned, child: anchoredChild, parentID: parentID, identity: identity,
+		namespaceID:  namespaceID,
 		parentLocked: true, grandparentLocked: true,
 	}, nil
 }
@@ -1231,7 +1239,20 @@ func (attempt matrixPrivateAttemptRoot) cleanup() error {
 	if !empty {
 		return nil
 	}
-	return removeMatrixExpectedEntry(attempt.grandparent, attempt.parentID, nil)
+	if err := removeMatrixExpectedEntry(attempt.grandparent, attempt.parentID, nil); err != nil {
+		return err
+	}
+	empty, err = matrixPrivateAttemptDirectoryEmpty(attempt.grandparent)
+	if err != nil || !empty || attempt.namespaceID == nil {
+		return err
+	}
+	namespacePath := attempt.grandparent.Name()
+	tempRoot, err := os.OpenRoot(filepath.Dir(namespacePath))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tempRoot.Close() }()
+	return removeMatrixExpectedEntry(tempRoot, attempt.namespaceID, nil)
 }
 
 func (attempt matrixPrivateAttemptRoot) close() error {
@@ -1536,26 +1557,28 @@ func validateMatrixPlan(plan *MatrixPlan, base *Plan, outputBaseDir string) erro
 	if err := validateMatrixReviewDoesNotOverwritePlans(plan, outputBaseDir); err != nil {
 		return err
 	}
-	if plan.Output.Frame.Enabled {
-		frameMappings := make(map[string]string, len(plan.Output.Frame.DeviceByMatrixDevice))
-		for matrixDevice := range plan.Output.Frame.DeviceByMatrixDevice {
-			key := normalizeMatrixDeviceID(matrixDevice)
-			if _, declared := seenIDs[key]; !declared {
-				return fmt.Errorf("framing mapping references undeclared device %q", matrixDevice)
-			}
-			if _, duplicate := frameMappings[key]; duplicate {
-				return fmt.Errorf("framing mapping device %q must be unique", matrixDevice)
-			}
-			frameMappings[key] = plan.Output.Frame.DeviceByMatrixDevice[matrixDevice]
+	frameMappings := make(map[string]string, len(plan.Output.Frame.DeviceByMatrixDevice))
+	for matrixDevice := range plan.Output.Frame.DeviceByMatrixDevice {
+		key := normalizeMatrixDeviceID(matrixDevice)
+		if _, declared := seenIDs[key]; !declared {
+			return fmt.Errorf("framing mapping references undeclared device %q", matrixDevice)
 		}
-		for _, device := range plan.Devices {
-			frame, ok := frameMappings[normalizeMatrixDeviceID(device.ID)]
-			if !ok || strings.TrimSpace(frame) == "" {
-				return fmt.Errorf("framing requires a frame mapping for device %q", device.ID)
-			}
-			if err := validateMatrixFrameMapping(device.ID, frame); err != nil {
-				return err
-			}
+		if _, duplicate := frameMappings[key]; duplicate {
+			return fmt.Errorf("framing mapping device %q must be unique", matrixDevice)
+		}
+		frame := plan.Output.Frame.DeviceByMatrixDevice[matrixDevice]
+		if err := validateMatrixFrameMapping(matrixDevice, frame); err != nil {
+			return err
+		}
+		frameMappings[key] = frame
+	}
+	if !plan.Output.Frame.Enabled {
+		return nil
+	}
+	for _, device := range plan.Devices {
+		frame, ok := frameMappings[normalizeMatrixDeviceID(device.ID)]
+		if !ok || strings.TrimSpace(frame) == "" {
+			return fmt.Errorf("framing requires a frame mapping for device %q", device.ID)
 		}
 	}
 	return nil

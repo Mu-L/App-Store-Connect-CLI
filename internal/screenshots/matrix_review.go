@@ -429,8 +429,16 @@ func isUnboundLegacyReviewHTML(path string) bool {
 	return false
 }
 
+func isMatrixReviewHTMLPath(path string) bool {
+	name := filepath.Base(path)
+	if name == defaultReviewHTMLName {
+		return true
+	}
+	return strings.EqualFold(name, defaultReviewHTMLName) && matrixFilesystemCaseInsensitive(path)
+}
+
 func readMatrixReviewPairSnapshotWithRoots(path string) (matrixReviewPairSnapshot, error) {
-	matrixPair := filepath.Base(path) == "index.html"
+	matrixPair := isMatrixReviewHTMLPath(path)
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return matrixReviewPairSnapshot{}, errMatrixReviewPairMismatch
@@ -506,7 +514,7 @@ func matrixReviewAssetRootPaths(outputDir string, manifest *MatrixReviewManifest
 		return nil, nil
 	}
 	manifestOutputDir, err := filepath.Abs(manifest.OutputDir)
-	if err != nil || strings.TrimSpace(manifest.OutputDir) == "" || filepath.Clean(manifestOutputDir) != filepath.Clean(outputDir) {
+	if err != nil || strings.TrimSpace(manifest.OutputDir) == "" || !sameMatrixDirectory(manifestOutputDir, outputDir) {
 		return nil, errMatrixReviewPairMismatch
 	}
 	assetRoots := make(map[string]string, 2)
@@ -633,7 +641,7 @@ func matrixReviewBrowserAssetsWithExpectedRoots(ctx context.Context, htmlPath st
 		return nil, errMatrixReviewPairMismatch
 	}
 	htmlDir, err := filepath.Abs(filepath.Dir(htmlPath))
-	if err != nil || filepath.Clean(htmlDir) != filepath.Clean(outputDir) {
+	if err != nil || !sameMatrixDirectory(htmlDir, outputDir) {
 		return nil, errMatrixReviewPairMismatch
 	}
 	assetRoots, err := matrixReviewAssetRootPaths(outputDir, manifest)

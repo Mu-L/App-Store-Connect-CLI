@@ -720,6 +720,27 @@ func TestValidateMatrixPlanRejectsCaseInsensitiveDuplicateFrameMappings(t *testi
 	}
 }
 
+func TestValidateMatrixPlanRejectsInvalidFrameMappingWhenDisabled(t *testing.T) {
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	plan := &MatrixPlan{
+		Version:         1,
+		Devices:         []MatrixDevice{{ID: "phone", UDID: "SIM-UDID"}},
+		Locales:         []string{"en-US"},
+		Appearances:     []string{"light"},
+		ContentVariants: []MatrixContentVariant{{ID: "default"}},
+		Output: MatrixOutput{Frame: MatrixFrame{Enabled: false, DeviceByMatrixDevice: map[string]string{
+			"phone": "not-a-device",
+		}}},
+	}
+	if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "not-a-device") {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want stated mapping validation while framing is disabled", err)
+	}
+	plan.Output.Frame.DeviceByMatrixDevice = map[string]string{"tablet": "iphone-17-pro"}
+	if err := ValidateMatrixPlan(plan, base); err == nil || !strings.Contains(err.Error(), "undeclared") {
+		t.Fatalf("ValidateMatrixPlan() error = %v, want undeclared mapping rejection while framing is disabled", err)
+	}
+}
+
 func TestValidateMatrixFrameMappingForSimulatorUsesActualFamily(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -3271,6 +3292,22 @@ func TestValidateMatrixOutputPathsHonorsFilesystemCase(t *testing.T) {
 	}
 }
 
+func TestMatrixReviewAssetRootPathsAcceptsFilesystemAliases(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "Review")
+	if err := os.Mkdir(outputDir, 0o755); err != nil {
+		t.Fatalf("create review dir: %v", err)
+	}
+	alias := outputDir
+	if matrixFilesystemCaseInsensitive(dir) {
+		alias = filepath.Join(dir, "review")
+	}
+	_, err := matrixReviewAssetRootPaths(alias, &MatrixReviewManifest{OutputDir: outputDir})
+	if err != nil {
+		t.Fatalf("matrixReviewAssetRootPaths() error = %v, want filesystem identity match", err)
+	}
+}
+
 func TestSameMatrixPathResolvesMissingSymlinkedSuffix(t *testing.T) {
 	dir := t.TempDir()
 	realRoot := filepath.Join(dir, "real")
@@ -5448,6 +5485,23 @@ func TestLockMatrixPrivateAttemptChildRejectsReplacementAtLockBoundary(t *testin
 	}
 	if _, err := os.Stat(replacementSentinel); err != nil {
 		t.Fatalf("replacement sentinel stat error = %v, want replacement preserved", err)
+	}
+}
+
+func TestCleanupMatrixPrivateAttemptRemovesNamespace(t *testing.T) {
+	attempt, err := createMatrixPrivateAttemptRoot()
+	if err != nil {
+		t.Fatalf("createMatrixPrivateAttemptRoot() error: %v", err)
+	}
+	namespace := filepath.Dir(filepath.Dir(attempt.path))
+	if err := cleanupMatrixPrivateAttemptForExecution(attempt); err != nil {
+		t.Fatalf("cleanupMatrixPrivateAttemptForExecution() error = %v", err)
+	}
+	if err := closeMatrixPrivateAttemptForExecution(attempt); err != nil {
+		t.Fatalf("closeMatrixPrivateAttemptForExecution() error = %v", err)
+	}
+	if _, err := os.Lstat(namespace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("private attempt namespace %q still exists after cleanup: %v", namespace, err)
 	}
 }
 
