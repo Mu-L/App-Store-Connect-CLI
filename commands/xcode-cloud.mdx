@@ -101,7 +101,7 @@ asc xcode-cloud workflows delete --id "WORKFLOW_ID" --confirm
 * `repository` - Get the repository for a workflow
 * `create` - Create a workflow
 * `update` - Update a workflow
-* `duplicate` - Duplicate a workflow under a new name
+* `duplicate` - **[experimental]** Duplicate a workflow under a new name
 * `delete` - Delete a workflow
 
 **Flags (list):**
@@ -128,10 +128,10 @@ asc xcode-cloud workflows delete --id "WORKFLOW_ID" --confirm
 
 **Flags (duplicate):**
 
-* `--id` - Source workflow ID to copy (required)
-* `--name` - Name for the new workflow (required)
-* `--description` - Description for the new workflow (default: copied from the source workflow)
-* `--enabled` - Enable the new workflow immediately; the copy is created disabled by default
+* `--id` - **[experimental]** Source workflow ID to copy (required)
+* `--name` - **[experimental]** Name for the new workflow (required)
+* `--description` - **[experimental]** Description for the new workflow (default: copied from the source workflow)
+* `--enabled` - **[experimental]** Enable the new workflow immediately; the copy is created disabled by default
 * `--output` - Output format: `json`, `table`, `markdown`
 * `--pretty` - Pretty-print JSON output
 
