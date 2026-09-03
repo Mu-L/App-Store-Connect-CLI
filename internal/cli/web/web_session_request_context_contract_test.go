@@ -120,9 +120,9 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 		case *ast.AssignStmt:
 			recordTimeoutAssignments(stmt, timeoutNames)
 		case *ast.CallExpr:
-			if isSharedContextTimeoutCall(stmt.Fun) && sessionResolvePos != token.NoPos && stmt.Pos() < sessionResolvePos {
+			if isRequestTimeoutStartCall(stmt.Fun) && sessionResolvePos != token.NoPos && stmt.Pos() < sessionResolvePos {
 				position := fset.Position(stmt.Pos())
-				violations = append(violations, fmt.Sprintf("%s:%d: %s calls shared.ContextWithTimeout before session resolution", relative, position.Line, funcName))
+				violations = append(violations, fmt.Sprintf("%s:%d: %s starts a request timeout before session resolution", relative, position.Line, funcName))
 			}
 			name := identName(stmt.Fun)
 			if _, isResolve := webSessionResolveNames[name]; !isResolve || len(stmt.Args) == 0 {
@@ -139,9 +139,9 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 					violations = append(violations, fmt.Sprintf("%s:%d: %s calls resolveWebSessionForCommand(requestCtx", relative, position.Line, funcName))
 				}
 			case *ast.CallExpr:
-				if isSharedContextTimeoutCall(arg.Fun) {
+				if isRequestTimeoutStartCall(arg.Fun) {
 					position := fset.Position(stmt.Pos())
-					violations = append(violations, fmt.Sprintf("%s:%d: %s passes shared.ContextWithTimeout(...) directly to %s", relative, position.Line, funcName, name))
+					violations = append(violations, fmt.Sprintf("%s:%d: %s passes a request-timeout context directly to %s", relative, position.Line, funcName, name))
 				}
 			}
 		}
@@ -151,7 +151,7 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 }
 
 func recordTimeoutAssignments(stmt *ast.AssignStmt, timeoutNames map[string]token.Pos) {
-	if len(stmt.Rhs) != 1 || !isSharedContextTimeoutCallExpr(stmt.Rhs[0]) || len(stmt.Lhs) == 0 {
+	if len(stmt.Rhs) != 1 || !isRequestTimeoutStartCallExpr(stmt.Rhs[0]) || len(stmt.Lhs) == 0 {
 		return
 	}
 	ident, ok := stmt.Lhs[0].(*ast.Ident)
@@ -161,12 +161,15 @@ func recordTimeoutAssignments(stmt *ast.AssignStmt, timeoutNames map[string]toke
 	timeoutNames[ident.Name] = stmt.Pos()
 }
 
-func isSharedContextTimeoutCallExpr(expr ast.Expr) bool {
+func isRequestTimeoutStartCallExpr(expr ast.Expr) bool {
 	call, ok := expr.(*ast.CallExpr)
-	return ok && isSharedContextTimeoutCall(call.Fun)
+	return ok && isRequestTimeoutStartCall(call.Fun)
 }
 
-func isSharedContextTimeoutCall(fun ast.Expr) bool {
+func isRequestTimeoutStartCall(fun ast.Expr) bool {
+	if identName(fun) == "newWebRequestContext" {
+		return true
+	}
 	selector, ok := fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
