@@ -315,6 +315,30 @@ func capabilityRows() []Capability {
 		},
 		{
 			Area:       "app-management",
+			Capability: "App distribution method inspection",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps distribution view"},
+			Notes:      []string{"The public apps API does not expose distributionType or educationDiscountType. This command is read-only."},
+			NextAction: "Use App Store Connect web UI, or asc web apps distribution view.",
+		},
+		{
+			Area:       "app-management",
+			Capability: "Last-compatible version settings inspection",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps last-compatible-version view"},
+			Notes:      []string{"This command mirrors App Store Connect's Last-Compatible Version Settings iris read. The public OpenAPI snapshot documents downloadable on appStoreVersions, but the public CLI versions client does not currently request or print it."},
+			NextAction: "Use App Store Connect web UI, or asc web apps last-compatible-version view.",
+		},
+		{
+			Area:       "app-management",
+			Capability: "App Store version status history",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps history"},
+			Notes:      []string{"The public App Store Connect API has no status-history endpoint; history is version-scoped on the internal web API and gated by the App Status History role capability."},
+			NextAction: "Use App Store Connect web UI, or asc web apps history.",
+		},
+		{
+			Area:       "app-management",
 			Capability: "App pricing and availability updates",
 			Status:     statusPartial,
 			Commands:   []string{"asc pricing availability view", "asc pricing availability create", "asc pricing availability edit", "asc pricing schedule create"},
@@ -370,6 +394,16 @@ func capabilityRows() []Capability {
 			NextAction: "Use App Store Connect web UI, or asc web privacy.",
 		},
 		{
+			Area:       "app-management",
+			Capability: "App Store Regulations and Permits declarations",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps declarations list"},
+			Notes: []string{
+				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; writes other than medical-device --declared false remain website-only. EU DSA trader status is account-level and is not part of this listing.",
+			},
+			NextAction: "Use App Store Connect web UI, or asc web apps declarations list.",
+		},
+		{
 			Area:       "monetization",
 			Capability: "Subscriptions and in-app purchases",
 			Status:     statusCLISupported,
@@ -412,6 +446,16 @@ func capabilityRows() []Capability {
 				"subscriptionOfferCodes",
 				"winBackOffers",
 			},
+		},
+		{
+			Area:       "monetization",
+			Capability: "App and In-App Purchase tax category",
+			Status:     statusNotPublicAPI,
+			Notes: []string{
+				"Apple's published App Store Connect OpenAPI spec has no tax-category endpoint, and no tax-category attribute on apps, appInfos, or inAppPurchases.",
+				"The App Store Connect web endpoints behind the App Information and In-App Purchase tax category pickers have not been captured, so no web-session command is exposed either.",
+			},
+			NextAction: "Set the tax category in App Store Connect under App Information, or in the In-App Purchase settings.",
 		},
 		{
 			Area:       "testflight",
