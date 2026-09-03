@@ -672,7 +672,7 @@ func TestLoginWithOptionalTwoFactorPromptsWhenCodeMissing(t *testing.T) {
 		return nil
 	}
 
-	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "")
+	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil)
 	if err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestLoginWithOptionalTwoFactorUsesProvidedCodeWhenPresent(t *testing.T) {
 		return nil
 	}
 
-	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "654321")
+	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "654321", nil)
 	if err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestLoginWithOptionalTwoFactorReturnsPromptError(t *testing.T) {
 		return nil
 	}
 
-	_, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", "")
+	_, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil, "")
 	if err == nil {
 		t.Fatal("expected error when prompt fails")
 	}
@@ -811,7 +811,7 @@ func TestLoginWithOptionalTwoFactorUsesCommandWhenConfigured(t *testing.T) {
 		return nil
 	}
 
-	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", "osascript ./get-2fa.scpt")
+	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil, "osascript ./get-2fa.scpt")
 	if err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
@@ -876,7 +876,7 @@ func TestLoginWithOptionalTwoFactorReappliesTimeoutAfterDelayedCommand(t *testin
 		return nil
 	}
 
-	session, err := loginWithOptionalTwoFactor(requestCtx, "user@example.com", "secret", "", "osascript ./get-2fa.scpt")
+	session, err := loginWithOptionalTwoFactor(requestCtx, "user@example.com", "secret", "", nil, "osascript ./get-2fa.scpt")
 	if err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
@@ -940,7 +940,7 @@ func TestLoginWithOptionalTwoFactorRequestsPhoneCodeBeforePrompt(t *testing.T) {
 	}
 	twoFactorStatusWriter = &statusOutput
 
-	if _, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", ""); err != nil {
+	if _, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil); err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
 
@@ -992,7 +992,7 @@ func TestLoginWithOptionalTwoFactorSkipsPhoneRequestWhenCodeProvided(t *testing.
 	}
 	twoFactorStatusWriter = &statusOutput
 
-	if _, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "123456"); err != nil {
+	if _, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "123456", nil); err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
 
@@ -1064,7 +1064,7 @@ func TestLoginWithOptionalTwoFactorRepromptsAfterFallbackPhoneRequest(t *testing
 	}
 	twoFactorStatusWriter = &statusOutput
 
-	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "")
+	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil)
 	if err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
@@ -1160,7 +1160,7 @@ func TestLoginWithOptionalTwoFactorRerunsCommandAfterFallbackPhoneRequest(t *tes
 	}
 	twoFactorStatusWriter = &statusOutput
 
-	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", "osascript ./get-2fa.scpt")
+	session, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil, "osascript ./get-2fa.scpt")
 	if err != nil {
 		t.Fatalf("loginWithOptionalTwoFactor returned error: %v", err)
 	}
@@ -1229,7 +1229,7 @@ func TestLoginWithOptionalTwoFactorWrapsFallbackPhoneVerificationError(t *testin
 		return errors.New("apple rejected code")
 	}
 
-	_, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "")
+	_, err := loginWithOptionalTwoFactor(context.Background(), "user@example.com", "secret", "", nil)
 	if err == nil {
 		t.Fatal("expected fallback verification error")
 	}
@@ -2762,6 +2762,158 @@ func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t
 	}
 	if submittedCodes[1] != "222222" {
 		t.Fatalf("expected a newly obtained code on the fresh retry, got %q", submittedCodes[1])
+	}
+}
+
+// shortenTwoFactorCodeRotationWait keeps the rotation wait bounded but instant
+// so the tests exercise the polling loop without sleeping for a real TOTP
+// window.
+func shortenTwoFactorCodeRotationWait(t *testing.T) {
+	t.Helper()
+
+	origTimeout := webTwoFactorCodeRotationTimeout
+	origInterval := webTwoFactorCodeRotationPollInterval
+	t.Cleanup(func() {
+		webTwoFactorCodeRotationTimeout = origTimeout
+		webTwoFactorCodeRotationPollInterval = origInterval
+	})
+	webTwoFactorCodeRotationTimeout = 50 * time.Millisecond
+	webTwoFactorCodeRotationPollInterval = time.Millisecond
+}
+
+// A TOTP-style code command keeps printing the same digits until its time
+// window rolls over, so the stale-session retry cannot simply re-run it: Apple
+// already consumed that value on the cached-jar attempt. The retry must poll
+// the command until it returns a different code.
+func TestResolveSessionWaitsForRotatedCommandCodeAfterStaleBootstrap(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+	shortenTwoFactorCodeRotationWait(t)
+	t.Setenv(webTwoFactorCodeCommandEnv, "print-code")
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	commandCodes := []string{"111111", "111111", "222222"}
+	commandCalls := 0
+	var submittedCodes []string
+
+	deleteWebSessionFn = func(appleID string) error { return nil }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt when a code command is configured")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		if commandCalls >= len(commandCodes) {
+			t.Fatalf("2fa code command ran %d times, more than the %d scripted results", commandCalls+1, len(commandCodes))
+		}
+		code := commandCodes[commandCalls]
+		commandCalls++
+		return code, nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		submittedCodes = append(submittedCodes, code)
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		if code == commandCodes[0] {
+			return errors.New("verification code has already been used")
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+
+	session, source, err := resolveSession(context.Background(), "user@example.com", "", "")
+	if err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if session != freshSession {
+		t.Fatal("expected the fresh session to be returned")
+	}
+	if source != "fresh" {
+		t.Fatalf("expected source %q, got %q", "fresh", source)
+	}
+	if commandCalls != 3 {
+		t.Fatalf("expected the 2fa code command to be polled until it rotated, got %d calls", commandCalls)
+	}
+	if len(submittedCodes) != 2 {
+		t.Fatalf("expected two 2fa submissions, got %v", submittedCodes)
+	}
+	if submittedCodes[0] != "111111" {
+		t.Fatalf("expected the command code on the cached-jar attempt, got %q", submittedCodes[0])
+	}
+	if submittedCodes[1] != "222222" {
+		t.Fatalf("expected the rotated code on the fresh retry, got %q", submittedCodes[1])
+	}
+}
+
+// When the configured command never rotates within the bounded wait there is no
+// usable code left, so the retry must fail with the consumed-code guidance
+// rather than resubmit the value Apple already burned.
+func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+	shortenTwoFactorCodeRotationWait(t)
+	t.Setenv(webTwoFactorCodeCommandEnv, "print-code")
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	commandCalls := 0
+	var submittedCodes []string
+
+	deleteWebSessionFn = func(appleID string) error { return nil }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt when a code command is configured")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		commandCalls++
+		return "111111", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		submittedCodes = append(submittedCodes, code)
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+	persistWebSessionFn = func(session *webcore.AuthSession) error {
+		t.Fatal("did not expect a session to be persisted when no new 2fa code is available")
+		return nil
+	}
+
+	_, _, err := resolveSession(context.Background(), "user@example.com", "", "")
+	if err == nil {
+		t.Fatal("expected resolveSession to fail when the 2fa code command never rotates")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "already consumed") {
+		t.Fatalf("expected the message to explain that the code was consumed, got %q", got)
+	}
+	if !strings.Contains(got, "two-factor code command") {
+		t.Fatalf("expected the message to point at the 2fa code command, got %q", got)
+	}
+	if len(submittedCodes) != 1 || submittedCodes[0] != "111111" {
+		t.Fatalf("expected only the cached-jar submission, got %v", submittedCodes)
+	}
+	if commandCalls < 2 {
+		t.Fatalf("expected the command to be polled more than once before giving up, got %d", commandCalls)
 	}
 }
 

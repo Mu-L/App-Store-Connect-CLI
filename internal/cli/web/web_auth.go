@@ -393,6 +393,48 @@ func readTwoFactorCodeFromCommand(ctx context.Context, command string) (string, 
 	return code, nil
 }
 
+// A one-time code stays valid for the rest of its generator's time window, so
+// a TOTP-style --two-factor-code-command keeps printing the digits that the
+// failed attempt already burned. Bound how long the stale-session retry waits
+// for the command to roll over to a new value.
+var (
+	webTwoFactorCodeRotationTimeout      = 35 * time.Second
+	webTwoFactorCodeRotationPollInterval = 2 * time.Second
+)
+
+// twoFactorCodeCommandReader fetches a 2FA code from the configured command.
+// resolveWebSession supplies its own reader so it can remember which value the
+// failed attempt consumed and refuse to hand the same one back on the retry.
+type twoFactorCodeCommandReader func(ctx context.Context, command string) (string, error)
+
+// readRotatedTwoFactorCodeFromCommand re-runs the configured 2FA code command
+// until it prints a value other than the one Apple already consumed. The wait
+// is bounded, honours cancellation, and never falls back to a prompt, so a
+// scripted invocation still terminates on its own.
+func readRotatedTwoFactorCodeFromCommand(ctx context.Context, command, consumed string) (string, error) {
+	waitCtx := shared.ContextWithoutTimeout(ctx)
+	deadline := time.Now().Add(webTwoFactorCodeRotationTimeout)
+	for {
+		code, err := readTwoFactorCodeFromCommandFn(ctx, command)
+		if err != nil {
+			return "", err
+		}
+		if consumed == "" || code != consumed {
+			return code, nil
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("2fa required: the configured two-factor code command kept returning the code that the expired session already consumed for %s: wait for it to produce a new code, then re-run", webTwoFactorCodeRotationTimeout)
+		}
+		timer := time.NewTimer(webTwoFactorCodeRotationPollInterval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return "", fmt.Errorf("2fa required: waiting for the two-factor code command to produce a new code was interrupted: %w", waitCtx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
 func printExpiredSessionNotice(writer io.Writer) {
 	if writer == nil {
 		return
@@ -488,7 +530,7 @@ func twoFactorSubmitFailure(err error, afterPhoneDelivery bool) error {
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
-func loginWithOptionalTwoFactorUsing(ctx context.Context, progressMessage, appleID, password, twoFactorCode string, loginFn func(context.Context, webcore.LoginCredentials) (*webcore.AuthSession, error), twoFactorStarted func(), twoFactorCodeCommand ...string) (*webcore.AuthSession, error) {
+func loginWithOptionalTwoFactorUsing(ctx context.Context, progressMessage, appleID, password, twoFactorCode string, loginFn func(context.Context, webcore.LoginCredentials) (*webcore.AuthSession, error), twoFactorStarted func(), readCommandCode twoFactorCodeCommandReader, twoFactorCodeCommand ...string) (*webcore.AuthSession, error) {
 	session, err := withWebSpinnerValue(progressMessage, func() (*webcore.AuthSession, error) {
 		return loginFn(ctx, webcore.LoginCredentials{
 			Username: appleID,
@@ -544,6 +586,9 @@ func loginWithOptionalTwoFactorUsing(ctx context.Context, progressMessage, apple
 		}
 		readCode := func() (string, error) {
 			if command != "" {
+				if readCommandCode != nil {
+					return readCommandCode(ctx, command)
+				}
 				return readTwoFactorCodeFromCommandFn(ctx, command)
 			}
 			return promptTwoFactorCodeFn()
@@ -595,17 +640,17 @@ func loginWithOptionalTwoFactorUsing(ctx context.Context, progressMessage, apple
 	return nil, err
 }
 
-func loginWithOptionalTwoFactor(ctx context.Context, appleID, password, twoFactorCode string, twoFactorCodeCommand ...string) (*webcore.AuthSession, error) {
-	return loginWithOptionalTwoFactorUsing(ctx, "Signing in to Apple web session", appleID, password, twoFactorCode, webLoginFn, nil, twoFactorCodeCommand...)
+func loginWithOptionalTwoFactor(ctx context.Context, appleID, password, twoFactorCode string, readCommandCode twoFactorCodeCommandReader, twoFactorCodeCommand ...string) (*webcore.AuthSession, error) {
+	return loginWithOptionalTwoFactorUsing(ctx, "Signing in to Apple web session", appleID, password, twoFactorCode, webLoginFn, nil, readCommandCode, twoFactorCodeCommand...)
 }
 
-func loginWithOptionalTwoFactorClientTracked(ctx context.Context, client *http.Client, appleID, password, twoFactorCode string, twoFactorCodeCommand ...string) (*webcore.AuthSession, bool, error) {
+func loginWithOptionalTwoFactorClientTracked(ctx context.Context, client *http.Client, appleID, password, twoFactorCode string, readCommandCode twoFactorCodeCommandReader, twoFactorCodeCommand ...string) (*webcore.AuthSession, bool, error) {
 	twoFactorStarted := false
 	session, err := loginWithOptionalTwoFactorUsing(ctx, "Refreshing expired web session", appleID, password, twoFactorCode, func(ctx context.Context, credentials webcore.LoginCredentials) (*webcore.AuthSession, error) {
 		return webLoginWithClientFn(ctx, client, credentials)
 	}, func() {
 		twoFactorStarted = true
-	}, twoFactorCodeCommand...)
+	}, readCommandCode, twoFactorCodeCommand...)
 	return session, twoFactorStarted, err
 }
 
@@ -686,9 +731,35 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		fallbackPassword       resolvedWebPassword
 		skipStoredPassword     bool
 		twoFactorCodeConsumed  bool
+		consumedTwoFactorCode  string
+		lastCommandTwoFactor   string
 		staleSessionDiscarded  bool
 		staleSessionDiscardErr error
 	)
+
+	// Every code the configured command produces is remembered so the retry can
+	// tell a rotated value from the one the failed attempt already submitted.
+	// Until a code is proven consumed this is a plain pass-through.
+	readCommandTwoFactorCode := func(ctx context.Context, command string) (string, error) {
+		code, err := readRotatedTwoFactorCodeFromCommand(ctx, command, consumedTwoFactorCode)
+		if err != nil {
+			return "", err
+		}
+		lastCommandTwoFactor = code
+		return code, nil
+	}
+	// Apple invalidates a code the moment it is submitted, so record which value
+	// the failed attempt burned before the retry asks for a replacement.
+	markTwoFactorCodeConsumed := func() {
+		twoFactorCodeConsumed = true
+		if consumedTwoFactorCode != "" {
+			return
+		}
+		consumedTwoFactorCode = lastCommandTwoFactor
+		if consumedTwoFactorCode == "" {
+			consumedTwoFactorCode = twoFactorCode
+		}
+	}
 
 	// Apple consumes a 2FA code as soon as it is accepted, so a literal
 	// --two-factor-code value cannot be resubmitted on the fresh retry. Only a
@@ -768,7 +839,7 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 			return nil, "", false, nil
 		}
 
-		session, twoFactorStarted, loginErr := loginWithOptionalTwoFactorClientTracked(ctx, expiredCachedSession.Client, reauthAppleID, silentPassword.value, twoFactorCode, command)
+		session, twoFactorStarted, loginErr := loginWithOptionalTwoFactorClientTracked(ctx, expiredCachedSession.Client, reauthAppleID, silentPassword.value, twoFactorCode, readCommandTwoFactorCode, command)
 		if loginErr == nil {
 			if opts.persistAutoReauth != nil {
 				opts.persistAutoReauth(session)
@@ -786,7 +857,7 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 				return nil, "", false, fmt.Errorf("web auth auto-reauth failed: %w", consumedTwoFactorCodeError(loginErr, discardErr))
 			}
 			printCacheLookupWarning(sessionCacheWarningWriter, staleSessionDiscardWarning(discardErr))
-			twoFactorCodeConsumed = true
+			markTwoFactorCodeConsumed()
 		}
 		if errors.Is(loginErr, webcore.ErrInvalidAppleAccountCredentials) {
 			if silentPassword.source != webPasswordSourceStored {
@@ -859,9 +930,9 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 			code = ""
 		}
 		if expiredCachedSession != nil && expiredCachedSession.Client != nil {
-			return loginWithOptionalTwoFactorClientTracked(loginCtx, expiredCachedSession.Client, resolvedAppleID, candidate.value, code, command)
+			return loginWithOptionalTwoFactorClientTracked(loginCtx, expiredCachedSession.Client, resolvedAppleID, candidate.value, code, readCommandTwoFactorCode, command)
 		}
-		session, err := loginWithOptionalTwoFactor(loginCtx, resolvedAppleID, candidate.value, code, command)
+		session, err := loginWithOptionalTwoFactor(loginCtx, resolvedAppleID, candidate.value, code, readCommandTwoFactorCode, command)
 		return session, false, err
 	}
 	loginWithPromptedFreshFallback := func(candidate resolvedWebPassword) (*webcore.AuthSession, error) {
@@ -880,7 +951,7 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 				return nil, consumedTwoFactorCodeError(err, discardErr)
 			}
 			printCacheLookupWarning(sessionCacheWarningWriter, staleSessionDiscardWarning(discardErr))
-			twoFactorCodeConsumed = true
+			markTwoFactorCodeConsumed()
 		}
 		expiredCachedSession = nil
 		session, _, err = login(candidate)
