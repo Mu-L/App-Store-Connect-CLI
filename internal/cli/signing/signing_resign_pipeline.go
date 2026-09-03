@@ -138,16 +138,15 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 		return result, fmt.Errorf("secure private re-signing directory: %w", err)
 	}
 	defer func() {
-		if cleanupErr := removeSigningResignStage(stageDir); cleanupErr != nil {
-			resultErr = errors.Join(
-				resultErr,
-				wrapSigningResignOperationalError(
-					signingResignStageCleanup,
-					signingResignCodeCleanup,
-					fmt.Errorf("%w: remove private re-signing directory: %w", ErrSigningResignCleanupFailed, cleanupErr),
-				),
-			)
+		cleanupErr := removeSigningResignStage(stageDir)
+		if cleanupErr == nil {
+			return
 		}
+		// A cleanup failure after the artifact reached its create-only
+		// destination must keep the publication visible to the caller, exactly
+		// like the environment-cleanup-after-publication path below.
+		published := result.Output.Path != "" || errors.Is(resultErr, ErrSigningResignPublicationAmbiguous)
+		resultErr = errors.Join(resultErr, signingResignStageCleanupFailure(published, cleanupErr))
 	}()
 
 	stageRoot, err := rootfs.New(stageDir)

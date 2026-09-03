@@ -52,6 +52,26 @@ func signingResignPublicationAmbiguousError(message string, causes ...error) err
 // the stable cleanup stage/code.
 var ErrSigningResignCleanupFailed = errors.New("signing resign cleanup failed")
 
+// signingResignStageCleanupFailure classifies a failure to remove the private
+// re-signing staging directory. Before publication the run left no destination
+// behind, so the failure stays an ordinary cleanup error. Once the re-signed
+// IPA has been published to its create-only destination, the same failure is
+// also a publication ambiguity: the output already exists, so a caller that
+// saw only a cleanup error would retry blindly and fail on the existing file.
+func signingResignStageCleanupFailure(published bool, cleanupErr error) error {
+	if cleanupErr == nil {
+		return nil
+	}
+	cause := fmt.Errorf("%w: remove private re-signing directory: %w", ErrSigningResignCleanupFailed, cleanupErr)
+	if published {
+		cause = signingResignPublicationAmbiguousError(
+			"re-signed IPA was published but private staging cleanup failed",
+			cause,
+		)
+	}
+	return wrapSigningResignOperationalError(signingResignStageCleanup, signingResignCodeCleanup, cause)
+}
+
 // signingResignOperationalStage identifies the public phase of a re-signing
 // operation.  It is deliberately closed: values from paths, tool output, and
 // operating-system errors must never become part of a public diagnostic.
