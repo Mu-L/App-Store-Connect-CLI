@@ -69,6 +69,21 @@ func TestXCConfigInheritedValueAndExactPrecedence(t *testing.T) {
 	}
 }
 
+func TestXCConfigResolverAcceptsSupersededSameSelectorConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Values.xcconfig")
+	contents := "DEVELOPMENT_TEAM[sdk=iphoneos*] = OLDOLD1234\nDEVELOPMENT_TEAM[sdk=iphoneos*] = NEWNEW1234\nDEVELOPMENT_TEAM = NEWNEW1234\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSetting(path, "DEVELOPMENT_TEAM")
+	if err != nil {
+		t.Fatalf("resolveXCConfigSetting() error = %v, want later same-selector assignment to replace OLDOLD1234", err)
+	}
+	if resolved.value != "NEWNEW1234" || !resolved.exact {
+		t.Fatalf("resolved = %#v, want NEWNEW1234 from the later same-selector assignment", resolved)
+	}
+}
+
 func TestXCConfigResolverRejectsDivergentConditionalOverride(t *testing.T) {
 	for _, test := range []struct {
 		name     string
