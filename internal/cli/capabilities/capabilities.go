@@ -323,11 +323,11 @@ func capabilityRows() []Capability {
 		},
 		{
 			Area:       "app-management",
-			Capability: "Last-compatible version settings inspection",
-			Status:     statusPartial,
-			Commands:   []string{"asc versions list --paginate --output json", "asc versions view --output json", "asc web apps last-compatible-version view"},
-			Notes:      []string{"Public versions JSON preserves downloadable when Apple returns it; the default table omits the field. The web command mirrors App Store Connect's Last-Compatible Version Settings iris read and relationship order."},
-			NextAction: "Use public versions JSON for API-key reads, or asc web apps last-compatible-version view for the UI-matched read.",
+			Capability: "Last-compatible version settings",
+			Status:     statusCLISupported,
+			Commands:   []string{"asc versions list --paginate --output json", "asc versions view --output json", "asc versions update --downloadable"},
+			Notes:      []string{"App Store Connect's Last-Compatible Version Settings screen is the nullable downloadable attribute on appStoreVersions. Public versions JSON preserves it when Apple returns it; the default table omits the field. asc versions update --downloadable writes it, and --downloadable false requires --confirm."},
+			NextAction: "Read with asc versions list --app APP_ID --paginate --output json or asc versions view --version-id VERSION_ID --output json. Enable downloads with asc versions update --version-id VERSION_ID --downloadable true, or disable them with asc versions update --version-id VERSION_ID --downloadable false --confirm.",
 		},
 		{
 			Area:       "app-management",

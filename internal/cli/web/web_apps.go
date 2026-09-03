@@ -36,7 +36,6 @@ Use ` + "`asc web apps create`" + ` as the canonical app-creation command.
 			WebAppsAvailabilityCommand(),
 			WebAppsCompatibilityCommand(),
 			WebAppsDistributionCommand(),
-			WebAppsLastCompatibleVersionCommand(),
 			WebAppsHistoryCommand(),
 			WebAppsDeclarationsCommand(),
 			WebAppsMedicalDeviceCommand(),
