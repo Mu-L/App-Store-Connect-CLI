@@ -1761,11 +1761,11 @@ func resolveMatrixPhysicalPath(path string) (string, bool) {
 // comparison is case-folded to match the case-insensitive filesystems this runs
 // on, consistent with validateMatrixOutputPaths.
 func validateMatrixReviewDoesNotOverwritePlans(plan *MatrixPlan, baseDir string) error {
-	planPath := strings.TrimSpace(plan.sourcePath)
-	if planPath == "" {
+	if strings.TrimSpace(plan.sourcePath) == "" {
 		// A programmatically constructed plan has no on-disk source to protect.
 		return nil
 	}
+	planPath := plan.sourcePath
 	planDir := filepath.Dir(planPath)
 	if strings.TrimSpace(baseDir) == "" {
 		baseDir = planDir
@@ -1832,9 +1832,9 @@ func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath
 	if plan == nil {
 		return errors.New("matrix plan is required")
 	}
-	planPath := strings.TrimSpace(plan.sourcePath)
-	if planPath == "" {
-		planPath = strings.TrimSpace(matrixPath)
+	planPath := plan.sourcePath
+	if strings.TrimSpace(planPath) == "" {
+		planPath = matrixPath
 	}
 	planDir := strings.TrimSpace(baseDir)
 	if planPath != "" {
@@ -2934,10 +2934,13 @@ func cloneScreenshotPlan(base *Plan) (*Plan, error) {
 }
 
 func promoteMatrixArtifact(outputRoot rootfs.Root, outputRootPath, source, destination string) error {
-	return promoteMatrixArtifactFromRoots(outputRoot, outputRootPath, source, outputRoot, outputRootPath, destination)
+	return promoteMatrixArtifactFromRoots(context.Background(), outputRoot, outputRootPath, source, outputRoot, outputRootPath, destination)
 }
 
-func promoteMatrixArtifactFromRoots(sourceRoot rootfs.Root, sourceRootPath, source string, destinationRoot rootfs.Root, destinationRootPath, destination string) error {
+func promoteMatrixArtifactFromRoots(ctx context.Context, sourceRoot rootfs.Root, sourceRootPath, source string, destinationRoot rootfs.Root, destinationRootPath, destination string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	sourceRelative, err := relativeMatrixOutputPath(sourceRootPath, source)
 	if err != nil {
 		return err
@@ -2951,8 +2954,14 @@ func promoteMatrixArtifactFromRoots(sourceRoot rootfs.Root, sourceRootPath, sour
 	if err != nil {
 		return err
 	}
-	_, err = destinationRoot.WriteFromPreservingMode(destinationRelative, sourceFile, 0o644)
-	return err
+	written, err := destinationRoot.WriteFromPreservingMode(destinationRelative, &matrixContextReader{ctx: ctx, reader: io.LimitReader(sourceFile, maxMatrixArtifactBytes+1)}, 0o644)
+	if err != nil {
+		return err
+	}
+	if written > maxMatrixArtifactBytes {
+		return errors.New("screenshot exceeds the artifact size limit")
+	}
+	return nil
 }
 
 type matrixArtifactInfo struct {
@@ -2972,7 +2981,7 @@ func promoteMatrixArtifactWithInfoFromRoots(ctx context.Context, sourceRoot root
 	if err := ctx.Err(); err != nil {
 		return matrixArtifactInfo{}, err
 	}
-	if err := promoteMatrixArtifactFromRoots(sourceRoot, sourceRootPath, source, destinationRoot, destinationRootPath, destination); err != nil {
+	if err := promoteMatrixArtifactFromRoots(ctx, sourceRoot, sourceRootPath, source, destinationRoot, destinationRootPath, destination); err != nil {
 		return matrixArtifactInfo{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -3538,19 +3547,23 @@ func setMatrixScreenshotStatuses(result *MatrixCellResult) {
 		case MatrixCellSuccess:
 			result.Screenshots[i].Status = MatrixCellSuccess
 		case MatrixCellCanceled:
-			if result.Screenshots[i].RawPath == "" {
+			if result.Screenshots[i].RawPath == "" || matrixScreenshotMissingRequestedFrame(result, result.Screenshots[i]) {
 				result.Screenshots[i].Status = MatrixCellCanceled
 			} else {
 				result.Screenshots[i].Status = MatrixCellSuccess
 			}
 		default:
-			if result.Screenshots[i].RawPath == "" {
+			if result.Screenshots[i].RawPath == "" || matrixScreenshotMissingRequestedFrame(result, result.Screenshots[i]) {
 				result.Screenshots[i].Status = MatrixCellFailed
 			} else {
 				result.Screenshots[i].Status = MatrixCellSuccess
 			}
 		}
 	}
+}
+
+func matrixScreenshotMissingRequestedFrame(result *MatrixCellResult, screenshot MatrixScreenshotResult) bool {
+	return result != nil && result.FailureStage == "framing" && screenshot.FramedPath == ""
 }
 
 func mergeMatrixAttemptResult(result *MatrixCellResult, cell MatrixCell, attempt matrixAttemptResult) {

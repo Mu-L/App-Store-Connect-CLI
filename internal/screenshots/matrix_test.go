@@ -467,6 +467,51 @@ func TestRunMatrixDropsReplacedFramedPathBeforeReview(t *testing.T) {
 	}
 }
 
+func TestRunMatrixMarksScreenshotsFailedWhenFramingFailsBeforePromotion(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"phone":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(context.Context, FrameRequest) (*FrameResult, error) {
+			return nil, errors.New("injected koubou failure")
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want framing cell failure")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one failed framing cell", result)
+	}
+	cell := result.Cells[0]
+	if cell.FailureStage != "framing" || len(cell.FramedPaths) != 0 {
+		t.Fatalf("cell = %+v, want framing failure with no promoted frames", cell)
+	}
+	if len(cell.Screenshots) != 1 || cell.Screenshots[0].RawPath == "" || cell.Screenshots[0].FramedPath != "" {
+		t.Fatalf("screenshot metadata = %+v, want raw path without framed path", cell.Screenshots)
+	}
+	if cell.Screenshots[0].Status != MatrixCellFailed {
+		t.Fatalf("screenshot status = %q, want failed when requested framing fails", cell.Screenshots[0].Status)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "review", "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if len(manifest.Cells) != 1 || manifest.Cells[0].Screenshots[0].Status != MatrixCellFailed {
+		t.Fatalf("review screenshot status = %+v, want failed", manifest.Cells)
+	}
+}
+
 func TestRunMatrixAcceptsCaseInsensitiveFrameMapping(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
@@ -3192,6 +3237,17 @@ func TestValidateMatrixPlanRejectsReviewOutputAliasingPlanInputs(t *testing.T) {
 				t.Fatalf("base plan was overwritten by generated output: %s", baseData)
 			}
 		})
+	}
+}
+
+func TestValidateMatrixReviewDoesNotOverwritePlansPreservesLiteralSourceFilename(t *testing.T) {
+	dir := t.TempDir()
+	err := validateMatrixReviewDoesNotOverwritePlans(&MatrixPlan{
+		sourcePath: filepath.Join(dir, "index.html "),
+		Output:     MatrixOutput{ReviewDir: "."},
+	}, dir)
+	if err != nil {
+		t.Fatalf("validateMatrixReviewDoesNotOverwritePlans() error = %v, want trailing-space plan name to stay distinct from index.html", err)
 	}
 }
 
@@ -6477,16 +6533,47 @@ func TestPromoteMatrixArtifactWithInfoStopsAfterPromotionWhenContextCancels(t *t
 		}
 	})
 
-	ctx := &matrixCancelAfterChecksContext{cancelAfter: 4}
+	ctx, cancel := context.WithCancel(context.Background())
+	previous := matrixArtifactBeforeOpenForTest
+	matrixArtifactBeforeOpenForTest = func(rootfs.Root, string) {
+		cancel()
+	}
+	t.Cleanup(func() { matrixArtifactBeforeOpenForTest = previous })
 	_, err = promoteMatrixArtifactWithInfo(ctx, root, outputDir, source, destination)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("promoteMatrixArtifactWithInfo() error = %v, want context cancellation", err)
 	}
-	if ctx.checks <= ctx.cancelAfter {
-		t.Fatalf("context checks = %d, want cancellation during metadata hashing", ctx.checks)
-	}
 	if _, err := os.Stat(destination); err != nil {
 		t.Fatalf("destination was not published before metadata cancellation: %v", err)
+	}
+}
+
+func TestPromoteMatrixArtifactWithInfoHonorsCancellationDuringCopy(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "raw")
+	if err := os.Mkdir(outputDir, 0o755); err != nil {
+		t.Fatalf("create output directory: %v", err)
+	}
+	source := filepath.Join(outputDir, "source.png")
+	destination := filepath.Join(outputDir, "published.png")
+	writeMatrixPNG(t, source)
+	root, err := rootfs.New(outputDir)
+	if err != nil {
+		t.Fatalf("open output root: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close output root: %v", err)
+		}
+	})
+
+	ctx := &matrixCancelAfterChecksContext{cancelAfter: 1}
+	_, err = promoteMatrixArtifactWithInfo(ctx, root, outputDir, source, destination)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("promoteMatrixArtifactWithInfo() error = %v, want context cancellation", err)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination stat error = %v, want no committed file after canceled copy", err)
 	}
 }
 

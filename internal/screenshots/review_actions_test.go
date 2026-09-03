@@ -462,6 +462,47 @@ func TestOpenReviewRejectsAssetRootReplacementAfterPairRootCapture(t *testing.T)
 	}
 }
 
+func TestCaptureMatrixReviewAssetRootIdentitiesClosesPinnedRootsOnLaterFailure(t *testing.T) {
+	outputDir := t.TempDir()
+	rawDir := filepath.Join(outputDir, "raw")
+	framedDir := filepath.Join(outputDir, "framed")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw directory: %v", err)
+	}
+	if err := os.MkdirAll(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed directory: %v", err)
+	}
+	seen := 0
+	previous := matrixReviewAssetRootBeforePinForTest
+	matrixReviewAssetRootBeforePinForTest = func(_, path string) {
+		seen++
+		if seen == 2 {
+			if err := os.RemoveAll(path); err != nil {
+				t.Errorf("remove later asset root: %v", err)
+			}
+		}
+	}
+	t.Cleanup(func() { matrixReviewAssetRootBeforePinForTest = previous })
+	roots, err := captureMatrixReviewAssetRootIdentities(outputDir, &MatrixReviewManifest{
+		OutputDir: outputDir,
+		RawDir:    rawDir,
+		FramedDir: framedDir,
+		Cells: []asc.MatrixCellResult{{
+			RawPaths:    []string{filepath.Join(rawDir, "home.png")},
+			FramedPaths: []string{filepath.Join(framedDir, "home.png")},
+		}},
+	})
+	if !errors.Is(err, errMatrixReviewPairMismatch) {
+		t.Fatalf("captureMatrixReviewAssetRootIdentities() error = %v, want later pin failure", err)
+	}
+	if roots != nil {
+		t.Fatalf("roots = %v, want nil after later pin failure", roots)
+	}
+	if seen != 2 {
+		t.Fatalf("pin attempts = %d, want both roots visited", seen)
+	}
+}
+
 func TestOpenReviewRejectsAssetRootReplacementBeforePairRootPin(t *testing.T) {
 	outputDir := t.TempDir()
 	rawDir := filepath.Join(outputDir, "raw")

@@ -581,10 +581,12 @@ func captureMatrixReviewAssetRootIdentities(outputDir string, manifest *MatrixRe
 	for kind := range needed {
 		rootPath, ok := assetRoots[kind]
 		if !ok {
+			_ = closeMatrixReviewAssetRoots(roots)
 			return nil, errMatrixReviewPairMismatch
 		}
 		info, statErr := os.Lstat(rootPath)
 		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			_ = closeMatrixReviewAssetRoots(roots)
 			return nil, errMatrixReviewPairMismatch
 		}
 		if matrixReviewAssetRootBeforePinForTest != nil {
