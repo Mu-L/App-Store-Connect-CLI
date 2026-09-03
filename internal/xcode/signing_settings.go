@@ -2707,9 +2707,19 @@ func signingProjectInputPaths(
 		}
 		authorized := signingConfigurationSourcesAuthorized(project, configuration, configFiles)
 		if configuration.projectLevel {
-			// Inventory inherited project entitlements through each target
-			// consumer. Resolving here cannot see target-supplied settings
-			// such as PRODUCT_NAME and would reject a valid selected plan.
+			// Do not resolve the project configuration itself: it cannot see
+			// target-supplied settings such as PRODUCT_NAME. Still inventory
+			// literal project assignments, including conditional-only paths,
+			// before artifact publication.
+			for _, key := range matchingBuildSettingKeys(configuration.buildSettings, "CODE_SIGN_ENTITLEMENTS") {
+				value, ok := configuration.buildSettings[key].(string)
+				if !ok || strings.Contains(value, "$(") || strings.Contains(value, "${") {
+					continue
+				}
+				if err := appendEntitlements(value); err != nil {
+					return nil, externalEntitlementPaths, inputBlockers, err
+				}
+			}
 			continue
 		}
 		if authorized {
