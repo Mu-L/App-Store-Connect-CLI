@@ -400,25 +400,45 @@ type matrixReviewPairSnapshot struct {
 // file that is not digest-bound to a matrix manifest. OpenReview keeps the
 // direct-open fallback for those reports, including when the HTML path itself
 // is a symlink that the no-follow pair reader refuses.
-func isUnboundLegacyReviewHTML(path string) bool {
-	if strings.TrimSpace(path) == "" {
+func isUnboundLegacyReviewHTML(ctx context.Context, path string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil || strings.TrimSpace(path) == "" {
 		return false
 	}
 	info, err := os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
 		return false
 	}
-	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
-	manifestInfo, err := os.Lstat(manifestPath)
+	reviewRoot, err := rootfs.New(filepath.Dir(path))
 	if err != nil {
 		return true
 	}
-	if manifestInfo.Mode()&os.ModeSymlink != 0 {
+	defer func() { _ = reviewRoot.Close() }()
+	openedRoot, err := reviewRoot.OpenRoot()
+	if err != nil {
+		return true
+	}
+	defer func() { _ = openedRoot.Close() }()
+	manifestInfo, err := openedRoot.Lstat("manifest.json")
+	if err != nil {
+		return true
+	}
+	if !manifestInfo.Mode().IsRegular() || manifestInfo.Mode()&os.ModeSymlink != 0 {
 		return false
 	}
-	data, err := os.ReadFile(manifestPath)
+	if err := ctx.Err(); err != nil {
+		return false
+	}
+	file, err := openMatrixReviewFile(openedRoot, "manifest.json")
 	if err != nil {
 		return true
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, maxMatrixReviewBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(data) > maxMatrixReviewBytes {
+		return false
 	}
 	var binding struct {
 		HTMLSHA256 string `json:"htmlSha256"`

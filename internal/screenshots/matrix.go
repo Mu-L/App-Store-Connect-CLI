@@ -715,6 +715,33 @@ func relativeMatrixOutputPath(rootPath, path string) (string, error) {
 	return relative, nil
 }
 
+func pinMatrixFrameInputFromRetainedRoot(rawRoot rootfs.Root, inputPath string, destRoot rootfs.Root, destDir string, index int) (string, error) {
+	relative, err := relativeMatrixOutputPath(rawRoot.Path(), inputPath)
+	if err != nil {
+		return "", err
+	}
+	src, err := rawRoot.OpenFile(relative)
+	if err != nil {
+		return "", err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(src, maxMatrixArtifactBytes+1))
+	closeErr := src.Close()
+	if readErr != nil {
+		return "", readErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if len(data) > maxMatrixArtifactBytes {
+		return "", errors.New("raw screenshot exceeds the artifact size limit")
+	}
+	name := fmt.Sprintf(".asc-matrix-frame-input-%d%s", index, filepath.Ext(relative))
+	if err := destRoot.WriteFile(name, data, 0o600); err != nil {
+		return "", err
+	}
+	return filepath.Join(destDir, name), nil
+}
+
 // matrixPrivateAttemptRoot retains both the rooted API used by the provider
 // and an independently held parent/child descriptor. The latter lets cleanup
 // find and remove the original directory after a provider renames it, while
@@ -1724,7 +1751,7 @@ func validateMatrixReviewDoesNotOverwritePlans(plan *MatrixPlan, baseDir string)
 	for _, generated := range matrixReviewGeneratedFiles {
 		generatedPath := filepath.Clean(filepath.Join(resolvedReviewDir, generated))
 		for _, input := range inputs {
-			if strings.EqualFold(generatedPath, input.path) || sameMatrixFile(generatedPath, input.path) {
+			if matrixLexicalPathsEqual(generatedPath, input.path) || sameMatrixFile(generatedPath, input.path) {
 				return fmt.Errorf(
 					"output.review_dir would overwrite the %s at %q with the generated %s; use a different review_dir or plan filename",
 					input.label, input.path, generated,
@@ -2720,7 +2747,18 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 			return attempt, errors.New("raw screenshot left the retained raw root")
 		}
 		tempFrame := filepath.Join(frameSourceRootPath, filepath.Base(cell.FramedPaths[index]))
-		frameRequest := FrameRequest{InputPath: inputPath, OutputPath: tempFrame, Device: frameDevice}
+		frameInputPath := inputPath
+		if deps.Frame == nil {
+			pinnedInput, pinErr := pinMatrixFrameInputFromRetainedRoot(outputRoots.raw, inputPath, frameSourceRoot, frameSourceRootPath, index)
+			if pinErr != nil {
+				attempt.FailureStage = "framing"
+				attempt.FailureCode = "raw_output_failed"
+				attempt.Error = "raw screenshot could not be pinned for framing"
+				return attempt, pinErr
+			}
+			frameInputPath = pinnedInput
+		}
+		frameRequest := FrameRequest{InputPath: frameInputPath, OutputPath: tempFrame, Device: frameDevice}
 		var frameResult *FrameResult
 		var frameErr error
 		if deps.Frame != nil {

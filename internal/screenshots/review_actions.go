@@ -394,7 +394,7 @@ func OpenReview(ctx context.Context, req ReviewOpenRequest) (*ReviewOpenResult, 
 	}
 	pair, err := readMatrixReviewPairSnapshotWithRoots(htmlPath)
 	if err != nil {
-		if !isUnboundLegacyReviewHTML(htmlPath) {
+		if !isUnboundLegacyReviewHTML(ctx, htmlPath) {
 			return nil, err
 		}
 		if req.DryRun {

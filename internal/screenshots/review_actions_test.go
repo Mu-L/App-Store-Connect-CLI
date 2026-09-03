@@ -116,6 +116,30 @@ func TestOpenReviewPreservesSymlinkedLegacyHTML(t *testing.T) {
 	}
 }
 
+func TestOpenReviewDoesNotTreatNonRegularSiblingManifestAsLegacy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFO fixtures are a Unix path contract")
+	}
+	outputDir := t.TempDir()
+	realHTML := filepath.Join(outputDir, "legacy-real.html")
+	if err := os.WriteFile(realHTML, []byte("<html><body>legacy</body></html>"), 0o644); err != nil {
+		t.Fatalf("write real legacy HTML: %v", err)
+	}
+	htmlPath := filepath.Join(outputDir, defaultReviewHTMLName)
+	if err := os.Symlink(realHTML, htmlPath); err != nil {
+		t.Fatalf("symlink legacy HTML: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(outputDir, defaultReviewManifestName), 0o700); err != nil {
+		t.Fatalf("create sibling directory manifest: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := OpenReview(ctx, ReviewOpenRequest{OutputDir: outputDir, DryRun: true})
+	if err == nil {
+		t.Fatal("OpenReview() error = nil, want non-regular sibling manifest to fail closed instead of hanging as legacy")
+	}
+}
+
 func TestOpenReviewKeepsLegacyHTMLPath(t *testing.T) {
 	outputDir := t.TempDir()
 	htmlPath := filepath.Join(outputDir, defaultReviewHTMLName)

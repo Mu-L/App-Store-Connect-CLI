@@ -3191,6 +3191,25 @@ func TestValidateMatrixPlanRejectsReviewOutputAliasingPlanInputs(t *testing.T) {
 	}
 }
 
+func TestValidateMatrixReviewDoesNotOverwritePlansHonorsFilesystemCase(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "INDEX.HTML")
+	writeMatrixTestFile(t, planPath, `{"version":1}`)
+	err := validateMatrixReviewDoesNotOverwritePlans(&MatrixPlan{
+		sourcePath: planPath,
+		Output:     MatrixOutput{ReviewDir: dir},
+	}, dir)
+	if matrixFilesystemCaseInsensitive(dir) {
+		if err == nil || !strings.Contains(err.Error(), "matrix plan") {
+			t.Fatalf("validateMatrixReviewDoesNotOverwritePlans() error = %v, want case-insensitive collision", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("validateMatrixReviewDoesNotOverwritePlans() error = %v, want INDEX.HTML to stay distinct from index.html", err)
+	}
+}
+
 func TestRunMatrixRejectsArtifactOutputAliasingBasePlan(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "raw", "en-US", "phone", "light", "default", "home.png")
