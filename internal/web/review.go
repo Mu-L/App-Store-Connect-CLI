@@ -18,8 +18,11 @@ import (
 )
 
 const (
-	reviewSubmissionsInclude      = "appStoreVersionForReview,items,lastUpdatedByActor,submittedByActor,createdByActor"
-	reviewSubmissionsItemsInclude = "appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appStoreVersionExperimentV2,appEvent,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterActivityVersion,gameCenterChallengeVersion,gameCenterLeaderboardSetVersion,gameCenterLeaderboardVersion,inAppPurchaseVersion,subscriptionVersion,subscriptionGroupVersion"
+	reviewSubmissionsInclude = "appStoreVersionForReview,items,lastUpdatedByActor,submittedByActor,createdByActor"
+	// iris GET /reviewSubmissions/{id}/items rejects appStoreVersionExperimentV2
+	// with PARAMETER_ERROR.INVALID (verified live 2026-09-03) even though the
+	// public OpenAPI lists it.
+	reviewSubmissionsItemsInclude = "appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appEvent,backgroundAssetVersion,gameCenterAchievementVersion,gameCenterActivityVersion,gameCenterChallengeVersion,gameCenterLeaderboardSetVersion,gameCenterLeaderboardVersion,inAppPurchaseVersion,subscriptionVersion,subscriptionGroupVersion"
 	reviewMessagesInclude         = "fromActor,rejections,resolutionCenterMessageAttachments"
 	reviewRejectionsInclude       = "appCustomProductPageVersion,appEvent,appStoreVersion,appStoreVersionExperiment,backgroundAssetVersions,gameCenterAchievementVersions,gameCenterLeaderboardVersions,gameCenterLeaderboardSetVersions,gameCenterChallengeVersions,gameCenterActivityVersions,build,appBundleVersion,rejectionAttachments"
 	attachmentHostsEnv            = "ASC_WEB_ALLOWED_ATTACHMENT_HOSTS"
