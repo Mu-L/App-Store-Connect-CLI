@@ -163,6 +163,10 @@ Available commands:
 * `asc web apps create` - create a new app via the web flow
 * `asc web apps delete` - remove an app after preflighting observable eligibility; use `--dry-run` to check without mutating
 * `asc web apps availability create` - bootstrap initial territory availability
+* `asc web apps compatibility view|edit` - inspect or change the Mac and Apple Vision Pro App Store opt-in settings
+* `asc web apps distribution view` - read the app distribution method (`APP_STORE` or `CUSTOM`)
+* `asc web apps last-compatible-version view` - read per-version download availability (Last-Compatible Version Settings)
+* `asc web apps history` - view App Store version status history, optionally scoped with `--version-id`
 * `asc web apps medical-device set` - manage the regulated medical device declaration
 
 Notes:
@@ -171,6 +175,9 @@ Notes:
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps medical-device set` currently supports only `--declared false`
+* `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
+* `asc web apps last-compatible-version view` is read-only. It prints Apple's `downloadable` flag per version in App Store Connect relationship order. Making a version unavailable for download is not shipped: the iris PATCH target is known but its request body is not captured
+* `asc web apps distribution view` is read-only. Apple prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. Changing the distribution method and requesting unlisted distribution have Apple-side eligibility restrictions whose write contracts are not captured, so both stay in the App Store Connect web UI
 
 ### `asc web sandbox`
 
@@ -243,6 +250,9 @@ Available commands:
 * `asc web app-groups list` - list the first page of App Groups for the selected Developer team; pass `--paginate` to fetch every page
 * `asc web app-groups create` - register a new `group.` identifier
 * `asc web app-groups assign` - idempotently associate a group with a Bundle ID and enable `APP_GROUPS` when needed
+* `asc web app-groups unassign` - remove one group from a Bundle ID; removing the last group disables `APP_GROUPS`
+* `asc web app-groups set` - converge a Bundle ID on exactly the `--group` values passed and report an added/removed diff
+* `asc web app-groups delete` - delete a group registration; refuses while any Bundle ID still references the group
 
 Use the opaque IDs returned by the list commands for assignment:
 
@@ -254,14 +264,42 @@ asc web app-groups assign \
   --group "GROUP_RESOURCE_ID" \
   --bundle-id "BUNDLE_RESOURCE_ID" \
   --confirm
+
+asc web app-groups set \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --group "GROUP_RESOURCE_ID" \
+  --group "OTHER_GROUP_RESOURCE_ID" \
+  --confirm
+
+asc web app-groups unassign \
+  --group-id "GROUP_RESOURCE_ID" \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --confirm
+
+asc web app-groups delete --group-id "GROUP_RESOURCE_ID" --confirm
 ```
 
 Repeating an assignment that already exists succeeds without mutating the
-Bundle ID and returns `{"changed":false,"status":"already-assigned"}`.
+Bundle ID and returns `{"changed":false,"status":"already-assigned"}`. Likewise,
+`set` with a desired set that already matches sends no write and returns
+`{"changed":false,"status":"unchanged"}` with empty `added` and `removed` lists,
+and `unassign` of a group that is not assigned returns
+`{"changed":false,"status":"not-assigned"}`. A group the portal still lists
+under a disabled `APP_GROUPS` capability counts as assigned: `unassign` clears
+it (leaving the capability disabled) and `set` with the same groups re-enables
+the capability, so `delete` can always be unblocked from the CLI.
 
-When an assignment changes the App ID, existing provisioning profiles that
-contain that App ID become invalid. Regenerate affected profiles before the next
-signed build.
+`delete` fails closed: when the group is still assigned to any Bundle ID the
+command exits non-zero without sending a delete and names the assigned Bundle
+IDs on stderr. Remove those assignments with `unassign` or `set` first. The
+`assign`, `unassign`, `set`, and `delete` commands verify their result by
+re-reading the Bundle ID or the team's App Group list before reporting success;
+`create` returns the group as the portal reported it.
+
+When an assignment change or deletion changes an App ID, existing provisioning
+profiles that contain that App ID become invalid. The commands print a warning
+on stderr whenever they change something. Regenerate affected profiles before
+the next signed build.
 
 These commands require an Account Holder or Admin web session. Because Apple
 does not publish these Developer Portal endpoints, scripts should treat this
