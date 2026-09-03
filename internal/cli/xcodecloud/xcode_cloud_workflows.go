@@ -41,6 +41,7 @@ Examples:
   asc xcode-cloud workflows list --app "APP_ID"
   asc xcode-cloud workflows view --id "WORKFLOW_ID"
   asc xcode-cloud workflows repository --id "WORKFLOW_ID"
+  asc xcode-cloud workflows duplicate --id "WORKFLOW_ID" --name "Nightly"
   asc xcode-cloud workflows --app "APP_ID" --limit 50
   asc xcode-cloud workflows --app "APP_ID" --paginate`,
 		FlagSet:   fs,
@@ -51,6 +52,7 @@ Examples:
 			XcodeCloudWorkflowsRepositoryCommand(),
 			XcodeCloudWorkflowsCreateCommand(),
 			XcodeCloudWorkflowsUpdateCommand(),
+			XcodeCloudWorkflowsDuplicateCommand(),
 			XcodeCloudWorkflowsDeleteCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
