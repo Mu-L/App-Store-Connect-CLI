@@ -2277,15 +2277,17 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		matrixBeforeReviewPublishForTest()
 	}
 	reviewCtx := context.WithoutCancel(ctx)
-	review, reviewErr := publishMatrixReview(reviewCtx, result, reviewDir, reviewRoot, reviewRootReady, ctx)
-	if reviewErr == nil {
-		result.Review = review
-	} else if runErr == nil {
-		result.Status = MatrixCellFailed
-		runErr = fmt.Errorf("write matrix review: %w", reviewErr)
-	} else {
-		result.Status = MatrixCellFailed
-		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
+	if outputLockErr == nil {
+		review, reviewErr := publishMatrixReview(reviewCtx, result, reviewDir, reviewRoot, reviewRootReady, ctx)
+		if reviewErr == nil {
+			result.Review = review
+		} else if runErr == nil {
+			result.Status = MatrixCellFailed
+			runErr = fmt.Errorf("write matrix review: %w", reviewErr)
+		} else {
+			result.Status = MatrixCellFailed
+			runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
+		}
 	}
 	if releaseOutputLocks != nil {
 		releaseErr := releaseOutputLocks()
@@ -2502,7 +2504,11 @@ func executeMatrixCellWithSimulatorLock(ctx context.Context, cell MatrixCell, ba
 		}
 		if ctx.Err() != nil && !attemptResult.CleanupFailed {
 			result.Status = MatrixCellCanceled
-			result.FailureStage = "execution"
+			if attemptResult.FailureStage == "framing" {
+				result.FailureStage = "framing"
+			} else {
+				result.FailureStage = "execution"
+			}
 			result.FailureCode = "canceled"
 			result.Error = newMatrixCellError(result.FailureStage, result.FailureCode, "cell canceled")
 			break
@@ -2518,7 +2524,9 @@ func executeMatrixCellWithSimulatorLock(ctx context.Context, cell MatrixCell, ba
 		}
 		if err := waitContext(ctx, backoff); err != nil {
 			result.Status = MatrixCellCanceled
-			result.FailureStage = "execution"
+			if result.FailureStage != "framing" {
+				result.FailureStage = "execution"
+			}
 			result.FailureCode = "canceled"
 			result.Error = newMatrixCellError(result.FailureStage, result.FailureCode, "cell canceled")
 			break

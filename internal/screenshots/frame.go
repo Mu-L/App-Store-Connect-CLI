@@ -326,7 +326,7 @@ func prepareMatrixFrameInput(ctx context.Context, inputPath string) (*matrixPrep
 		_ = sourceRoot.Close()
 		return nil, errors.Join(primary, prepared.close())
 	}
-	if _, err := scratchRoot.WriteFromPreservingMode("input.png", &matrixContextReader{ctx: ctx, reader: sourceFile}, 0o600); err != nil {
+	if _, err := scratchRoot.WriteFromPreservingMode("input.png", &matrixContextReader{ctx: ctx, reader: io.LimitReader(sourceFile, maxMatrixArtifactBytes+1)}, 0o600); err != nil {
 		return fail(fmt.Errorf("copy frame input: %w", err))
 	}
 	if err := sourceFile.Close(); err != nil {

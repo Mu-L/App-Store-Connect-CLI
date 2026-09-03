@@ -503,12 +503,45 @@ func TestRunMatrixMarksScreenshotsFailedWhenFramingFailsBeforePromotion(t *testi
 	if cell.Screenshots[0].Status != MatrixCellFailed {
 		t.Fatalf("screenshot status = %q, want failed when requested framing fails", cell.Screenshots[0].Status)
 	}
-	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "review", "manifest.json"))
+}
+
+func TestRunMatrixMarksCanceledUnframedScreenshotsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"base.json","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":true,"device_by_matrix_device":{"phone":"iphone-17-pro"}}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
 	if err != nil {
-		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
 	}
-	if len(manifest.Cells) != 1 || manifest.Cells[0].Screenshots[0].Status != MatrixCellFailed {
-		t.Fatalf("review screenshot status = %+v, want failed", manifest.Cells)
+	ctx, cancel := context.WithCancel(context.Background())
+	result, runErr := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Frame: func(context.Context, FrameRequest) (*FrameResult, error) {
+			cancel()
+			return nil, context.Canceled
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want canceled framing")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one canceled framing cell", result)
+	}
+	cell := result.Cells[0]
+	if cell.Status != MatrixCellCanceled || cell.FailureStage != "framing" {
+		t.Fatalf("cell = %+v, want canceled framing stage", cell)
+	}
+	if len(cell.Screenshots) != 1 || cell.Screenshots[0].RawPath == "" || cell.Screenshots[0].FramedPath != "" {
+		t.Fatalf("screenshot metadata = %+v, want raw path without framed path", cell.Screenshots)
+	}
+	if cell.Screenshots[0].Status != MatrixCellCanceled {
+		t.Fatalf("screenshot status = %q, want canceled when requested framing never completed", cell.Screenshots[0].Status)
 	}
 }
 
@@ -2727,8 +2760,8 @@ func TestRunMatrix_InventoryCancellationMarksAllCellsCanceled(t *testing.T) {
 			if result.Succeeded != 0 || result.Failed != 0 || result.Canceled != len(result.Cells) {
 				t.Fatalf("unexpected cancellation summary: %+v", result)
 			}
-			if result.Review == nil || result.Review.Canceled != len(result.Cells) || result.Review.Failed != 0 {
-				t.Fatalf("unexpected cancellation review: %+v", result.Review)
+			if result.Review != nil {
+				t.Fatalf("canceled-before-lock run published a review without output locks: %+v", result.Review)
 			}
 			for _, cell := range result.Cells {
 				if cell.Status != MatrixCellCanceled {
