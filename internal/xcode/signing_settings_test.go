@@ -5316,9 +5316,10 @@ func TestSigningPlanProtectsTargetConditionalInheritedEntitlementComposition(t *
 // the unconditional "BaseSuffix" and the conditional "BaseSuffixSuffix". A text
 // comparison between the two assignments cannot tell the conditional caller
 // apart from the unconditional slot it must compose through, so identical
-// expressions must not collapse into a single resolution. The planner stays
-// conservative here: both resolutions remain protected inputs, so widening the
-// inventory cannot drop the path the unconditional assignment already named.
+// expressions must not collapse into a single resolution. Planning each path in
+// turn keeps both halves pinned: a resolver that gained the conditional path by
+// dropping the unconditional slot it composes through would leave the target's
+// own entitlements file writable, so the inventory must widen rather than move.
 func TestSigningPlanProtectsIdenticalConditionalInheritedEntitlementComposition(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
@@ -5334,28 +5335,39 @@ func TestSigningPlanProtectsIdenticalConditionalInheritedEntitlementComposition(
 	if err := os.WriteFile(filepath.Join(projectRoot, "App.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
 	}
-	composedPath := filepath.Join(projectRoot, "BaseSuffixSuffix")
-	const existingEntitlements = "existing identical conditional composition bytes\n"
-	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
-		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	composedNames := []string{"BaseSuffix", "BaseSuffixSuffix"}
+	existingByName := map[string]string{
+		"BaseSuffix":       "existing unconditional composition bytes\n",
+		"BaseSuffixSuffix": "existing identical conditional composition bytes\n",
+	}
+	for _, name := range composedNames {
+		if err := os.WriteFile(filepath.Join(projectRoot, name), []byte(existingByName[name]), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
 	}
 
-	root := t.TempDir()
-	settingsPath := filepath.Join(root, "settings.json")
-	writeSigningSettingsTestFile(t, settingsPath, `{
-		"schemaVersion": 1,
-		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
-	}`)
+	for _, name := range composedNames {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
 
-	plan, err := BuildSigningPlan(SigningPlanOptions{
-		ProjectPath: project, SettingsFilePath: settingsPath,
-		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
-	})
-	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
-		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want identical conditional composition rejected as an artifact alias", plan, err)
-	}
-	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
-		t.Fatalf("identical conditional composed entitlement input was overwritten during planning: %q", got)
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				PlanPath: filepath.Join(projectRoot, name), StateDir: filepath.Join(root, "state"),
+			})
+			if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+				t.Fatalf("BuildSigningPlan(%s) = plan=%#v, error=%v; want identical conditional composition rejected as an artifact alias", name, plan, err)
+			}
+			for _, guarded := range composedNames {
+				if got := mustReadVersionTestFile(t, filepath.Join(projectRoot, guarded)); got != existingByName[guarded] {
+					t.Fatalf("composed entitlement input %s was overwritten while planning %s: %q", guarded, name, got)
+				}
+			}
+		})
 	}
 }
 
