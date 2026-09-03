@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 	"howett.net/plist"
@@ -40,14 +42,16 @@ func signingResignUnauthorizedClaimsError(claims []signingResignUnauthorizedClai
 		}
 		descriptions = append(descriptions, fmt.Sprintf(
 			"%s=%s (%s)",
-			claim.Key,
+			signingResignSafeClaimName(claim.Key),
 			signingResignFormatClaimValue(claim.Existing),
 			remediation,
 		))
 	}
-	return &signingResignPublicDetailError{
-		message: "existing entitlements are not authorized by the replacement profile: " + strings.Join(descriptions, "; "),
+	message := "existing entitlements are not authorized by the replacement profile: " + strings.Join(descriptions, "; ")
+	if len(message) > signingResignPublicDetailMaxBytes {
+		message = message[:signingResignPublicDetailMaxBytes-len("...")] + "..."
 	}
+	return &signingResignPublicDetailError{message: message}
 }
 
 // signingResignProfileRequiredEntitlementKeyOrder lists distribution claims a
@@ -80,7 +84,7 @@ func signingResignClaimRebaseSuggestion(existing, profileValue any) (string, boo
 		if !ok {
 			return "", false
 		}
-		return fmt.Sprintf("%q", rebased), true
+		return signingResignQuoteBounded(rebased, 128), true
 	default:
 		list, isList := signingResignEntitlementList(existing)
 		if !isList || len(list) == 0 {
@@ -96,7 +100,7 @@ func signingResignClaimRebaseSuggestion(existing, profileValue any) (string, boo
 			if !ok {
 				return "", false
 			}
-			rebasedValues = append(rebasedValues, fmt.Sprintf("%q", rebased))
+			rebasedValues = append(rebasedValues, signingResignQuoteBounded(rebased, 128))
 		}
 		return "[" + strings.Join(rebasedValues, ", ") + "]", true
 	}
@@ -129,27 +133,68 @@ func signingResignWildcardPrefix(profileValue any) (string, bool) {
 	return prefix, prefix != ""
 }
 
+const (
+	signingResignClaimDetailMaxBytes  = 512
+	signingResignPublicDetailMaxBytes = 8192
+)
+
+func signingResignSafeClaimName(key string) string {
+	if signingResignSafeClaimIdentifier(key) {
+		return key
+	}
+	return signingResignQuoteBounded(key, 128)
+}
+
+func signingResignSafeClaimIdentifier(key string) bool {
+	if key == "" || len(key) > 128 {
+		return false
+	}
+	for _, character := range key {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
+			return false
+		}
+	}
+	return true
+}
+
+func signingResignQuoteBounded(value string, limit int) string {
+	if limit > 0 && len(value) > limit {
+		value = value[:limit]
+	}
+	quoted := strconv.Quote(value)
+	if limit > 0 && len(quoted) > limit {
+		quoted = quoted[:limit]
+	}
+	return quoted
+}
+
 func signingResignFormatClaimValue(value any) string {
+	var formatted string
 	switch typed := value.(type) {
 	case string:
-		return fmt.Sprintf("%q", typed)
+		formatted = signingResignQuoteBounded(typed, 128)
 	case bool:
-		return fmt.Sprintf("%t", typed)
+		formatted = fmt.Sprintf("%t", typed)
 	default:
 		list, isList := signingResignEntitlementList(value)
 		if !isList {
-			return fmt.Sprintf("%v", value)
+			formatted = signingResignQuoteBounded(fmt.Sprintf("%T", value), 64)
+			break
 		}
 		items := make([]string, 0, len(list))
 		for _, item := range list {
 			if text, isString := item.(string); isString {
-				items = append(items, fmt.Sprintf("%q", text))
+				items = append(items, signingResignQuoteBounded(text, 128))
 				continue
 			}
-			items = append(items, fmt.Sprintf("%v", item))
+			items = append(items, signingResignQuoteBounded(fmt.Sprintf("%T", item), 64))
 		}
-		return "[" + strings.Join(items, ", ") + "]"
+		formatted = "[" + strings.Join(items, ", ") + "]"
 	}
+	if len(formatted) > signingResignClaimDetailMaxBytes {
+		formatted = formatted[:signingResignClaimDetailMaxBytes]
+	}
+	return formatted
 }
 
 var signingResignIdentityEntitlementKeys = map[string]struct{}{
@@ -179,9 +224,9 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 // buildSigningResignEntitlementsForProfile applies the replacement profile's
 // class-controlled values while retaining the existing claim-preservation
 // rules for capabilities. The profile is the authority for values such as
-// aps-environment, beta-reports-active, and the iCloud container environment
-// when the source signature and replacement profile belong to different
-// signing classes.
+// aps-environment, App Attest, beta-reports-active, and the iCloud container
+// environment when the source signature and replacement profile belong to
+// different signing classes.
 func buildSigningResignEntitlementsForProfile(existing map[string]any, profile signingResignProfile) (map[string]any, error) {
 	return buildSigningResignEntitlementsWithClass(existing, profile.Entitlements, profile.Class)
 }
@@ -313,7 +358,7 @@ func buildSigningResignEntitlementsWithClass(existing, profile map[string]any, p
 // that was absent from the old signature.
 func resolveSigningResignProfileClassEntitlement(key, profileClass string, existingValue any, existingPresent bool, profileValue any, present bool) (value any, handled bool, err error) {
 	switch key {
-	case "aps-environment":
+	case "aps-environment", "com.apple.developer.devicecheck.appattest-environment":
 		if !present {
 			return nil, false, nil
 		}

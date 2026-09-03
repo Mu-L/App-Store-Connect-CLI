@@ -623,6 +623,40 @@ func TestBuildSigningResignEntitlementsDerivesPushEnvironmentFromProfileClass(t 
 	}
 }
 
+func TestBuildSigningResignEntitlementsRebindsAppAttestByProfileClass(t *testing.T) {
+	const key = "com.apple.developer.devicecheck.appattest-environment"
+	existing := map[string]any{
+		"application-identifier":              "OLDTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "OLDTEAM",
+		"get-task-allow":                      true,
+		key:                                   "development",
+	}
+	profile := signingResignProfile{
+		Class: signingResignProfileClassAdHoc,
+		Entitlements: map[string]any{
+			"application-identifier":              "NEWTEAM.com.example.app",
+			"com.apple.developer.team-identifier": "NEWTEAM",
+			"get-task-allow":                      false,
+			key:                                   "production",
+		},
+	}
+	got, err := buildSigningResignEntitlementsForProfile(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v", err)
+	}
+	if got[key] != "production" {
+		t.Fatalf("app attest environment = %#v, want replacement profile class value", got[key])
+	}
+	delete(existing, key)
+	got, err = buildSigningResignEntitlementsForProfile(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v", err)
+	}
+	if _, exists := got[key]; exists {
+		t.Fatal("app attest environment granted without an existing claim")
+	}
+}
+
 func TestBuildSigningResignEntitlementsRebindsBetaReportsByProfileClass(t *testing.T) {
 	baseProfile := map[string]any{
 		"application-identifier":              "NEWTEAM.com.example.app",
@@ -2212,6 +2246,15 @@ func TestRepackSigningResignTreeIsDeterministicAndBounded(t *testing.T) {
 	}
 }
 
+func TestSigningResignRepackEntryLimitError(t *testing.T) {
+	if err := signingResignRepackEntryLimitError(signingResignMaxArchiveEntries); err != nil {
+		t.Fatalf("signingResignRepackEntryLimitError(%d) = %v, want accepted", signingResignMaxArchiveEntries, err)
+	}
+	if err := signingResignRepackEntryLimitError(signingResignMaxArchiveEntries + 1); err == nil || !strings.Contains(err.Error(), "archive entry limit") {
+		t.Fatalf("signingResignRepackEntryLimitError(%d) = %v, want limit rejection", signingResignMaxArchiveEntries+1, err)
+	}
+}
+
 func TestPublishSigningResignOutputReportsAmbiguousPublication(t *testing.T) {
 	contents := []byte("packed IPA")
 	for _, test := range []struct {
@@ -2565,6 +2608,45 @@ func TestInspectSigningResignTargetRequiresOwnerExecutableBinary(t *testing.T) {
 	}
 }
 
+func TestSigningResignAppExecutableClassificationRequiresMHExecute(t *testing.T) {
+	base := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	for _, test := range []struct {
+		name     string
+		fileType []byte
+		want     bool
+	}{
+		{name: "MH_EXECUTE", fileType: []byte{2, 0, 0, 0}, want: true},
+		{name: "MH_DYLIB", fileType: []byte{6, 0, 0, 0}},
+		{name: "MH_BUNDLE", fileType: []byte{8, 0, 0, 0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := append([]byte(nil), base...)
+			copy(data[12:16], test.fileType)
+			path := filepath.Join(t.TempDir(), "executable")
+			if err := os.WriteFile(path, data, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := isSigningResignAppExecutableFile(file, info.Size()); got != test.want {
+				t.Fatalf("isSigningResignAppExecutableFile() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestPrepareSigningResignTreeRequiresOwnerExecutableNestedCode(t *testing.T) {
 	treePath := t.TempDir()
 	appPath := filepath.Join(treePath, "Payload", "App.app")
@@ -2778,6 +2860,37 @@ func TestBuildSigningResignEntitlementsListsEveryUnauthorizedCrossTeamClaim(t *t
 	}
 	if got := strings.Count(message, "then re-run"); got != 2 {
 		t.Fatalf("refusal %q lists %d remediations, want one per blocked claim", message, got)
+	}
+}
+
+func TestSigningResignUnauthorizedClaimsEscapeAndBoundDetails(t *testing.T) {
+	rawKey := "unauthorized\n\x1b[31mclaim"
+	rawValue := strings.Repeat("\x1b", 512)
+	claims := make([]signingResignUnauthorizedClaim, 32)
+	for index := range claims {
+		claims[index] = signingResignUnauthorizedClaim{
+			Key:      rawKey,
+			Existing: rawValue,
+			Profile:  "authorized",
+		}
+	}
+	err := signingResignUnauthorizedClaimsError(claims)
+	message := err.Error()
+	if strings.ContainsAny(message, "\r\n\x1b") {
+		t.Fatalf("unauthorized-claim detail contains raw control characters: %q", message)
+	}
+	if strings.Contains(message, rawKey) || strings.Contains(message, rawValue) {
+		t.Fatal("unauthorized-claim detail exposed unescaped or unbounded input")
+	}
+	if len(message) > signingResignPublicDetailMaxBytes {
+		t.Fatalf("unauthorized-claim detail length = %d, want bounded output", len(message))
+	}
+	suggestion, ok := signingResignClaimRebaseSuggestion("OLDTEAM."+rawValue, "NEWTEAM.*")
+	if !ok {
+		t.Fatal("signingResignClaimRebaseSuggestion() did not derive a wildcard remediation")
+	}
+	if strings.ContainsAny(suggestion, "\r\n\x1b") || len(suggestion) > 160 {
+		t.Fatalf("wildcard remediation = %q, want escaped bounded output", suggestion)
 	}
 }
 

@@ -55,6 +55,7 @@ type SigningResignResult struct {
 
 func signingResignResultRows(result *SigningResignResult) ([]string, [][]string) {
 	rows := [][]string{
+		{"schemaVersion", fmt.Sprintf("%d", result.SchemaVersion)},
 		{"command", result.Command},
 		{"input.sizeBytes", fmt.Sprintf("%d", result.Input.SizeBytes)},
 		{"input.sha256", result.Input.SHA256},

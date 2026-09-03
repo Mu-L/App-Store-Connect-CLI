@@ -103,3 +103,33 @@ func TestReadSigningResignEntitlementsFailsClosedOnTruncatedToolOutput(t *testin
 		})
 	}
 }
+
+func TestReadSigningResignEntitlementsDoesNotTrustPathTextAsUnsignedDiagnostic(t *testing.T) {
+	original := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = original })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{
+			Stderr: []byte("codesign failed while inspecting /tmp/name: code object is not signed"),
+		}, errors.New("codesign failed")
+	}
+	if _, err := readSigningResignEntitlements(context.Background(), "/tmp/name: code object is not signed"); err == nil {
+		t.Fatal("readSigningResignEntitlements() treated attacker-controlled path text as an unsigned diagnostic")
+	}
+}
+
+func TestReadSigningResignEntitlementsAcceptsExactUnsignedDiagnostic(t *testing.T) {
+	original := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = original })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{
+			Stderr: []byte("/tmp/App: code object is not signed at all"),
+		}, errors.New("codesign failed")
+	}
+	entitlements, err := readSigningResignEntitlements(context.Background(), "/tmp/App")
+	if err != nil {
+		t.Fatalf("readSigningResignEntitlements() error = %v, want unsigned object accepted", err)
+	}
+	if len(entitlements) != 0 {
+		t.Fatalf("readSigningResignEntitlements() = %#v, want empty claims", entitlements)
+	}
+}

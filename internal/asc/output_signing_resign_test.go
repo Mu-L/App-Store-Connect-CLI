@@ -40,13 +40,13 @@ func TestSigningResignResultRegisteredTableAndMarkdownOutput(t *testing.T) {
 	}
 
 	table := captureStdout(t, func() error { return PrintTable(result) })
-	for _, want := range []string{"input.sizeBytes", "42", "output.path", "com.example.app", "verified"} {
+	for _, want := range []string{"schemaVersion", "1", "input.sizeBytes", "42", "output.path", "com.example.app", "verified"} {
 		if !strings.Contains(table, want) {
 			t.Fatalf("expected table to contain %q, got %q", want, table)
 		}
 	}
 	markdown := captureStdout(t, func() error { return PrintMarkdown(result) })
-	for _, want := range []string{"| input.sizeBytes", "| output.path", "| com.example.app"} {
+	for _, want := range []string{"| schemaVersion", "| input.sizeBytes", "| output.path", "| com.example.app"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("expected markdown to contain %q, got %q", want, markdown)
 		}

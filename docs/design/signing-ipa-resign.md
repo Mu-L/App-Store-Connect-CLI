@@ -82,10 +82,11 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    old-team-prefixed keychain or ubiquity values, fail closed with a refusal
    that lists every blocked claim, its offending value, and a per-claim
    manual remediation; claims are never rewritten automatically. The refusal
-   contains only entitlement keys, entitlement values, and remediation text,
-   so it is reported verbatim through the CLI instead of being reduced to a
+   contains only bounded, escaped entitlement keys, values, and remediation
+   text, so it is reported safely through the CLI instead of being reduced to a
    closed stage/code message. Profile-class-controlled claims
-   (`aps-environment`, `beta-reports-active`, and
+   (`aps-environment`, `com.apple.developer.devicecheck.appattest-environment`,
+   `beta-reports-active`, and
    `com.apple.developer.icloud-container-environment`) take the replacement
    profile's class-authorized value when the existing signature already
    claimed them. `beta-reports-active` is omitted for development and ad-hoc
@@ -114,7 +115,8 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    executables and nested Mach-O scheduled for signing, including `.xpc` and
    `.bundle` executables, must already have the owner-execute bit. DOS-created
    archive members default to `0644` and are rejected rather than silently
-   gaining execute permission. Preserve
+   gaining execute permission. The preserved `WatchKitSupport2/WK` binary has
+   the same owner-execute requirement. Preserve
    the exact `SwiftSupport/iphoneos/*.dylib` layout byte-for-byte without
    treating those distribution-side runtime libraries as app code to re-sign.
    The `SwiftSupport` root may contain only the `iphoneos` directory, whose
@@ -124,7 +126,9 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    non-symlink `WK` binary, preserved under the same provenance verification
    and inventory equality rules. Re-run the
    strict Apple generic-anchor `codesign` verification on the final packed
-   tree before publication. Capture a private, sorted inventory of every
+   tree before publication. The repacked entry count must remain within the
+   validated archive limit, including materialized ancestor directories.
+   Capture a private, sorted inventory of every
    direct runtime using its normalized relative path, bounded size (at most
    1 GiB per file), SHA-256 digest, and validated permission mode. Rebuild the
    inventory after repack and require exact path, size, digest, and mode

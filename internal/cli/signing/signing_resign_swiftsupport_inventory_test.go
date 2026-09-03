@@ -285,6 +285,25 @@ func TestValidateSigningResignWatchKitSupportEnforcesShapeAndProvenance(t *testi
 	}
 }
 
+func TestValidateSigningResignWatchKitSupportRequiresOwnerExecute(t *testing.T) {
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{}, nil
+	}
+	root := t.TempDir()
+	wkDir := filepath.Join(root, "WatchKitSupport2")
+	if err := os.MkdirAll(wkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wkDir, "WK"), []byte("wk binary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignWatchKitSupport(context.Background(), root); err == nil || !strings.Contains(err.Error(), "owner-execute") {
+		t.Fatalf("validateSigningResignWatchKitSupport() error = %v, want owner-execute rejection", err)
+	}
+}
+
 func TestCaptureSigningResignPreservedInventoryIncludesWatchKit(t *testing.T) {
 	root := t.TempDir()
 	inventory, err := captureSigningResignPreservedInventory(context.Background(), root)

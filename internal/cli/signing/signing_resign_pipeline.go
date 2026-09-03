@@ -619,6 +619,9 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	if err != nil || !entryInfo.Mode().IsRegular() {
 		return fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
 	}
+	if entryInfo.Mode().Perm()&0o100 == 0 {
+		return fmt.Errorf("WatchKitSupport2/WK is missing the owner-execute permission")
+	}
 	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(watchRoot, "WK")); err != nil {
 		return fmt.Errorf("verify preserved WatchKitSupport2 code failed: %w", err)
 	}
@@ -1044,6 +1047,13 @@ func removeSigningResignStage(stagePath string) error {
 	return os.RemoveAll(clean)
 }
 
+func signingResignRepackEntryLimitError(count int) error {
+	if count > signingResignMaxArchiveEntries {
+		return fmt.Errorf("repacked IPA would exceed the archive entry limit")
+	}
+	return nil
+}
+
 func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root) (packedPath string, packedSize int64, packedDigest string, resultErr error) {
 	defer func() {
 		resultErr = wrapSigningResignOperationalError(
@@ -1106,6 +1116,9 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 	}
 	if fileCount == 0 {
 		return "", 0, "", fmt.Errorf("staging tree is empty")
+	}
+	if err := signingResignRepackEntryLimitError(len(entries)); err != nil {
+		return "", 0, "", err
 	}
 	sort.Slice(entries, func(left, right int) bool {
 		return entries[left].relative < entries[right].relative
