@@ -650,13 +650,21 @@ func reviewDeclarationsListCommand(appID string) string {
 	return "asc web apps declarations list --app \"" + appID + "\""
 }
 
+func reviewMedicalDeviceSetCommand(appID string) string {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return "asc web apps medical-device set --declared false"
+	}
+	return "asc web apps medical-device set --app \"" + appID + "\" --declared false"
+}
+
 func reviewDoctorCoverageWarnings(appID string) []reviewCoverageWarning {
 	return []reviewCoverageWarning{
 		{
 			ID:          "review.coverage.app_store_regulations_and_permits",
 			Status:      "NOT_CHECKED",
 			Message:     "App Store Regulations and Permits declarations, including the personal-service declaration, are managed on the App Store Connect website and are not checked by asc review doctor.",
-			Remediation: "Run `" + reviewDeclarationsListCommand(appID) + "` with a web session, then answer outstanding requirements in App Store Connect or with `asc web apps medical-device set --declared false`.",
+			Remediation: "Run `" + reviewDeclarationsListCommand(appID) + "` with a web session, then answer outstanding requirements in App Store Connect or with `" + reviewMedicalDeviceSetCommand(appID) + "`.",
 		},
 	}
 }

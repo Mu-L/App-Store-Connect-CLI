@@ -242,6 +242,9 @@ func TestBuildReviewDoctorResultDisclosesWebOnlyCoverageWithoutChangingCheckSema
 	if !strings.Contains(warning.Remediation, `asc web apps declarations list --app "123456789"`) {
 		t.Fatalf("expected declarations list remediation with app selector, got %q", warning.Remediation)
 	}
+	if !strings.Contains(warning.Remediation, `asc web apps medical-device set --app "123456789" --declared false`) {
+		t.Fatalf("expected medical-device set remediation with app selector, got %q", warning.Remediation)
+	}
 }
 
 func TestRenderReviewDoctorDisclosesWebOnlyCoverage(t *testing.T) {

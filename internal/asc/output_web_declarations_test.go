@@ -68,3 +68,21 @@ func TestPrintMarkdownWebMedicalDeviceDeclarationStateOmitsBlankDeclaration(t *t
 		}
 	}
 }
+
+func TestPrintTableWebMedicalDeviceDeclarationResultUsesRegistry(t *testing.T) {
+	result := &WebMedicalDeviceDeclarationResult{
+		AppID:              "app-1",
+		RequirementName:    "MEDICAL_DEVICE",
+		Declared:           false,
+		Changed:            false,
+		Status:             "COLLECTED",
+		CountriesOrRegions: []string{"US", "EEA"},
+	}
+
+	output := captureStdout(t, func() error { return PrintTable(result) })
+	for _, want := range []string{"app-1", "MEDICAL_DEVICE", "false", "COLLECTED", "US,EEA"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("table output missing %q: %q", want, output)
+		}
+	}
+}

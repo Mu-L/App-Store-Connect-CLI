@@ -116,42 +116,23 @@ Examples:
 				return fmt.Errorf("web apps medical-device set failed: missing declaration result")
 			}
 
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return renderWebMedicalDeviceTable(result) },
-				func() error { return renderWebMedicalDeviceMarkdown(result) },
-			)
+			return shared.PrintOutput(webMedicalDeviceDeclarationResultOutput(result), *output.Output, *output.Pretty)
 		},
 	}
 }
 
-var webMedicalDeviceHeaders = []string{"App ID", "Requirement", "Declared", "Changed", "Status", "Countries/Regions"}
-
-func webMedicalDeviceRows(result *webcore.MedicalDeviceDeclarationResult) [][]string {
-	return [][]string{{
-		result.AppID,
-		result.RequirementName,
-		fmt.Sprintf("%t", result.Declared),
-		fmt.Sprintf("%t", result.Changed),
-		valueOrNA(result.Status),
-		valueOrNA(strings.Join(result.CountriesOrRegions, ",")),
-	}}
-}
-
-func renderWebMedicalDeviceTable(result *webcore.MedicalDeviceDeclarationResult) error {
-	asc.RenderTable(
-		webMedicalDeviceHeaders,
-		webMedicalDeviceRows(result),
-	)
-	return nil
-}
-
-func renderWebMedicalDeviceMarkdown(result *webcore.MedicalDeviceDeclarationResult) error {
-	asc.RenderMarkdown(
-		webMedicalDeviceHeaders,
-		webMedicalDeviceRows(result),
-	)
-	return nil
+func webMedicalDeviceDeclarationResultOutput(result *webcore.MedicalDeviceDeclarationResult) *asc.WebMedicalDeviceDeclarationResult {
+	if result == nil {
+		return nil
+	}
+	return &asc.WebMedicalDeviceDeclarationResult{
+		AppID:              result.AppID,
+		RequirementID:      result.RequirementID,
+		RequirementName:    result.RequirementName,
+		Status:             result.Status,
+		FormID:             result.FormID,
+		Declared:           result.Declared,
+		Changed:            result.Changed,
+		CountriesOrRegions: result.CountriesOrRegions,
+	}
 }
