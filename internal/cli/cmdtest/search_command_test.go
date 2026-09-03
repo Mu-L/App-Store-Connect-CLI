@@ -1070,6 +1070,11 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc web agreements accept",
 		},
 		{
+			name:     "download Apple Developer agreement status",
+			query:    []string{"download", "Apple", "Developer", "agreement", "status"},
+			expected: "asc web agreements download",
+		},
+		{
 			name:     "agreement status without acceptance",
 			query:    []string{"Apple", "Developer", "agreement", "status"},
 			expected: "asc web agreements status",
@@ -1125,6 +1130,11 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc testflight review submissions view",
 		},
 		{
+			name:     "cancel beta app review submission status",
+			query:    []string{"cancel", "beta", "app", "review", "submission", "status"},
+			expected: "asc testflight review submissions view",
+		},
+		{
 			name:     "cancel TestFlight review submission for build status",
 			query:    []string{"cancel", "TestFlight", "review", "submission", "for", "build", "status"},
 			expected: "asc testflight review submissions build",
@@ -1138,6 +1148,11 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			name:     "doctor Xcode Cloud build run status",
 			query:    []string{"doctor", "Xcode", "Cloud", "build", "run", "status"},
 			expected: "asc xcode-cloud doctor",
+		},
+		{
+			name:     "duplicate Xcode Cloud workflow status",
+			query:    []string{"duplicate", "Xcode", "Cloud", "workflow", "status"},
+			expected: "asc xcode-cloud workflows duplicate",
 		},
 		{
 			name:     "approve metadata status",

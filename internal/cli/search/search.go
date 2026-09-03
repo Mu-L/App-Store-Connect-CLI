@@ -644,13 +644,21 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 			return "asc notarization list", "canonical:notarization-list", true
 		}
 	}
-	if tokenContains(queryTokens, "agreement") && tokenContains(queryTokens, "accept") {
-		return "asc web agreements accept", "canonical:agreement-accept", true
+	if tokenContains(queryTokens, "agreement") {
+		if tokenContains(queryTokens, "accept") {
+			return "asc web agreements accept", "canonical:agreement-accept", true
+		}
+		if tokenContains(queryTokens, "download") {
+			return "asc web agreements download", "canonical:agreement-download", true
+		}
 	}
 	if target, reason, ok := scopedAuthActionIntent(queryTokens); ok {
 		return target, reason, true
 	}
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
+		if tokenContains(queryTokens, "duplicate") {
+			return "asc xcode-cloud workflows duplicate", "canonical:xcode-cloud-workflow-duplicate", true
+		}
 		// "run" doubles as the build-run resource noun, so an explicit read
 		// action must win over the trigger verb.
 		if tokenContainsAny(queryTokens, []string{"list", "view", "download"}) {
@@ -786,8 +794,14 @@ func testFlightContext(queryTokens []string) bool {
 }
 
 func appStoreContext(queryTokens []string) bool {
-	return tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
-		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
+	return tokenContainsAny(queryTokens, []string{"appstore", "store"})
+}
+
+// appReviewContext recognizes App Review wording for aggregate cross-surface
+// status queries. It stays separate from appStoreContext because "beta app
+// review" is TestFlight terminology and must not change cancellation routing.
+func appReviewContext(queryTokens []string) bool {
+	return tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"})
 }
 
 // mostSpecificNamedLeaf returns the named leaf whose every word appears in the
@@ -833,7 +847,8 @@ func releaseDashboardIntent(queryTokens []string) bool {
 		return false
 	}
 
-	hasCrossSurfaceContext := testFlightContext(queryTokens) && appStoreContext(queryTokens)
+	hasCrossSurfaceContext := testFlightContext(queryTokens) &&
+		(appStoreContext(queryTokens) || appReviewContext(queryTokens))
 	hasExplicitDashboardContext := explicitReleaseDashboardIntent(queryTokens)
 	hasScopedReleaseContext := tokenContains(queryTokens, "phased") ||
 		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review"))

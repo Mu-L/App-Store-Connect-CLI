@@ -225,7 +225,10 @@ func TestScopedCanonicalIntentPrefersMostSpecificNamedLeaf(t *testing.T) {
 		{name: "analytics app clips split", query: []string{"app", "clips", "analytics", "dashboard"}, expected: "asc web analytics app-clips"},
 		{name: "analytics overview fallback", query: []string{"analytics", "overview"}, expected: "asc web analytics overview"},
 		{name: "beta cancellation stays on TestFlight", query: []string{"cancel", "beta", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
+		{name: "beta app review cancellation stays on TestFlight", query: []string{"cancel", "beta", "app", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
 		{name: "cross-surface cancellation stays on App Store", query: []string{"cancel", "testflight", "app", "store", "submission", "status"}, expected: "asc submit cancel"},
+		{name: "agreement download", query: []string{"download", "apple", "developer", "agreement", "status"}, expected: "asc web agreements download"},
+		{name: "Xcode Cloud workflow duplicate", query: []string{"duplicate", "xcode", "cloud", "workflow", "status"}, expected: "asc xcode-cloud workflows duplicate"},
 	}
 
 	for _, test := range tests {
