@@ -1,12 +1,16 @@
 package xcode
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/bitrise-io/go-xcode/xcodeproject/serialized"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
@@ -123,11 +127,17 @@ func TestBuildSigningPlanRejectsOversizedXCConfig(t *testing.T) {
 		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
 	}`)
 
+	// An internal xcconfig that cannot be fully read is not merely a blocker:
+	// unread assignments may name an artifact path, so the plan is refused
+	// outright rather than serialized in a blocked state.
 	plan, err := BuildSigningPlan(SigningPlanOptions{
 		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
 	})
-	if err != nil || plan == nil || plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "exceeds") {
-		t.Fatalf("BuildSigningPlan() = plan %#v, error %v; want blocked strict oversized-source rejection", plan, err)
+	if err == nil || !strings.Contains(err.Error(), signingIncompleteInternalXCConfigMessage) {
+		t.Fatalf("BuildSigningPlan() error = %v, want incomplete internal xcconfig rejection", err)
+	}
+	if plan != nil {
+		t.Fatalf("BuildSigningPlan() = %#v, want no plan for an unreadable internal xcconfig", plan)
 	}
 }
 
@@ -281,6 +291,106 @@ func TestSigningApplyRefusesExistingReceiptBeforeMutation(t *testing.T) {
 	}
 	if after := mustReadVersionTestFile(t, plan.ReceiptPath); after != existingReceipt {
 		t.Fatalf("existing receipt changed: %q", after)
+	}
+}
+
+func TestSigningApplyKeepsCompletedReceiptWhenRetainedCloseFails(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+
+	injected := errors.New("injected retained close failure")
+	originalClose := closeVersionWritesFn
+	closeVersionWritesFn = func(writes []preparedVersionWrite) error {
+		if err := originalClose(writes); err != nil {
+			return errors.Join(err, injected)
+		}
+		return injected
+	}
+	t.Cleanup(func() { closeVersionWritesFn = originalClose })
+
+	result, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v, want success when only post-publish close fails", err)
+	}
+	if result == nil || !result.Completed {
+		t.Fatalf("ApplySigningPlan() result = %#v, want completed receipt", result)
+	}
+	if _, statErr := os.Stat(plan.ReceiptPath); statErr != nil {
+		t.Fatalf("receipt after retained close failure = %v, want present", statErr)
+	}
+}
+
+func TestSigningPathLexicallyContainedUsesLinuxVolumeSemantics(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousFn := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "linux"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousFn
+	})
+
+	root := "/mnt/vfat/Project"
+	variantPath := "/mnt/vfat/project/Config.xcconfig"
+	project := &structuredVersionProject{rootDir: root}
+	if signingPathDefinitelyExternal(project, variantPath) {
+		t.Fatalf("linux case-variant path %q was treated as definitely external", variantPath)
+	}
+	if !signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("linux case-variant path %q was not contained in %q", variantPath, root)
+	}
+
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	if signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("linux case-variant path %q was authorized on a known case-sensitive volume", variantPath)
+	}
+}
+
+func TestSigningArtifactLexicalPathEqualUsesVolumeSeamOnLinux(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousFn := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "linux"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousFn
+	})
+	if !signingArtifactLexicalPathEqual("/mnt/vfat/plan.json", "/mnt/vfat/PLAN.json") {
+		t.Fatal("linux case-insensitive volume did not treat PLAN.json as an artifact alias")
+	}
+}
+
+func TestWriteSigningPlanArtifactRejectsSymlinkParent(t *testing.T) {
+	realParent := t.TempDir()
+	linkParent := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatalf("Symlink(parent) error = %v", err)
+	}
+	plan := &SigningPlan{
+		SchemaVersion: 1,
+		Command:       "asc xcode signing plan",
+		PlanPath:      filepath.Join(linkParent, "plan.json"),
+		Ready:         true,
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v, want symlink parent rejection", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(realParent, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact through symlink parent = %v, want absent", statErr)
 	}
 }
 
@@ -803,6 +913,113 @@ func TestSigningApplyRechecksSourcesBeforeReceipt(t *testing.T) {
 	}
 }
 
+func TestSigningApplyRejectsOptionalIncludeAppearingAfterPreparation(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	contents := mustReadVersionTestFile(t, appXCConfig)
+	contents = strings.Replace(contents, `#include "Shared.xcconfig"`, "#include? \"Missing.xcconfig\"\n#include \"Shared.xcconfig\"", 1)
+	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if len(plan.MissingOptionalIncludes) != 1 {
+		t.Fatalf("missing optional includes = %#v, want one assertion", plan.MissingOptionalIncludes)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+
+	missingPath := plan.MissingOptionalIncludes[0]
+	projectPath := filepath.Join(project, "project.pbxproj")
+	projectBefore := mustReadVersionTestFile(t, projectPath)
+	originalHook := beforeSigningCommitForTest
+	beforeSigningCommitForTest = func() {
+		beforeSigningCommitForTest = nil
+		if err := os.WriteFile(missingPath, []byte("CODE_SIGN_STYLE = late;\n"), 0o640); err != nil {
+			t.Fatalf("create late optional include: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeSigningCommitForTest = originalHook })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "optional xcconfig include appeared") {
+		t.Fatalf("ApplySigningPlan() error = %v, want late optional-include race rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, projectPath); after != projectBefore {
+		t.Fatal("late optional-include rejection modified the project")
+	}
+	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after late optional-include rejection = %v, want absent", statErr)
+	}
+}
+
+func TestSigningApplyRejectsOptionalIncludeAppearingBeforeReceipt(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	contents := mustReadVersionTestFile(t, appXCConfig)
+	contents = strings.Replace(contents, `#include "Shared.xcconfig"`, "#include? \"Missing.xcconfig\"\n#include \"Shared.xcconfig\"", 1)
+	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if len(plan.MissingOptionalIncludes) != 1 {
+		t.Fatalf("missing optional includes = %#v, want one assertion", plan.MissingOptionalIncludes)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+
+	missingPath := plan.MissingOptionalIncludes[0]
+	projectPath := filepath.Join(project, "project.pbxproj")
+	projectBefore := mustReadVersionTestFile(t, projectPath)
+	originalWriter := atomicWriteVersionFileFn
+	atomicWriteVersionFileFn = func(write preparedVersionWrite, data []byte) (*rootfs.FileIdentity, error) {
+		identity, err := originalWriter(write, data)
+		if err == nil && !write.createOnly {
+			if createErr := os.WriteFile(missingPath, []byte("CODE_SIGN_STYLE = late;\n"), 0o640); createErr != nil {
+				t.Fatalf("create late optional include: %v", createErr)
+			}
+		}
+		return identity, err
+	}
+	t.Cleanup(func() { atomicWriteVersionFileFn = originalWriter })
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "before receipt") {
+		t.Fatalf("ApplySigningPlan() error = %v, want final optional-include race rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, projectPath); after != projectBefore {
+		t.Fatal("late optional-include rejection left the ordinary project write behind")
+	}
+	if _, statErr := os.Lstat(plan.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after final optional-include rejection = %v, want absent", statErr)
+	}
+}
+
 func TestSigningPlanUsesExclusiveXCConfigWhenSelected(t *testing.T) {
 	requireStrictSigningPlatform(t)
 	project := writeStructuredVersionProject(t, true)
@@ -926,21 +1143,18 @@ func TestSigningPlanBlocksUnterminatedQuotedSigningValue(t *testing.T) {
 	plan, err := BuildSigningPlan(SigningPlanOptions{
 		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
 	})
-	if err != nil {
-		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
-	}
-	if plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "unterminated quote") {
-		t.Fatalf("BuildSigningPlan() = ready %t, blockers %#v", plan.Ready, plan.Blockers)
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want incomplete internal collection to fail closed", plan, err)
 	}
 	if after := mustReadVersionTestFile(t, sharedPath); after != before {
 		t.Fatal("planning a malformed quoted assignment modified the xcconfig")
 	}
 }
 
-func TestSigningPlanBlocksUnsafeQuotedXCConfigValue(t *testing.T) {
+func TestSigningPlanBlocksUnsafeUnquotedXCConfigValue(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
-	before := `PROVISIONING_PROFILE_SPECIFIER = "Old Profile"` + "\r\n" + mustReadVersionTestFile(t, sharedPath)
+	before := `PROVISIONING_PROFILE_SPECIFIER = Old Profile` + "\r\n" + mustReadVersionTestFile(t, sharedPath)
 	if err := os.WriteFile(sharedPath, []byte(before), 0o640); err != nil {
 		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
 	}
@@ -965,6 +1179,74 @@ func TestSigningPlanBlocksUnsafeQuotedXCConfigValue(t *testing.T) {
 	}
 	if after := mustReadVersionTestFile(t, sharedPath); after != before {
 		t.Fatal("planning an unsafe quoted value modified the xcconfig")
+	}
+}
+
+func TestSigningPlanApplyIsIdempotentForQuotedProfileSpecifierEscapes(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		quote string
+		value string
+	}{
+		{name: "double quoted", quote: `"`, value: `Profile\Path "Preview"\Tail\`},
+		{name: "single quoted", quote: `'`, value: `Profile\Path 'Preview'\Tail\`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, true)
+			sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+			shared := mustReadVersionTestFile(t, sharedPath)
+			shared = fmt.Sprintf("PROVISIONING_PROFILE_SPECIFIER = %sOld Profile%s\r\n", test.quote, test.quote) + shared
+			if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+				t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+			}
+
+			encodedValue, err := json.Marshal(test.value)
+			if err != nil {
+				t.Fatalf("json.Marshal(profile specifier) error = %v", err)
+			}
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			settings := fmt.Sprintf(`{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[
+					{"name":"Debug","settings":{"PROVISIONING_PROFILE_SPECIFIER":%s}},
+					{"name":"Release","settings":{"PROVISIONING_PROFILE_SPECIFIER":%s}}
+				]}]
+			}`, encodedValue, encodedValue)
+			writeSigningSettingsTestFile(t, settingsPath, settings)
+
+			first, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "first"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan(first) error = %v", err)
+			}
+			if !first.Ready || len(first.Changes) == 0 {
+				t.Fatalf("first plan = ready=%t changes=%#v blockers=%#v, want a ready update", first.Ready, first.Changes, first.Blockers)
+			}
+			if err := WriteSigningPlanArtifact(first, false); err != nil {
+				t.Fatalf("WriteSigningPlanArtifact(first) error = %v", err)
+			}
+			if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: first.PlanPath}); err != nil {
+				t.Fatalf("ApplySigningPlan(first) error = %v", err)
+			}
+
+			updated := mustReadVersionTestFile(t, sharedPath)
+			serialized := quoteXCConfigValue(test.value, test.quote)
+			if !strings.Contains(updated, "PROVISIONING_PROFILE_SPECIFIER = "+serialized) {
+				t.Fatalf("applied xcconfig does not preserve the logical quoted value: %q", updated)
+			}
+
+			second, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "second"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan(second) error = %v", err)
+			}
+			if !second.Ready || len(second.Changes) != 0 {
+				t.Fatalf("second plan = ready=%t changes=%#v blockers=%#v, want ready no-op", second.Ready, second.Changes, second.Blockers)
+			}
+		})
 	}
 }
 
@@ -1288,6 +1570,44 @@ func TestSigningXCConfigOperationKeyPreservesHardLinkPathIntent(t *testing.T) {
 	}
 }
 
+func TestSigningXCConfigOperationKeyCoalescesParentSymlinkDirectoryEntry(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "Configs")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("Mkdir(Configs) error = %v", err)
+	}
+	canonicalPath := filepath.Join(realDir, "Shared.xcconfig")
+	if err := os.WriteFile(canonicalPath, []byte("CODE_SIGN_STYLE = Automatic\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(Shared.xcconfig) error = %v", err)
+	}
+	aliasDir := filepath.Join(root, "AliasDir")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	aliasPath := filepath.Join(aliasDir, "Shared.xcconfig")
+	canonicalInfo, err := os.Stat(canonicalPath)
+	if err != nil {
+		t.Fatalf("Stat(canonical) error = %v", err)
+	}
+	aliasInfo, err := os.Stat(aliasPath)
+	if err != nil {
+		t.Fatalf("Stat(alias) error = %v", err)
+	}
+	if !os.SameFile(canonicalInfo, aliasInfo) {
+		t.Fatal("parent-symlink alias did not resolve to the same file")
+	}
+	identities := map[string]string{
+		normalizeSigningLexicalPath(canonicalPath): "shared-identity",
+		normalizeSigningLexicalPath(aliasPath):     "shared-identity",
+	}
+	if signingXCConfigOperationKey(canonicalPath, identities) != signingXCConfigOperationKey(aliasPath, identities) {
+		t.Fatal("parent-symlink aliases of one directory entry must share an operation key")
+	}
+	if signingXCConfigPhysicalKey(canonicalPath, identities) != signingXCConfigPhysicalKey(aliasPath, identities) {
+		t.Fatal("parent-symlink aliases must retain one physical identity")
+	}
+}
+
 func TestResolveSigningSharedCandidatesKeepsProvenWindowsCaseDistinctFilesSeparate(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
@@ -1438,15 +1758,11 @@ func TestSigningPlanKeepsUnselectedUnresolvedEntitlementsAsUncertainty(t *testin
 	plan, err := BuildSigningPlan(SigningPlanOptions{
 		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
 	})
-	if err != nil {
-		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan with selected target preserved", err)
+	if err == nil || !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS value cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() error = %v, want fail-closed unbounded entitlement error", err)
 	}
-	if plan.Ready {
-		t.Fatalf("unselected unresolved entitlement produced ready plan: %#v", plan)
-	}
-	blockers := strings.Join(plan.Blockers, "\n")
-	if !strings.Contains(blockers, "Widget") || !strings.Contains(blockers, "CODE_SIGN_ENTITLEMENTS") {
-		t.Fatalf("plan blockers = %#v, want unselected entitlement uncertainty", plan.Blockers)
+	if plan != nil {
+		t.Fatalf("unselected unresolved entitlement produced a plan: %#v", plan)
 	}
 }
 
@@ -1497,6 +1813,688 @@ func TestSigningPlanIgnoresShadowedUnresolvedXCConfigEntitlements(t *testing.T) 
 				t.Fatalf("shadowed entitlement expression blocked plan: %#v", plan.Blockers)
 			}
 		})
+	}
+}
+
+func TestSigningPlanProtectsUnconditionalEntitlementWhenConditionalResolutionDiverges(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	widgetXCConfig := filepath.Join(projectRoot, "Widget.xcconfig")
+	const widgetReference = "BBBBBBBBBBBBBBBBBBBBBBBB"
+	projectContents := mustReadVersionTestFile(t, filepath.Join(project, "project.pbxproj"))
+	fileReference := "\t\t" + widgetReference + " /* Widget.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Widget.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(projectContents, marker) {
+		t.Fatalf("project fixture is missing project object marker")
+	}
+	projectContents = strings.Replace(projectContents, marker, fileReference+marker, 1)
+	widgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	updatedWidgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = " + widgetReference + "; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	if !strings.Contains(projectContents, widgetConfiguration) {
+		t.Fatalf("project fixture is missing Widget Debug configuration")
+	}
+	projectContents = strings.Replace(projectContents, widgetConfiguration, updatedWidgetConfiguration, 1)
+	if err := os.WriteFile(filepath.Join(project, "project.pbxproj"), []byte(projectContents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+	if err := os.WriteFile(widgetXCConfig, []byte(
+		"CODE_SIGN_ENTITLEMENTS = plan.json\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = Widget.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	planPath := filepath.Join(projectRoot, "plan.json")
+	const existingPlan = "existing entitlement bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(plan) error = %v", err)
+	}
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want unconditional entitlement alias rejection", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("unconditional entitlement was overwritten during divergent-resolution planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsConditionalInheritedEntitlementPath(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	composedPath := filepath.Join(projectRoot, "BaseSuffix")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+	attachSigningWidgetXCConfig(
+		t, project,
+		"CODE_SIGN_ENTITLEMENTS = Base\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = $(inherited)Suffix\n",
+	)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want conditional inherited entitlement path rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsConditionalComposedEntitlementAppendPath(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	composedPath := filepath.Join(projectRoot, "Base Suffix")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+	attachSigningWidgetXCConfig(
+		t, project,
+		"CODE_SIGN_ENTITLEMENTS = Base\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] += Suffix\n",
+	)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want conditional composed entitlement append path rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsComposedEntitlementAppendPath(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	composedPath := filepath.Join(projectRoot, "Base Suffix")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+	attachSigningWidgetXCConfig(
+		t, project,
+		"CODE_SIGN_ENTITLEMENTS = Base\n"+
+			"CODE_SIGN_ENTITLEMENTS += Suffix\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = Widget.entitlements\n",
+	)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want composed entitlement append path rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanSkipsShadowedConditionalAfterProjectEntitlementBase(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	widgetXCConfig := filepath.Join(projectRoot, "Widget.xcconfig")
+	const widgetReference = "BBBBBBBBBBBBBBBBBBBBBBBB"
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	fileReference := "\t\t" + widgetReference + " /* Widget.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Widget.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+marker, 1)
+	widgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	updatedWidgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = " + widgetReference + "; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	if !strings.Contains(contents, widgetConfiguration) {
+		t.Fatal("project fixture is missing Widget Debug configuration")
+	}
+	contents = strings.Replace(contents, widgetConfiguration, updatedWidgetConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991", `CODE_SIGN_ENTITLEMENTS = safe.entitlements;`)
+	if err := os.WriteFile(widgetXCConfig, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = other.entitlements\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= plan.json\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	planPath := filepath.Join(projectRoot, "plan.json")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(plan) error = %v", err)
+	}
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(t.TempDir(), "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want shadowed conditional to be omitted", err)
+	}
+	if plan.Ready {
+		t.Fatalf("BuildSigningPlan() produced ready plan despite divergent conditional resolution: %#v", plan)
+	}
+	if strings.Contains(strings.Join(plan.Blockers, "\n"), "aliases project input") {
+		t.Fatalf("shadowed conditional was incorrectly treated as an artifact alias: %#v", plan.Blockers)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("plan artifact changed during planning: %q", got)
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesOmitProvenShadowedAssignments(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS = Shadowed.entitlements\n"+
+			"CODE_SIGN_ENTITLEMENTS = Current.entitlements\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = Conditional.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if candidates[key][0] {
+		t.Fatal("assignment shadowed by a later unconditional value remained a candidate")
+	}
+	if !candidates[key][1] || !candidates[key][2] {
+		t.Fatalf("live entitlement assignments = %#v, want current unconditional and conditional values", candidates[key])
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesSkipConditionalDefaultAfterDivergentOverride(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS = safe.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = other.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= shadowed.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if !candidates[key][0] || !candidates[key][1] {
+		t.Fatalf("live entitlement assignments = %#v, want unconditional and divergent conditional values", candidates[key])
+	}
+	if candidates[key][2] {
+		t.Fatal("conditional ?= assignment shadowed by unconditional value remained a candidate")
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesKeepConditionalValueBeforeSameSelectorDefault(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = first.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= fallback.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if !candidates[key][0] {
+		t.Fatalf("same-selector conditional assignment = %#v, want the earlier value retained", candidates[key])
+	}
+	if candidates[key][1] {
+		t.Fatal("same-selector ?= fallback incorrectly replaced the earlier conditional value")
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesKeepSameSelectorInheritedAssignment(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = first.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = $(inherited) appended.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if !candidates[key][0] || !candidates[key][1] {
+		t.Fatalf("same-selector inherited assignments = %#v, want both assignments retained", candidates[key])
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesUseInheritedBaseState(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = other.entitlements\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] ?= shadowed.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	projectConfiguration := &versionConfiguration{
+		id:           "project-debug",
+		name:         "Debug",
+		projectLevel: true,
+		buildSettings: serialized.Object{
+			"CODE_SIGN_ENTITLEMENTS": "safe.entitlements",
+		},
+	}
+	targetConfiguration := &versionConfiguration{
+		id:     "widget-debug",
+		target: "Widget",
+		name:   "Debug",
+	}
+	project := &structuredVersionProject{
+		rootDir:        root,
+		configurations: []*versionConfiguration{projectConfiguration, targetConfiguration},
+	}
+	resolver := newSigningSettingResolver(project, map[string][]string{targetConfiguration.id: {path}}, false, nil)
+	base, err := resolver.resolveXCConfigBaseWithContext(
+		targetConfiguration,
+		targetConfiguration,
+		path,
+		"CODE_SIGN_ENTITLEMENTS",
+	)
+	if err != nil {
+		t.Fatalf("resolveXCConfigBaseWithContext() error = %v", err)
+	}
+	if !base.found {
+		t.Fatalf("inherited base = %#v, want a found project-level value", base)
+	}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(targetConfiguration, []string{path}, resolver, base)
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if !candidates[key][0] {
+		t.Fatalf("divergent conditional assignment = %#v, want protected candidate", candidates[key])
+	}
+	if candidates[key][1] {
+		t.Fatal("conditional ?= assignment remained live despite an inherited project-level value")
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesReplayRepeatedIncludesInOrder(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	childPath := filepath.Join(root, "Child.xcconfig")
+	if err := os.WriteFile(rootPath, []byte(
+		"#include \"Child.xcconfig\"\n"+
+			"CODE_SIGN_ENTITLEMENTS = safe.entitlements\n"+
+			"#include \"Child.xcconfig\"\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = other.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Root.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(childPath, []byte("CODE_SIGN_ENTITLEMENTS = child.entitlements\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(Child.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {rootPath, childPath}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{rootPath, childPath}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	rootKey := normalizeSigningLexicalPath(rootPath)
+	childKey := normalizeSigningLexicalPath(childPath)
+	if candidates[rootKey][1] {
+		t.Fatal("unconditional value shadowed by a later repeated include remained a candidate")
+	}
+	if !candidates[childKey][0] || !candidates[rootKey][3] {
+		t.Fatalf("live entitlement assignments = %#v, want repeated include and divergent selector", candidates)
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesKeepOnlyFinalRepeatedSelectorAssignment(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = iphone.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = iphone-final.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = macos.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if candidates[key][0] {
+		t.Fatal("earlier same-selector assignment remained a candidate")
+	}
+	if !candidates[key][1] || !candidates[key][2] {
+		t.Fatalf("live entitlement assignments = %#v, want final same-selector and different-selector values", candidates[key])
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesRespectSelectorSpecificity(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = iphone.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*][arch=arm64] ?= arm64-default.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if !candidates[key][0] || !candidates[key][1] {
+		t.Fatalf("selector-specific assignments = %#v, want both conditional values", candidates[key])
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesNormalizeReorderedSelectors(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Widget.xcconfig")
+	if err := os.WriteFile(path, []byte(
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*][arch=arm64] = first.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[arch=arm64][sdk=iphoneos*] = final.entitlements\n"+"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*][arch=x86_64] = different.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	key := normalizeSigningLexicalPath(path)
+	if candidates[key][0] {
+		t.Fatal("earlier assignment with reordered equivalent selectors remained a candidate")
+	}
+	if !candidates[key][1] || !candidates[key][2] {
+		t.Fatalf("selector candidates = %#v, want final equivalent and genuinely different selectors", candidates[key])
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesKeepCaseDistinctPaths(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "windows"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	upperPath := filepath.Join(root, "Widget.xcconfig")
+	lowerPath := filepath.Join(root, "widget.xcconfig")
+	if _, err := os.Lstat(lowerPath); err == nil {
+		t.Skip("temporary filesystem is case-insensitive")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Lstat(case variant) error = %v", err)
+	}
+	if err := os.WriteFile(upperPath, []byte(
+		"#include \"widget.xcconfig\"\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = upper.entitlements\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(lowerPath, []byte("CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = lower.entitlements\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(widget.xcconfig) error = %v", err)
+	}
+	previousReader := signingXCConfigReadFileFn
+	signingXCConfigReadFileFn = func(path string, _ int64) ([]byte, error) {
+		switch filepath.Clean(path) {
+		case upperPath:
+			return []byte("#include \"widget.xcconfig\"\nCODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = upper.entitlements\n"), nil
+		case lowerPath:
+			return []byte("CODE_SIGN_ENTITLEMENTS[sdk=macosx*] = lower.entitlements\n"), nil
+		default:
+			return nil, os.ErrNotExist
+		}
+	}
+	t.Cleanup(func() { signingXCConfigReadFileFn = previousReader })
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {upperPath, lowerPath}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{upperPath, lowerPath}, resolver, xcconfigResolvedValue{})
+	if err != nil {
+		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
+	}
+	if !candidates[normalizeSigningLexicalPath(upperPath)][1] || !candidates[normalizeSigningLexicalPath(lowerPath)][0] {
+		t.Fatalf("case-distinct candidates = %#v, want both exact paths", candidates)
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesCoalesceCaseVariantSelfInclude(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	previousIdentity := signingXCConfigIdentityFn
+	previousReader := signingXCConfigReadFileFn
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+		signingXCConfigIdentityFn = previousIdentity
+		signingXCConfigReadFileFn = previousReader
+	})
+
+	for _, platform := range []string{"darwin", "windows"} {
+		t.Run(platform, func(t *testing.T) {
+			runtimeGOOS = platform
+			signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+
+			root := t.TempDir()
+			rootPath := filepath.Join(root, "Widget.xcconfig")
+			if err := os.WriteFile(rootPath, []byte(
+				"#include \"widget.xcconfig\"\n"+
+					"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = widget.entitlements\n",
+			), 0o640); err != nil {
+				t.Fatalf("WriteFile(Widget.xcconfig) error = %v", err)
+			}
+			identity, err := os.Stat(rootPath)
+			if err != nil {
+				t.Fatalf("Stat(Widget.xcconfig) error = %v", err)
+			}
+			variantPath := filepath.Join(root, "widget.xcconfig")
+			var readPaths []string
+			signingXCConfigReadFileFn = func(path string, _ int64) ([]byte, error) {
+				readPaths = append(readPaths, filepath.Clean(path))
+				return os.ReadFile(path)
+			}
+			signingXCConfigIdentityFn = func(path string) (os.FileInfo, error) {
+				if filepath.Clean(path) == variantPath {
+					return identity, nil
+				}
+				return previousIdentity(path)
+			}
+			project := &structuredVersionProject{rootDir: root}
+			resolver := newSigningSettingResolver(project, map[string][]string{"widget": {rootPath}}, false, nil)
+			configuration := &versionConfiguration{id: "widget"}
+			candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{rootPath}, resolver, xcconfigResolvedValue{})
+			if err != nil {
+				t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v, want case-variant self-include to coalesce", err)
+			}
+			if !candidates[normalizeSigningLexicalPath(rootPath)][1] {
+				t.Fatalf("case-variant self-include candidates = %#v, want root assignment", candidates)
+			}
+			if len(readPaths) != 1 || readPaths[0] != normalizeSigningLexicalPath(rootPath) {
+				t.Fatalf("case-variant self-include reads = %#v, want one canonical read", readPaths)
+			}
+		})
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesRejectUncollectedPathBeforeProbes(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	previousIdentity := signingXCConfigIdentityFn
+	previousReader := signingXCConfigReadFileFn
+	previousStat := signingXCConfigStatFileFn
+	runtimeGOOS = "darwin"
+	caseChecks := 0
+	identityChecks := 0
+	readChecks := 0
+	statChecks := 0
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) {
+		caseChecks++
+		return true, true
+	}
+	signingXCConfigIdentityFn = func(string) (os.FileInfo, error) {
+		identityChecks++
+		return nil, errors.New("identity probe must not run")
+	}
+	signingXCConfigReadFileFn = func(string, int64) ([]byte, error) {
+		readChecks++
+		return nil, errors.New("read probe must not run")
+	}
+	signingXCConfigStatFileFn = func(string) (os.FileInfo, error) {
+		statChecks++
+		return nil, errors.New("stat probe must not run")
+	}
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+		signingXCConfigIdentityFn = previousIdentity
+		signingXCConfigReadFileFn = previousReader
+		signingXCConfigStatFileFn = previousStat
+	})
+
+	root := t.TempDir()
+	authorizedPath := filepath.Join(root, "Widget.xcconfig")
+	// Use a clearly external path: a Darwin case-insensitive volume probe must
+	// not be needed to establish that it is unauthorized.
+	uncollectedPath := filepath.Join(t.TempDir(), "Outside.xcconfig")
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {authorizedPath}}, false, nil)
+	configuration := &versionConfiguration{id: "widget"}
+	_, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{uncollectedPath}, resolver, xcconfigResolvedValue{})
+	if err == nil {
+		t.Fatal("uncollected case-equivalent xcconfig unexpectedly accepted")
+	}
+	if caseChecks != 0 || identityChecks != 0 || readChecks != 0 || statChecks != 0 {
+		t.Fatalf("unauthorized xcconfig probes = case:%d identity:%d read:%d stat:%d, want all zero", caseChecks, identityChecks, readChecks, statChecks)
+	}
+}
+
+func TestSigningXCConfigEntitlementCandidatesDoNotReadIncludeCollectedForAnotherConfiguration(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	previousIdentity := signingXCConfigIdentityFn
+	previousReader := signingXCConfigReadFileFn
+	previousStat := signingXCConfigStatFileFn
+	runtimeGOOS = "darwin"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	readPaths := make([]string, 0, 1)
+	statPaths := make([]string, 0, 1)
+	identityPaths := make([]string, 0, 1)
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+		signingXCConfigIdentityFn = previousIdentity
+		signingXCConfigReadFileFn = previousReader
+		signingXCConfigStatFileFn = previousStat
+	})
+
+	root := t.TempDir()
+	appPath := filepath.Join(root, "App.xcconfig")
+	otherPath := filepath.Join(root, "Other.xcconfig")
+	if err := os.WriteFile(appPath, []byte("#include \"Other.xcconfig\"\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(otherPath, []byte("CODE_SIGN_ENTITLEMENTS = other.entitlements\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(Other.xcconfig) error = %v", err)
+	}
+	signingXCConfigReadFileFn = func(path string, _ int64) ([]byte, error) {
+		path = filepath.Clean(path)
+		readPaths = append(readPaths, path)
+		if path == appPath {
+			return []byte("#include \"Other.xcconfig\"\n"), nil
+		}
+		return nil, errors.New("unexpected cross-configuration read")
+	}
+	signingXCConfigStatFileFn = func(path string) (os.FileInfo, error) {
+		statPaths = append(statPaths, filepath.Clean(path))
+		return os.Stat(path)
+	}
+	signingXCConfigIdentityFn = func(path string) (os.FileInfo, error) {
+		identityPaths = append(identityPaths, filepath.Clean(path))
+		return os.Stat(path)
+	}
+	project := &structuredVersionProject{rootDir: root}
+	resolver := newSigningSettingResolver(project, map[string][]string{
+		"app":   {appPath},
+		"other": {otherPath},
+	}, false, nil)
+	configuration := &versionConfiguration{id: "app"}
+	_, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{appPath}, resolver, xcconfigResolvedValue{})
+	if err == nil {
+		t.Fatal("cross-configuration include unexpectedly resolved")
+	}
+	if len(readPaths) != 1 || readPaths[0] != appPath {
+		t.Fatalf("cross-configuration reads = %#v, want only %q", readPaths, appPath)
+	}
+	if len(statPaths) != 0 || len(identityPaths) != 1 || identityPaths[0] != appPath {
+		t.Fatalf("cross-configuration probes = stat:%#v identity:%#v, want only authorized root identity %q", statPaths, identityPaths, appPath)
 	}
 }
 
@@ -1573,7 +2571,13 @@ func TestSigningPlanClassifiesXCConfigEntitlementPathByConsumer(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+				if test.wantPlan {
+					if !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS value cannot be safely inventoried") {
+						t.Fatalf("BuildSigningPlan() error = %v, want fail-closed unselected entitlement error", err)
+					}
+					return
+				}
+				t.Fatalf("BuildSigningPlan() error = %v, want selected invalid entitlement failure", err)
 			}
 			if (plan != nil) != test.wantPlan || plan == nil || plan.Ready != test.wantReady {
 				t.Fatalf("plan = %#v, want present=%t ready=%t", plan, test.wantPlan, test.wantReady)
@@ -1801,6 +2805,40 @@ func TestSigningPlanExternalXCConfigRequiresOptInForPlanAndApply(t *testing.T) {
 }
 
 func TestSigningPlanRejectsUnauthorizedMalformedExternalXCConfigBeforeReading(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	previousIdentity := signingXCConfigIdentityFn
+	previousStat := signingXCConfigStatFileFn
+	previousReader := signingXCConfigReadFileFn
+	runtimeGOOS = "darwin"
+	caseChecks := 0
+	identityChecks := 0
+	statChecks := 0
+	readChecks := 0
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) {
+		caseChecks++
+		return true, true
+	}
+	signingXCConfigIdentityFn = func(string) (os.FileInfo, error) {
+		identityChecks++
+		return nil, errors.New("identity probe must not run")
+	}
+	signingXCConfigStatFileFn = func(string) (os.FileInfo, error) {
+		statChecks++
+		return nil, errors.New("stat probe must not run")
+	}
+	signingXCConfigReadFileFn = func(string, int64) ([]byte, error) {
+		readChecks++
+		return nil, errors.New("read probe must not run")
+	}
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+		signingXCConfigIdentityFn = previousIdentity
+		signingXCConfigStatFileFn = previousStat
+		signingXCConfigReadFileFn = previousReader
+	})
+
 	project, externalDir := externalXCConfigProject(t)
 	externalPath := filepath.Join(externalDir, "App.xcconfig")
 	if err := os.WriteFile(externalPath, []byte("/* unterminated\n"), 0o640); err != nil {
@@ -1818,6 +2856,125 @@ func TestSigningPlanRejectsUnauthorizedMalformedExternalXCConfigBeforeReading(t 
 	})
 	if err == nil || !strings.Contains(err.Error(), "unauthorized external xcconfig cannot be safely inventoried without --allow-external-xcconfig") {
 		t.Fatalf("BuildSigningPlan() error = %v, want generic unauthorized external failure without reading source", err)
+	}
+	if caseChecks != 0 || identityChecks != 0 || statChecks != 0 || readChecks != 0 {
+		t.Fatalf("unauthorized external probes = case:%d identity:%d stat:%d read:%d, want all zero", caseChecks, identityChecks, statChecks, readChecks)
+	}
+}
+
+func TestSigningPlanRejectsCaseVariantRootOnSensitiveDarwinBeforeArtifactOverwrite(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	previousIdentity := signingXCConfigIdentityFn
+	previousStat := signingXCConfigStatFileFn
+	previousReader := signingXCConfigReadFileFn
+	previousProspective := signingResolveProspectivePathFn
+	previousArtifactInfo := signingArtifactPathInfoFn
+	runtimeGOOS = "darwin"
+	caseChecks := 0
+	identityChecks := 0
+	statChecks := 0
+	readChecks := 0
+	prospectiveExternalChecks := 0
+	artifactExternalChecks := 0
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) {
+		caseChecks++
+		return false, true
+	}
+	signingXCConfigIdentityFn = func(path string) (os.FileInfo, error) {
+		identityChecks++
+		t.Fatalf("case-sensitive external xcconfig identity probe: %s", path)
+		return nil, errors.New("identity probe must not run")
+	}
+	signingXCConfigStatFileFn = func(path string) (os.FileInfo, error) {
+		statChecks++
+		t.Fatalf("case-sensitive external xcconfig stat probe: %s", path)
+		return nil, errors.New("stat probe must not run")
+	}
+	signingXCConfigReadFileFn = func(path string, limit int64) ([]byte, error) {
+		readChecks++
+		t.Fatalf("case-sensitive external xcconfig read probe: %s", path)
+		return nil, errors.New("read probe must not run")
+	}
+	signingResolveProspectivePathFn = func(path string) (string, error) {
+		if strings.Contains(strings.ToLower(path), "app.xcconfig") {
+			prospectiveExternalChecks++
+			t.Fatalf("case-sensitive external xcconfig prospective probe: %s", path)
+		}
+		return previousProspective(path)
+	}
+	signingArtifactPathInfoFn = func(path string) (os.FileInfo, error) {
+		if strings.Contains(strings.ToLower(path), "app.xcconfig") {
+			artifactExternalChecks++
+			t.Fatalf("case-sensitive external xcconfig artifact probe: %s", path)
+		}
+		return previousArtifactInfo(path)
+	}
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+		signingXCConfigIdentityFn = previousIdentity
+		signingXCConfigStatFileFn = previousStat
+		signingXCConfigReadFileFn = previousReader
+		signingResolveProspectivePathFn = previousProspective
+		signingArtifactPathInfoFn = previousArtifactInfo
+	})
+
+	project := writeStructuredVersionProject(t, true)
+	projectRoot := filepath.Dir(project)
+	rootParent := filepath.Dir(projectRoot)
+	rootName := filepath.Base(rootParent)
+	variantName := strings.ToLower(rootName[:1]) + rootName[1:]
+	if variantName == rootName {
+		variantName = strings.ToUpper(rootName[:1]) + rootName[1:]
+	}
+	if variantName == rootName {
+		t.Skip("temporary directory parent has no case variant")
+	}
+	variantRoot := filepath.Join(filepath.Dir(rootParent), variantName, filepath.Base(projectRoot))
+	variantConfig := filepath.Join(variantRoot, "Configs", "App.xcconfig")
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const reference = "path = Configs/App.xcconfig; sourceTree = SOURCE_ROOT;"
+	replacement := "path = \"" + variantConfig + "\"; sourceTree = \"<absolute>\";"
+	if !strings.Contains(contents, reference) {
+		t.Fatalf("project fixture is missing App.xcconfig source-root reference")
+	}
+	contents = strings.Replace(contents, reference, replacement, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(root, "state")
+	planPath := filepath.Join(stateDir, "plan.json")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(state) error = %v", err)
+	}
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(existing plan) error = %v", err)
+	}
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: stateDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), signingUnauthorizedExternalXCConfigMessage) {
+		t.Fatalf("BuildSigningPlan() error = %v, want case-sensitive external authorization failure", err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("existing plan changed after case-sensitive external rejection: %q", got)
+	}
+	if identityChecks != 0 || statChecks != 0 || readChecks != 0 || prospectiveExternalChecks != 0 || artifactExternalChecks != 0 {
+		t.Fatalf("case-sensitive external probes = identity:%d stat:%d read:%d prospective:%d artifact:%d, want all zero", identityChecks, statChecks, readChecks, prospectiveExternalChecks, artifactExternalChecks)
+	}
+	if caseChecks == 0 {
+		t.Fatal("case-sensitive model did not exercise directory case validation")
 	}
 }
 
@@ -2041,23 +3198,14 @@ func TestSigningPlanKeepsAllowedExternalCollectionFailureBlockedWithoutOverwrite
 		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
 		AllowExternalXCConfig: true,
 	})
-	if err != nil {
-		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want incomplete opted-in collection to fail closed", plan, err)
 	}
-	if plan.Ready || len(plan.Blockers) == 0 {
-		t.Fatalf("allowed external collection failure = ready=%t blockers=%#v, want blocked plan", plan.Ready, plan.Blockers)
-	}
-	if err := WriteSigningPlanArtifact(plan, false); err != nil {
-		t.Fatalf("WriteSigningPlanArtifact() error = %v, want safe distinct artifact", err)
-	}
-	if _, err := os.Stat(plan.PlanPath); err != nil {
-		t.Fatalf("blocked plan artifact stat error = %v", err)
-	}
-	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("receipt after blocked plan = %v, want absent", err)
+	if _, statErr := os.Lstat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after incomplete opted-in collection = %v, want absent", statErr)
 	}
 	if after := mustReadVersionTestFile(t, externalPath); after != before {
-		t.Fatalf("external malformed config changed while writing blocked plan: %q", after)
+		t.Fatalf("external malformed config changed while refusing publication: %q", after)
 	}
 }
 
@@ -2129,24 +3277,11 @@ func TestSigningPlanContinuesXCConfigProtectionAfterSelectedCollectionFailure(t 
 		StateDir:              stateDir,
 		AllowExternalXCConfig: true,
 	})
-	if err != nil {
-		t.Fatalf("BuildSigningPlan() distinct artifact error = %v, want blocked plan", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want incomplete opted-in collection to fail closed", plan, err)
 	}
-	if plan.Ready {
-		t.Fatalf("distinct artifact produced ready plan: %#v", plan)
-	}
-	blockers := strings.Join(plan.Blockers, "\n")
-	if !strings.Contains(blockers, "MissingSelected.xcconfig") || !strings.Contains(blockers, "MissingInclude.xcconfig") {
-		t.Fatalf("blocked plan = %#v, want selected and later collection blockers", plan.Blockers)
-	}
-	if err := WriteSigningPlanArtifact(plan, false); err != nil {
-		t.Fatalf("WriteSigningPlanArtifact() error = %v, want safe blocked artifact", err)
-	}
-	if _, err := os.Stat(plan.PlanPath); err != nil {
-		t.Fatalf("blocked plan artifact stat error = %v", err)
-	}
-	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("receipt after blocked plan = %v, want absent", err)
+	if _, statErr := os.Lstat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after incomplete opted-in collection = %v, want absent", statErr)
 	}
 }
 
@@ -2580,6 +3715,59 @@ func TestSigningPlanRetainsInheritedDirectConsumerInSharedConflict(t *testing.T)
 	}
 }
 
+func TestSigningPlanMaterializesSharedMutationWhenInheritedNoOpWouldChange(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	sharedBefore := mustReadVersionTestFile(t, sharedPath)
+	if err := os.WriteFile(sharedPath, []byte("PROVISIONING_PROFILE_SPECIFIER = Base\r\n"+sharedBefore), 0o640); err != nil {
+		t.Fatalf("write shared xcconfig error = %v", err)
+	}
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`PROVISIONING_PROFILE_SPECIFIER = "Prefix $(inherited)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"PROVISIONING_PROFILE_SPECIFIER":"Prefix Base"}},
+			{"name":"Release","settings":{"PROVISIONING_PROFILE_SPECIFIER":"Prefix Base"}}
+		]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got %#v", plan.Blockers)
+	}
+	if len(plan.Changes) != 1 || plan.Changes[0].Configuration != "Release" || plan.Changes[0].Source != "pbxproj" {
+		t.Fatalf("plan changes = %#v, want one Release target-level materialization", plan.Changes)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	if got := mustReadVersionTestFile(t, sharedPath); got != "PROVISIONING_PROFILE_SPECIFIER = Base\r\n"+sharedBefore {
+		t.Fatalf("shared xcconfig changed during target-level materialization: %q", got)
+	}
+
+	secondPlan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "second-state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan(second) error = %v", err)
+	}
+	if !secondPlan.Ready || len(secondPlan.Changes) != 0 {
+		t.Fatalf("second plan = ready=%t changes=%#v blockers=%#v, want both effective values preserved", secondPlan.Ready, secondPlan.Changes, secondPlan.Blockers)
+	}
+}
+
 func TestSigningPlanDigestsXCConfigsUsedOnlyForResolution(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	configDir := filepath.Join(filepath.Dir(project), "Configs")
@@ -3005,6 +4193,126 @@ func TestSigningPlanKeepsStableInheritedAliasNoOp(t *testing.T) {
 	}
 }
 
+func TestSigningPlanTerminatesProjectXCConfigInheritedTraversal(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	projectRoot := filepath.Dir(project)
+	projectConfigPath := filepath.Join(projectRoot, "Configs", "Project.xcconfig")
+	if err := os.WriteFile(projectConfigPath, []byte(
+		"DEVELOPMENT_TEAM = ABCDE12345\n"+
+			"CODE_SIGN_IDENTITY = Apple Development\n"+
+			"CODE_SIGN_IDENTITY = $(inherited) $(DEVELOPMENT_TEAM)\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(project xcconfig) error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	fileReference := `
+		BBBBBBBBBBBBBBBBBBBBBBBB /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/Project.xcconfig; sourceTree = SOURCE_ROOT; };`
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+"\n"+marker, 1)
+	projectConfiguration := "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	updatedConfiguration := "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = BBBBBBBBBBBBBBBBBBBBBBBB; buildSettings = {}; name = Debug; };"
+	if !strings.Contains(contents, projectConfiguration) {
+		t.Fatal("project fixture is missing project Debug configuration")
+	}
+	contents = strings.Replace(contents, projectConfiguration, updatedConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"Apple Development ABCDE12345",
+			"DEVELOPMENT_TEAM":"XYZAB67890"
+		}}]}]
+	}`)
+
+	if _, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	}); err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want inherited project xcconfig traversal to terminate", err)
+	}
+}
+
+func TestSigningPlanMaterializesTopLevelInheritedIdentityWhenTeamChanges(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`DEVELOPMENT_TEAM = ABCDE12345; CODE_SIGN_IDENTITY = "Prefix $(DEVELOPMENT_TEAM)";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_IDENTITY = "Outer $(inherited)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	stateDir := filepath.Join(root, "state")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"Outer Prefix ABCDE12345",
+			"DEVELOPMENT_TEAM":"XYZAB67890"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	var identityChange, teamChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityChange = change
+		case "DEVELOPMENT_TEAM":
+			teamChange = change
+		}
+	}
+	if teamChange == nil {
+		t.Fatalf("plan omitted team change: %#v", plan.Changes)
+	}
+	if identityChange == nil {
+		t.Fatalf("plan treated a top-level $(inherited) identity as a no-op: %#v", plan.Changes)
+	}
+	if identityChange.Source != "pbxproj" || identityChange.NewValue == nil || *identityChange.NewValue != "Outer Prefix ABCDE12345" {
+		t.Fatalf("identity change = %#v, want a literal target-level value", identityChange)
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	result, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	if result == nil || !result.Completed {
+		t.Fatalf("ApplySigningPlan() result = %#v, want completed receipt", result)
+	}
+
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	identity, _, err := newSigningSettingResolver(updated, nil, false, nil).resolveSetting(configuration, "CODE_SIGN_IDENTITY")
+	if err != nil {
+		t.Fatalf("resolve applied identity: %v", err)
+	}
+	if identity != "Outer Prefix ABCDE12345" {
+		t.Fatalf("applied identity = %q, want requested no-op value", identity)
+	}
+}
+
 func TestSigningPlanRevalidatesInheritedNoOpXCConfigReferenceAfterDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
@@ -3286,6 +4594,135 @@ func TestSigningPlanAllowsDirectlyMissingOptionalXCConfigInclude(t *testing.T) {
 	if !plan.Ready {
 		t.Fatalf("optional missing include blocked plan: %#v", plan.Blockers)
 	}
+	missingPath := filepath.Join(filepath.Dir(appXCConfig), "Missing.xcconfig")
+	if len(plan.MissingOptionalIncludes) != 1 || plan.MissingOptionalIncludes[0] != missingPath {
+		t.Fatalf("missing optional includes = %#v, want [%q]", plan.MissingOptionalIncludes, missingPath)
+	}
+}
+
+func TestSigningPlanMissingOptionalIncludesRoundTripAndHash(t *testing.T) {
+	planPath := filepath.Join(t.TempDir(), "plan.json")
+	missingPath := filepath.Join(filepath.Dir(planPath), "Missing.xcconfig")
+	plan := &SigningPlan{
+		SchemaVersion:           signingPlanSchemaVersion,
+		Command:                 signingPlanCommand,
+		PlanPath:                planPath,
+		MissingOptionalIncludes: []string{missingPath},
+	}
+	plan.PlanHash = signingPlanHash(plan)
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	read, err := readSigningPlanArtifact(planPath)
+	if err != nil {
+		t.Fatalf("readSigningPlanArtifact() error = %v", err)
+	}
+	if len(read.MissingOptionalIncludes) != 1 || read.MissingOptionalIncludes[0] != missingPath {
+		t.Fatalf("round-trip missing optional includes = %#v, want [%q]", read.MissingOptionalIncludes, missingPath)
+	}
+	if read.PlanHash != signingPlanHash(read) {
+		t.Fatalf("round-trip plan hash = %q, want %q", read.PlanHash, signingPlanHash(read))
+	}
+}
+
+func TestSigningPlanLegacyOptionalIncludeFieldKeepsSchemaOneHashCompatibility(t *testing.T) {
+	plan := &SigningPlan{
+		SchemaVersion: signingPlanSchemaVersion,
+		Command:       signingPlanCommand,
+		PlanPath:      filepath.Join(t.TempDir(), "plan.json"),
+		Ready:         true,
+	}
+	legacyHash := signingPlanHash(plan)
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("json.Marshal(legacy plan) error = %v", err)
+	}
+	if strings.Contains(string(data), "missingOptionalIncludes") {
+		t.Fatalf("legacy plan unexpectedly serialized empty optional-include field: %s", data)
+	}
+	var decoded SigningPlan
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(legacy plan) error = %v", err)
+	}
+	if got := signingPlanHash(&decoded); got != legacyHash {
+		t.Fatalf("legacy plan hash = %q, want %q", got, legacyHash)
+	}
+}
+
+func TestSigningApplyRejectsLegacyPlanOmittingOptionalIncludeAssertion(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	appXCConfig := filepath.Join(filepath.Dir(project), "Configs", "App.xcconfig")
+	contents := mustReadVersionTestFile(t, appXCConfig)
+	contents = strings.Replace(contents, `#include "Shared.xcconfig"`, "#include? \"Missing.xcconfig\"\n#include \"Shared.xcconfig\"", 1)
+	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write app xcconfig error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready || len(plan.MissingOptionalIncludes) != 1 {
+		t.Fatalf("plan = ready=%t missing=%#v blockers=%#v, want ready plan with one absence assertion", plan.Ready, plan.MissingOptionalIncludes, plan.Blockers)
+	}
+
+	projectPath := filepath.Join(project, "project.pbxproj")
+	projectBefore := mustReadVersionTestFile(t, projectPath)
+	legacy := *plan
+	legacy.MissingOptionalIncludes = nil
+	legacy.PlanHash = signingPlanHash(&legacy)
+	if err := WriteSigningPlanArtifact(&legacy, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact(legacy) error = %v", err)
+	}
+
+	_, err = ApplySigningPlan(SigningApplyOptions{PlanPath: legacy.PlanPath})
+	if err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("ApplySigningPlan(legacy) error = %v, want stale-plan rejection", err)
+	}
+	if after := mustReadVersionTestFile(t, projectPath); after != projectBefore {
+		t.Fatal("legacy stale-plan rejection modified the project")
+	}
+	if _, statErr := os.Lstat(legacy.ReceiptPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("receipt after legacy stale-plan rejection = %v, want absent", statErr)
+	}
+}
+
+func TestReadSigningPlanRejectsUnboundedMissingOptionalIncludes(t *testing.T) {
+	tests := []struct {
+		name string
+		list []string
+	}{
+		{name: "too many entries", list: make([]string, signingPlanMaxMissingOptionalIncludes+1)},
+		{name: "oversized path", list: []string{strings.Repeat("a", signingPlanMaxMissingOptionalIncludePathBytes+1)}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			planPath := filepath.Join(t.TempDir(), "plan.json")
+			plan := &SigningPlan{
+				SchemaVersion:           signingPlanSchemaVersion,
+				Command:                 signingPlanCommand,
+				MissingOptionalIncludes: test.list,
+			}
+			data, err := json.Marshal(plan)
+			if err != nil {
+				t.Fatalf("json.Marshal(plan) error = %v", err)
+			}
+			if err := os.WriteFile(planPath, data, 0o600); err != nil {
+				t.Fatalf("WriteFile(plan) error = %v", err)
+			}
+			if _, err := readSigningPlanArtifact(planPath); err == nil || !IsSigningInputError(err) {
+				t.Fatalf("readSigningPlanArtifact() error = %v, want bounded input error", err)
+			}
+		})
+	}
 }
 
 func TestSigningSettingResolverDoesNotShareOptionalIncludeAuthorizationBetweenConfigurations(t *testing.T) {
@@ -3542,6 +4979,427 @@ func TestSigningPlanProtectsConditionalOnlyEntitlementReference(t *testing.T) {
 	}
 }
 
+func TestSigningPlanRejectsIncompleteUnselectedInternalXCConfigBeforeArtifactOverwrite(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	attachSigningWidgetXCConfig(t, project,
+		"CODE_SIGN_ENTITLEMENTS = .asc/xcode/signing/plan.json\n"+
+			"BROKEN = \"unterminated\n")
+	artifactDir := filepath.Join(projectRoot, ".asc", "xcode", "signing")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(artifact dir) error = %v", err)
+	}
+	planPath := filepath.Join(artifactDir, "plan.json")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(entitlement artifact) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want incomplete internal collection to fail closed", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingEntitlements {
+		t.Fatalf("unread entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsUnselectedInheritedConditionalSuffix(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	attachSigningWidgetXCConfig(t, project, "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = $(inherited) Special.entitlements\n")
+	protectedPath := filepath.Join(filepath.Dir(project), "Special.entitlements")
+	const existingProtected = "existing entitlement bytes\n"
+	if err := os.WriteFile(protectedPath, []byte(existingProtected), 0o600); err != nil {
+		t.Fatalf("WriteFile(protected entitlement) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(root, "state")
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: protectedPath, StateDir: stateDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "protected project input") {
+		t.Fatalf("BuildSigningPlan() error = %v, want inherited suffix alias rejection", err)
+	}
+	if got := mustReadVersionTestFile(t, protectedPath); got != existingProtected {
+		t.Fatalf("protected entitlement changed after alias rejection: %q", got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after inherited suffix collision = %v, want absent", statErr)
+	}
+}
+
+func TestSigningPlanRejectsUnselectedUnknownConditionalEntitlementBeforeArtifactOverwrite(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	attachSigningWidgetXCConfig(t, project, "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = $(UNKNOWN_ENTITLEMENTS)/Live.entitlements\n")
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	planPath := filepath.Join(root, "plan.json")
+	stateDir := filepath.Join(root, "state")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(existing plan) error = %v", err)
+	}
+	_, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: stateDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS value cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() error = %v, want unbounded entitlement failure", err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("existing plan changed after unbounded entitlement failure: %q", got)
+	}
+	if _, statErr := os.Lstat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("state plan artifact after unbounded entitlement failure = %v, want absent", statErr)
+	}
+}
+
+func TestSigningPlanProtectsUnselectedProjectConditionalEntitlementPath(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = ".asc/xcode/signing/plan.json";`)
+	appEntitlements := filepath.Join(filepath.Dir(project), "App.entitlements")
+	if err := os.WriteFile(appEntitlements, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	projectRoot := filepath.Dir(project)
+	artifactDir := filepath.Join(projectRoot, ".asc", "xcode", "signing")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(artifact dir) error = %v", err)
+	}
+	planPath := filepath.Join(artifactDir, "plan.json")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(entitlement artifact) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want project conditional entitlement path rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingEntitlements {
+		t.Fatalf("project conditional entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsUnselectedProjectConditionalEntitlementExpression(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(PRODUCT_NAME).entitlements";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`PRODUCT_NAME = App;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`PRODUCT_NAME = Widget;`)
+	projectRoot := filepath.Dir(project)
+	for _, name := range []string{"App.entitlements", "Widget.entitlements"} {
+		entitlementsPath := filepath.Join(projectRoot, name)
+		if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	planPath := filepath.Join(projectRoot, "Widget.entitlements")
+	const existingEntitlements = "existing widget entitlement bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(widget entitlement artifact) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want target-expanded project entitlement expression rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingEntitlements {
+		t.Fatalf("target-expanded project entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsTargetConditionalInheritedEntitlementComposition(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(inherited)Suffix";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = Base;`)
+	projectRoot := filepath.Dir(project)
+	appEntitlements := filepath.Join(projectRoot, "App.entitlements")
+	if err := os.WriteFile(appEntitlements, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	composedPath := filepath.Join(projectRoot, "BaseSuffix")
+	const existingEntitlements = "existing composed entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want same-object inherited composition rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsInheritedTargetComposedWithProjectConditional(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Base;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = "$(inherited)Suffix";`)
+	projectRoot := filepath.Dir(project)
+	if err := os.WriteFile(filepath.Join(projectRoot, "App.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	composedPath := filepath.Join(projectRoot, "BaseSuffix")
+	const existingEntitlements = "existing inherited composition bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want inherited target plus project candidate composition rejected", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanProtectsProjectConditionalInheritedEntitlementComposition(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(inherited)Suffix";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = Base;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	projectRoot := filepath.Dir(project)
+	appEntitlements := filepath.Join(projectRoot, "App.entitlements")
+	if err := os.WriteFile(appEntitlements, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	composedPath := filepath.Join(projectRoot, "BaseSuffix")
+	const existingEntitlements = "existing project composed entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want project inherited composition rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("project composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
+func TestSigningPlanSkipsProjectEntitlementExpressionsShadowedByTargetXCConfig(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = "$(MISSING).entitlements";`)
+	projectRoot := filepath.Dir(project)
+	appXCConfig := filepath.Join(projectRoot, "App.xcconfig")
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_ENTITLEMENTS = App.entitlements\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "App.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	fileReference := "\t\tCCCCCCCCCCCCCCCCCCCCCCCC /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+marker, 1)
+	appConfiguration := "999999999999999999999993 /* App Debug */ = {isa = XCBuildConfiguration;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	updatedAppConfiguration := "999999999999999999999993 /* App Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = CCCCCCCCCCCCCCCCCCCCCCCC;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	if !strings.Contains(contents, appConfiguration) {
+		t.Fatal("project fixture is missing App Debug configuration")
+	}
+	contents = strings.Replace(contents, appConfiguration, updatedAppConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = Widget.entitlements;`)
+	if err := os.WriteFile(filepath.Join(projectRoot, "Widget.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(Widget.entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want target xcconfig to shadow the project entitlement expression", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("target xcconfig-shadowed project entitlement blocked planning: %#v", plan.Blockers)
+	}
+}
+
+func TestSigningPlanSkipsShadowedProjectEntitlementExpressions(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = "$(MISSING).entitlements";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = Widget.entitlements;`)
+	projectRoot := filepath.Dir(project)
+	for _, name := range []string{"App.entitlements", "Widget.entitlements"} {
+		if err := os.WriteFile(filepath.Join(projectRoot, name), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want shadowed project entitlement expression ignored", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("shadowed project entitlement expression blocked planning: %#v", plan.Blockers)
+	}
+}
+
+func TestSigningPlanResolvesProjectEntitlementsInTargetContext(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = "$(PRODUCT_NAME).entitlements";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`PRODUCT_NAME = App;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`PRODUCT_NAME = Widget;`)
+	for _, name := range []string{"App.entitlements", "Widget.entitlements"} {
+		entitlementsPath := filepath.Join(filepath.Dir(project), name)
+		if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want project entitlement resolved in the target context", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("project entitlement in target context blocked plan: %#v", plan.Blockers)
+	}
+
+	protected := filepath.Join(filepath.Dir(project), "App.entitlements")
+	_, err = BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: protected, StateDir: filepath.Join(t.TempDir(), "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() error = %v, want target-resolved entitlement path protected as an artifact alias", err)
+	}
+}
+
 func TestSigningPlanRejectsUninventoriableConditionalPBXEntitlements(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -3581,14 +5439,14 @@ func TestSigningPlanRejectsUninventoriableConditionalPBXEntitlements(t *testing.
 				ProjectPath: project, SettingsFilePath: settingsPath,
 				PlanPath: planPath, StateDir: filepath.Join(root, "state"),
 			})
-			if err != nil {
-				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan with uncertainty", err)
+			if err == nil || !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS value cannot be safely inventoried") {
+				t.Fatalf("BuildSigningPlan() error = %v, want fail-closed unresolved entitlement error", err)
 			}
-			if plan == nil || plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "unresolved conditional CODE_SIGN_ENTITLEMENTS") {
-				t.Fatalf("plan = %#v, want unselected conditional uncertainty blocker", plan)
+			if plan != nil {
+				t.Fatalf("plan = %#v, want no plan when entitlement aliases cannot be bounded", plan)
 			}
 			if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
-				t.Fatalf("existing plan changed after conditional entitlement failure: %q", got)
+				t.Fatalf("existing plan changed after unbounded conditional entitlement failure: %q", got)
 			}
 		})
 	}
@@ -3634,14 +5492,14 @@ func TestSigningPlanRejectsUninventoriableConditionalXCConfigEntitlements(t *tes
 				ProjectPath: project, SettingsFilePath: settingsPath,
 				PlanPath: planPath, StateDir: filepath.Join(root, "state"),
 			})
-			if err != nil {
-				t.Fatalf("BuildSigningPlan() error = %v, want blocked plan with uncertainty", err)
+			if err == nil || !strings.Contains(err.Error(), "CODE_SIGN_ENTITLEMENTS value cannot be safely inventoried") {
+				t.Fatalf("BuildSigningPlan() error = %v, want fail-closed unresolved entitlement error", err)
 			}
-			if plan == nil || plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "unresolved conditional CODE_SIGN_ENTITLEMENTS") {
-				t.Fatalf("plan = %#v, want unselected conditional uncertainty blocker", plan)
+			if plan != nil {
+				t.Fatalf("plan = %#v, want no plan when entitlement aliases cannot be bounded", plan)
 			}
 			if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
-				t.Fatalf("existing plan changed after conditional entitlement failure: %q", got)
+				t.Fatalf("existing plan changed after unbounded conditional entitlement failure: %q", got)
 			}
 		})
 	}
@@ -3933,6 +5791,68 @@ func TestSigningPlanExpandsInheritedXCConfigEntitlementForProtectedInputs(t *tes
 	})
 	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
 		t.Fatalf("BuildSigningPlan() error = %v, want inherited xcconfig entitlement alias protection", err)
+	}
+}
+
+func TestSigningPlanKeepsSuccessfulInheritedDirectEntitlementReady(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	// An explicitly empty lower-layer value makes the inherited suffix a
+	// concrete target path without leaving the resolver uncertain.
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991", `CODE_SIGN_ENTITLEMENTS = "";`)
+	injectSigningDirectBuildSetting(t, pbxprojPath, `CODE_SIGN_ENTITLEMENTS = "$(inherited)App.entitlements";`)
+	entitlementsPath := filepath.Join(filepath.Dir(project), "App.entitlements")
+	if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(entitlements) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want successful inherited expansion", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("successful inherited expansion blocked plan: %#v", plan.Blockers)
+	}
+	for _, blocker := range plan.Blockers {
+		if strings.Contains(blocker, "external CODE_SIGN_ENTITLEMENTS input") {
+			t.Fatalf("successful inherited expansion invented an external input: %#v", plan.Blockers)
+		}
+	}
+}
+
+func TestSigningPlanKeepsSuccessfulInheritedXCConfigEntitlementReady(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	widgetPath := attachSigningWidgetXCConfig(t, project, "#include \"Shared.xcconfig\"\nCODE_SIGN_ENTITLEMENTS = $(inherited)App.entitlements\n")
+	sharedPath := filepath.Join(filepath.Dir(widgetPath), "Shared.xcconfig")
+	if err := os.WriteFile(sharedPath, []byte("CODE_SIGN_ENTITLEMENTS = \"\"\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(Shared.xcconfig) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want successful inherited expansion", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("successful inherited xcconfig expansion blocked plan: %#v", plan.Blockers)
+	}
+	for _, blocker := range plan.Blockers {
+		if strings.Contains(blocker, "external CODE_SIGN_ENTITLEMENTS input") {
+			t.Fatalf("successful inherited xcconfig expansion invented an external input: %#v", plan.Blockers)
+		}
 	}
 }
 

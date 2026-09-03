@@ -91,6 +91,9 @@ func TestResolveAcceptsAbsolutePathInsideRoot(t *testing.T) {
 }
 
 func TestRootPreservesWhitespaceInValidPathNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Win32 path APIs strip trailing spaces and dots from file names")
+	}
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "trusted ")
 	if err := os.Mkdir(dir, 0o755); err != nil {
@@ -310,6 +313,60 @@ func TestWriteFileRefusesFinalSymlink(t *testing.T) {
 	}
 	if got := mustRead(t, sentinelPath); got != "original" {
 		t.Fatalf("sentinel content = %q, want %q", got, "original")
+	}
+}
+
+func TestCheckWriteFileMatchesWriteFileConstraints(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+
+	if err := root.CheckWriteFile(filepath.Join("nested", "missing.pdf")); err != nil {
+		t.Fatalf("CheckWriteFile(missing) error = %v, want nil", err)
+	}
+
+	readOnly := filepath.Join(dir, "readonly.pdf")
+	mustWrite(t, readOnly, "original")
+	if err := os.Chmod(readOnly, 0o400); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	if err := root.CheckWriteFile("readonly.pdf"); err != nil {
+		t.Fatalf("CheckWriteFile(read-only regular file) error = %v, want nil because WriteFile replaces by rename", err)
+	}
+	if err := root.WriteFile("readonly.pdf", []byte("replaced"), 0o600); err != nil {
+		t.Fatalf("WriteFile(read-only regular file) error = %v", err)
+	}
+
+	if err := os.Mkdir(filepath.Join(dir, "somedir"), 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := root.CheckWriteFile("somedir"); err == nil {
+		t.Fatal("CheckWriteFile(directory) error = nil, want not-a-regular-file error")
+	}
+	if err := root.CheckWriteFile("."); !errors.Is(err, ErrEscapesRoot) {
+		t.Fatalf("CheckWriteFile(root) error = %v, want ErrEscapesRoot", err)
+	}
+}
+
+func TestCheckWriteFileRefusesSymlinks(t *testing.T) {
+	requireSymlinks(t)
+
+	dir := t.TempDir()
+	sentinelDir := t.TempDir()
+	sentinelPath := filepath.Join(sentinelDir, "sentinel.txt")
+	mustWrite(t, sentinelPath, "original")
+	if err := os.Symlink(sentinelPath, filepath.Join(dir, "out.pdf")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	if err := os.Symlink(sentinelDir, filepath.Join(dir, "nested")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	root := mustRoot(t, dir)
+	if err := root.CheckWriteFile("out.pdf"); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("CheckWriteFile(final symlink) error = %v, want ErrSymlink", err)
+	}
+	if err := root.CheckWriteFile(filepath.Join("nested", "sentinel.txt")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("CheckWriteFile(symlinked parent) error = %v, want ErrSymlink", err)
 	}
 }
 
@@ -581,6 +638,9 @@ func TestCreateNewFileAtomicRefusesRacingDestination(t *testing.T) {
 }
 
 func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits are not authoritative on Windows")
+	}
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
 	if err := root.CreateNewFileAtomic("plan.json", []byte("planned"), 0o600); err != nil {
@@ -592,6 +652,135 @@ func TestCreateNewFileAtomicWritesExactMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
+func TestCreateNewFromClosesStagingBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "ordinary.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during staging close: err = %v, want absent", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	if _, err := root.CreateNewFrom("ordinary.txt", bytes.NewReader([]byte("complete")), 0o600); !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFrom() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after staging close failure: %v", err)
+	}
+}
+
+func TestCreateNewFileAtomicClosesStagingBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "ordinary-atomic.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during staging close: err = %v, want absent", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	if err := root.CreateNewFileAtomic("ordinary-atomic.txt", []byte("complete"), 0o600); !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFileAtomic() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after staging close failure: %v", err)
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoClosesStagingAfterIdentityVerification(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows closes the staging handle before publication")
+	}
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "identity.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("published destination during identity close: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("identity.txt", []byte("complete"), 0o600)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if info == nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned nil identity after post-publication close failure")
+	}
+	diskInfo, statErr := os.Stat(path)
+	if statErr != nil {
+		t.Fatalf("Stat(identity) error = %v", statErr)
+	}
+	if !os.SameFile(info, diskInfo) {
+		t.Fatal("returned identity does not identify the published file")
+	}
+}
+
+func TestCreateNewFileAtomicWithInfoClosesStagingBeforePublicationWhenWindowsRequiresIt(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	root.simulateWindowsCloseForTest = true
+	path := filepath.Join(dir, "identity-windows.txt")
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during simulated Windows staging close: err = %v, want absent", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	info, err := root.CreateNewFileAtomicWithInfo("identity-windows.txt", []byte("complete"), 0o600)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("CreateNewFileAtomicWithInfo() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if info != nil {
+		t.Fatal("CreateNewFileAtomicWithInfo() returned an identity before publication")
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination after simulated Windows staging close failure: %v", err)
 	}
 }
 
@@ -1186,6 +1375,50 @@ func TestRemoveFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.
 	}
 }
 
+func TestRemoveFileIfSameRejectsQuarantineContentChangeBeforeRemoval(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	const mutated = "mutated-by-concurrent-writer"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quarantinePath string
+	root.beforeConditionalQuarantineRemovalForTest = func(parent *os.Root, quarantineName string) {
+		quarantinePath = filepath.Join(dir, quarantineName)
+		file, openErr := parent.OpenFile(quarantineName, os.O_WRONLY|os.O_TRUNC, 0)
+		if openErr != nil {
+			t.Fatalf("mutate quarantined entry in race hook: %v", openErr)
+		}
+		if _, writeErr := file.Write([]byte(mutated)); writeErr != nil {
+			_ = file.Close()
+			t.Fatalf("write mutated quarantine contents: %v", writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close mutated quarantine: %v", closeErr)
+		}
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if err == nil || !strings.Contains(err.Error(), "contents changed") {
+		t.Fatalf("RemoveFileIfSame() error = %v, want contents-changed uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after content race = %v, want absent", statErr)
+	}
+	if quarantinePath == "" {
+		t.Fatal("race hook did not capture quarantine path")
+	}
+	if got := mustRead(t, quarantinePath); got != mutated {
+		t.Fatalf("quarantine leftover = %q, want mutated contents preserved", got)
+	}
+}
+
 func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -1235,6 +1468,42 @@ func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t 
 	}
 }
 
+func TestWriteFileIfSameClosesStagingBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during staging close: err = %v, want absent so quarantine can still restore", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("new"), 0o640, expected, []byte("old"), true)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if got := mustRead(t, path); got != "old" {
+		t.Fatalf("destination after staging close failure = %q, want restored original", got)
+	}
+}
+
 func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -1272,6 +1541,15 @@ func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	}
 	if got := mustRead(t, filepath.Join(dir, "settings.xcconfig")); got != "replacement" {
 		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".asc-tmp-rollback-") {
+			t.Fatalf("quarantine leftover %q remained after discarding an open rollback handle", entry.Name())
+		}
 	}
 }
 
@@ -1394,6 +1672,37 @@ func TestWriteFileIfSameRestoresQuarantineAfterReopenFailureAndReportsSync(t *te
 	}
 	if len(matches) != 0 {
 		t.Fatalf("quarantine files remain after reopen failure: %v", matches)
+	}
+}
+
+func TestWriteFileIfSameClosesQuarantineBeforeRestoreAfterMetadataCopyFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "original"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected metadata copy failure")
+	root.copyReplacementMetadataForTest = func(*os.File, *os.File, os.FileInfo) error {
+		return injected
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("updated"), 0o640, expected, []byte(original), true)
+	if !errors.Is(err, injected) {
+		t.Fatalf("WriteFileIfSame() error = %v, want injected metadata-copy failure", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("destination after metadata-copy failure = %q, want restored original", got)
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*")); globErr != nil {
+		t.Fatal(globErr)
+	} else if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after metadata-copy recovery: %v", matches)
 	}
 }
 
@@ -1645,8 +1954,11 @@ func TestWriteFileIfSameRestoresOriginalWhenUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("restored mode = %o, want 640", got)
+	if got := info.Mode().Perm(); got != expected.Mode().Perm() {
+		t.Fatalf("restored mode = %o, want original %o", got, expected.Mode().Perm())
+	}
+	if runtime.GOOS != "windows" && expected.Mode().Perm() != 0o640 {
+		t.Fatalf("original mode = %o, want 640", expected.Mode().Perm())
 	}
 }
 
@@ -1833,6 +2145,54 @@ func TestCreateNewFromPreservesStagedReplacementAfterHardLinkCleanupFailure(t *t
 	}
 	if got := mustRead(t, filepath.Join(dir, stagedName)); got != "replacement" {
 		t.Fatalf("staged-name replacement content = %q, want replacement preserved", got)
+	}
+}
+
+func TestWriteFileIfSameCleansQuarantineAndSyncsAfterPublishedCloseFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "old"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(source) error = %v", err)
+	}
+	closeErr := errors.New("injected published close failure")
+	syncErr := errors.New("injected cleanup sync failure")
+	root.closePublishedFileForTest = func(file *os.File) error {
+		if err := file.Close(); err != nil {
+			t.Fatalf("close published file in failure hook: %v", err)
+		}
+		return closeErr
+	}
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("updated"), 0o640, expected, []byte(original), true)
+	if err == nil || !errors.Is(err, closeErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want published close failure", err)
+	}
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want cleanup sync failure", err)
+	}
+	if !syncObserved {
+		t.Fatal("quarantine cleanup did not sync its parent directory")
+	}
+	if got := mustRead(t, path); got != "updated" {
+		t.Fatalf("published content = %q, want updated", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("quarantine entries remain after close failure cleanup: %v", matches)
 	}
 }
 
@@ -2366,6 +2726,7 @@ func TestOpenAbsoluteRootNoFollowFailsClosedOutsideCurrentDirectory(t *testing.T
 }
 
 func TestOpenAbsoluteRootNoFollowRejectsReplacedCurrentDirectoryPath(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -2466,6 +2827,7 @@ func TestContainsPathUsesPinnedRootIdentity(t *testing.T) {
 }
 
 func TestContainsAnchoredPathRejectsPathSubstitution(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent := t.TempDir()
 	bundle := filepath.Join(parent, "bundle")
 	artifact := filepath.Join(bundle, "state")
@@ -2555,6 +2917,9 @@ func TestOpenRootRejectsSelectedPathSwappedBeforeOpen(t *testing.T) {
 		{name: "intermediate directory", rootRelative: filepath.Join("selected", "root"), swapRelative: "selected", outsideRoot: "root"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.outsideRoot != "" {
+				requireDirectoryRenameWhileOpen(t)
+			}
 			parent, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -2680,6 +3045,7 @@ func TestOpenRootDoesNotAdoptDirectoryCreatedAfterNew(t *testing.T) {
 }
 
 func TestRootedWriteRejectsIntermediateDirectoryReplacedBeforeOpen(t *testing.T) {
+	requireDirectoryRenameWhileOpen(t)
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -3024,6 +3390,13 @@ func temporaryLeftovers(t *testing.T, dir string) []string {
 		}
 	}
 	return leftovers
+}
+
+func requireDirectoryRenameWhileOpen(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot rename a directory while an os.Root handle to it or a descendant is open")
+	}
 }
 
 func requireSymlinks(t *testing.T) {

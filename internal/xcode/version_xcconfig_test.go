@@ -69,6 +69,36 @@ func TestXCConfigInheritedValueAndExactPrecedence(t *testing.T) {
 	}
 }
 
+func TestXCConfigResolverAcceptsSupersededSameSelectorConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Values.xcconfig")
+	contents := "DEVELOPMENT_TEAM[sdk=iphoneos*] = OLDOLD1234\nDEVELOPMENT_TEAM[sdk=iphoneos*] = NEWNEW1234\nDEVELOPMENT_TEAM = NEWNEW1234\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSetting(path, "DEVELOPMENT_TEAM")
+	if err != nil {
+		t.Fatalf("resolveXCConfigSetting() error = %v, want later same-selector assignment to replace OLDOLD1234", err)
+	}
+	if resolved.value != "NEWNEW1234" || !resolved.exact {
+		t.Fatalf("resolved = %#v, want NEWNEW1234 from the later same-selector assignment", resolved)
+	}
+}
+
+func TestXCConfigResolverAcceptsSupersededReorderedSelectorConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Values.xcconfig")
+	contents := "DEVELOPMENT_TEAM[sdk=iphoneos*][arch=arm64] = OLDOLD1234\nDEVELOPMENT_TEAM[arch=arm64][sdk=iphoneos*] = NEWNEW1234\nDEVELOPMENT_TEAM = NEWNEW1234\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSetting(path, "DEVELOPMENT_TEAM")
+	if err != nil {
+		t.Fatalf("resolveXCConfigSetting() error = %v, want reordered same-selector assignment to replace OLDOLD1234", err)
+	}
+	if resolved.value != "NEWNEW1234" || !resolved.exact {
+		t.Fatalf("resolved = %#v, want NEWNEW1234 from the later reordered selector", resolved)
+	}
+}
+
 func TestXCConfigResolverRejectsDivergentConditionalOverride(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -172,6 +202,83 @@ func TestXCConfigEditorEscapesTrailingBackslashInQuotedValue(t *testing.T) {
 	}
 }
 
+func TestXCConfigQuotedValueRoundTripsEscapedBackslashesAndQuotes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		quote string
+	}{
+		{name: "unquoted backslashes", value: `Profiles\Team\`, quote: ""},
+		{name: "double quoted backslashes", value: `Profiles\Team\`, quote: `"`},
+		{name: "double quoted matching quote", value: `Profile "Preview"\Team\`, quote: `"`},
+		{name: "single quoted matching quote", value: `Profile 'Preview'\Team\`, quote: `'`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded := quoteXCConfigValue(test.value, test.quote)
+			decoded, quote, err := parseXCConfigValue(encoded)
+			if err != nil {
+				t.Fatalf("parseXCConfigValue(%q) error = %v", encoded, err)
+			}
+			if decoded != test.value || quote != test.quote {
+				t.Fatalf("quoted round-trip = value %q, quote %q; want value %q, quote %q", decoded, quote, test.value, test.quote)
+			}
+		})
+	}
+}
+
+func TestXCConfigParserPreservesQuoteStateForContinuedBlockCommentDelimiters(t *testing.T) {
+	document, err := parseXCConfig([]byte("HEADER_SEARCH_PATHS = \"Vendor\\\n/*SDK\"\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v, want quoted continuation containing /* accepted", err)
+	}
+	if len(document.assignments) != 1 || !strings.Contains(document.assignments[0].value, "Vendor") || !strings.Contains(document.assignments[0].value, "/*SDK") {
+		t.Fatalf("parseXCConfig() assignments = %#v, want quoted /* preserved across the continuation", document.assignments)
+	}
+}
+
+func TestXCConfigParserPreservesQuoteStateAcrossContinuedLines(t *testing.T) {
+	document, err := parseXCConfig([]byte("HEADER_SEARCH_PATHS = \"https:\\\n//host/path\"\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v, want quoted URL continuation accepted", err)
+	}
+	if len(document.assignments) != 1 || !strings.Contains(document.assignments[0].value, "https://host/path") {
+		t.Fatalf("parseXCConfig() assignments = %#v, want https://host/path from the continued quoted value", document.assignments)
+	}
+}
+
+func TestXCConfigParserAcceptsQuotedLineContinuations(t *testing.T) {
+	document, err := parseXCConfig([]byte("HEADER_SEARCH_PATHS = \"Vendor \\\n SDK\"\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v, want quoted line continuation accepted", err)
+	}
+	if len(document.assignments) != 1 || document.assignments[0].key != "HEADER_SEARCH_PATHS" {
+		t.Fatalf("parseXCConfig() assignments = %#v, want one HEADER_SEARCH_PATHS assignment", document.assignments)
+	}
+	if !strings.Contains(document.assignments[0].value, "Vendor") || !strings.Contains(document.assignments[0].value, "SDK") {
+		t.Fatalf("parseXCConfig() value = %q, want Vendor and SDK from the continued quoted assignment", document.assignments[0].value)
+	}
+}
+
+func TestXCConfigParserPreservesGenericQuotedEscapes(t *testing.T) {
+	document, err := parseXCConfig([]byte(`HEADER_SEARCH_PATHS = "Vendor\ SDK"` + "\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v, want generic quoted escape preserved", err)
+	}
+	if len(document.assignments) != 1 || document.assignments[0].value != `Vendor\ SDK` {
+		t.Fatalf("parseXCConfig() assignments = %#v, want preserved backslash-space", document.assignments)
+	}
+}
+
+func TestXCConfigParserRejectsMalformedQuotedEscapes(t *testing.T) {
+	for _, raw := range []string{`"dangling\`} {
+		if _, _, err := parseXCConfigValue(raw); err == nil {
+			t.Fatalf("parseXCConfigValue(%q) error = nil, want malformed escape rejection", raw)
+		}
+	}
+}
+
 func TestXCConfigEditorPreservesStableVersionContinuationSupport(t *testing.T) {
 	input := []byte("MARKETING_VERSION = 1.2.3\\\n 4\n")
 	updated, oldValues, changed, err := editXCConfig(input, marketingVersionSetting, "2.0.0")
@@ -216,6 +323,22 @@ func TestXCConfigParserRejectsUnterminatedQuotedValues(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "unterminated quote") {
 			t.Fatalf("parseXCConfig(%q) error = %v, want unterminated quote", input, err)
 		}
+	}
+}
+
+func TestXCConfigParserStripsInlineBlockCommentsFromAssignmentValues(t *testing.T) {
+	document, err := parseXCConfig([]byte("CODE_SIGN_IDENTITY = Apple /* note */ Development\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v", err)
+	}
+	if len(document.assignments) != 1 {
+		t.Fatalf("parseXCConfig() assignments = %#v, want one identity assignment", document.assignments)
+	}
+	if strings.Contains(document.assignments[0].value, "/*") || strings.Contains(document.assignments[0].value, "note") {
+		t.Fatalf("parseXCConfig() value = %q, want comment stripped from the assignment value", document.assignments[0].value)
+	}
+	if !strings.Contains(document.assignments[0].value, "Apple") || !strings.Contains(document.assignments[0].value, "Development") {
+		t.Fatalf("parseXCConfig() value = %q, want the surrounding identity tokens", document.assignments[0].value)
 	}
 }
 
@@ -324,6 +447,39 @@ func TestXCConfigCollectorRecordsMissingIncludeBeforeAccess(t *testing.T) {
 	}
 	if errorsByPath[missingPath] == nil {
 		t.Fatalf("missing include was not retained by error hook: %#v", errorsByPath)
+	}
+}
+
+func TestXCConfigCollectorRecordsOptionalMissingIncludeAbsence(t *testing.T) {
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Root.xcconfig")
+	missingPath := filepath.Join(root, "Missing.xcconfig")
+	if err := os.WriteFile(rootPath, []byte("#include? \"Missing.xcconfig\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(root) error = %v", err)
+	}
+
+	var optionalMissing string
+	readPaths := make(map[string]bool)
+	_, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readPaths[filepath.Clean(path)] = true
+			return os.ReadFile(path)
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		func(path string) { optionalMissing = filepath.Clean(path) },
+	)
+	if err != nil {
+		t.Fatalf("collector error = %v, want optional absence to be ignored", err)
+	}
+	if optionalMissing != missingPath {
+		t.Fatalf("optional missing path = %q, want %q", optionalMissing, missingPath)
+	}
+	if !readPaths[missingPath] {
+		t.Fatalf("optional missing target did not use the authorized reader: %#v", readPaths)
 	}
 }
 
@@ -547,6 +703,55 @@ func TestIdentityAwareDarwinCollectorDeduplicatesCaseVariantSameFile(t *testing.
 		t.Fatalf("read calls = %d, want one after identity deduplication", readCalls)
 	}
 	_ = caseVariantPath
+}
+
+func TestIdentityAwareLinuxCollectorDeduplicatesCaseVariantSameFile(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "linux"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Config.xcconfig")
+	identityPath := filepath.Join(root, "identity")
+	if err := os.WriteFile(identityPath, []byte("identity"), 0o600); err != nil {
+		t.Fatalf("WriteFile(identity) error = %v", err)
+	}
+	identity, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("Stat(identity) error = %v", err)
+	}
+	readCalls := 0
+	files, err := collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readCalls++
+			if filepath.Clean(path) == rootPath {
+				return []byte("#include \"config.xcconfig\"\n"), nil
+			}
+			return []byte("CODE_SIGN_STYLE = Manual\nCODE_SIGN_STYLE += Extra\n"), nil
+		},
+		nil,
+		nil,
+		nil,
+		func(string) (os.FileInfo, error) { return identity, nil },
+	)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithHooksAndIdentity() error = %v", err)
+	}
+	if len(files) != 1 || files[0] != rootPath {
+		t.Fatalf("files = %#v, want one identity-equivalent path on Linux", files)
+	}
+	if readCalls != 1 {
+		t.Fatalf("read calls = %d, want one after Linux identity deduplication", readCalls)
+	}
+	if !xcconfigUsesIdentityTraversal() {
+		t.Fatal("linux should enable identity-aware xcconfig traversal")
+	}
 }
 
 func TestIdentityAwareWindowsCollectorKeepsCaseDistinctFilesOnCaseSensitiveDirectory(t *testing.T) {

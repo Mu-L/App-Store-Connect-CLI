@@ -45,8 +45,9 @@ func TestXcodeSigningPlanOutputPreservesArtifactJSONShape(t *testing.T) {
 			Path:          "/tmp/Demo.xcodeproj/project.pbxproj",
 			Source:        "pbxproj",
 		}},
-		Blockers: []string{},
-		Warnings: []string{"warning"},
+		MissingOptionalIncludes: []string{"/tmp/Configs/Missing.xcconfig"},
+		Blockers:                []string{},
+		Warnings:                []string{"warning"},
 	}
 
 	output := newXcodeSigningPlanOutput(plan)
@@ -109,8 +110,9 @@ func TestXcodeSigningOutputConvertersReturnNilForNilInput(t *testing.T) {
 func TestXcodeSigningOutputConvertersDoNotShareMutableState(t *testing.T) {
 	value := "Manual"
 	plan := &localxcode.SigningPlan{
-		Blockers: []string{"blocker"},
-		Warnings: []string{"warning"},
+		Blockers:                []string{"blocker"},
+		Warnings:                []string{"warning"},
+		MissingOptionalIncludes: []string{"/tmp/Missing.xcconfig"},
 		Changes: []localxcode.SigningSettingChange{{
 			Setting:  "CODE_SIGN_STYLE",
 			NewValue: &value,
@@ -127,6 +129,10 @@ func TestXcodeSigningOutputConvertersDoNotShareMutableState(t *testing.T) {
 	}
 	if output.Warnings[0] != "warning" {
 		t.Fatalf("warnings alias the artifact slice: %q", output.Warnings[0])
+	}
+	plan.MissingOptionalIncludes[0] = "mutated"
+	if output.MissingOptionalIncludes[0] != "/tmp/Missing.xcconfig" {
+		t.Fatalf("missing optional includes alias the artifact slice: %q", output.MissingOptionalIncludes[0])
 	}
 	if got := *output.Changes[0].NewValue; got != "Manual" {
 		t.Fatalf("change value aliases the artifact pointer: %q", got)

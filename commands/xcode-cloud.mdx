@@ -90,6 +90,7 @@ asc xcode-cloud workflows view --id "WORKFLOW_ID"
 asc xcode-cloud workflows repository --id "WORKFLOW_ID"
 asc xcode-cloud workflows create --file ./workflow.json
 asc xcode-cloud workflows update --id "WORKFLOW_ID" --file ./workflow.json
+asc xcode-cloud workflows duplicate --id "WORKFLOW_ID" --name "Nightly"
 asc xcode-cloud workflows delete --id "WORKFLOW_ID" --confirm
 ```
 
@@ -100,6 +101,7 @@ asc xcode-cloud workflows delete --id "WORKFLOW_ID" --confirm
 * `repository` - Get the repository for a workflow
 * `create` - Create a workflow
 * `update` - Update a workflow
+* `duplicate` - **[experimental]** Duplicate a workflow under a new name
 * `delete` - Delete a workflow
 
 **Flags (list):**
@@ -123,6 +125,24 @@ asc xcode-cloud workflows delete --id "WORKFLOW_ID" --confirm
 * `--id` - Workflow ID (required for update)
 * `--output` - Output format: `json`, `table`, `markdown`
 * `--pretty` - Pretty-print JSON output
+
+**Flags (duplicate):**
+
+* `--id` - **[experimental]** Source workflow ID to copy (required)
+* `--name` - **[experimental]** Name for the new workflow (required)
+* `--description` - **[experimental]** Description for the new workflow (default: copied from the source workflow)
+* `--enabled` - **[experimental]** Enable the new workflow immediately; the copy is created disabled by default
+* `--output` - Output format: `json`, `table`, `markdown`
+* `--pretty` - Pretty-print JSON output
+
+`duplicate` reads the source workflow with
+`GET /v1/ciWorkflows/{id}?include=product,repository,xcodeVersion,macOsVersion` and
+creates the copy with `POST /v1/ciWorkflows` in the same product, repository, Xcode
+version, and macOS version. The copy is created disabled and unlocked so it can be
+reviewed and edited before it starts building. TestFlight post-actions and workflow
+environment variables are not part of the public workflow schema, so they are not
+copied; configure those with `asc web xcode-cloud workflows edit` and
+`asc web xcode-cloud env-vars`.
 
 ### xcode-cloud build-runs
 

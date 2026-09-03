@@ -47,6 +47,15 @@ var (
 	}
 )
 
+func xcconfigUsesIdentityTraversal() bool {
+	switch runtimeGOOS {
+	case "windows", "darwin", "linux":
+		return true
+	default:
+		return false
+	}
+}
+
 func signingCaseInsensitiveVolumeForRuntime(path string) (bool, bool) {
 	// runtimeGOOS is intentionally replaceable in package tests. Do not let a
 	// host filesystem probe decide the semantics of a simulated platform; the

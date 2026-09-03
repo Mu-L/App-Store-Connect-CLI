@@ -1351,15 +1351,24 @@ func (project *structuredVersionProject) xcconfigConsumers(selectedIDs map[strin
 }
 
 func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, bool, error) {
+	consumers, configFiles, identities, uncertain, protected, blocked, lexical, unauthorized, _, err := project.signingXCConfigConsumersWithOptionalMissing(selectedIDs, allowExternal)
+	return consumers, configFiles, identities, uncertain, protected, blocked, lexical, unauthorized, err
+}
+
+const signingPlanMaxMissingOptionalIncludes = 256
+
+func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMissing(selectedIDs map[string]bool, allowExternal bool) (map[string]map[string]bool, map[string][]string, map[string]string, bool, []string, []string, map[string][]string, bool, []string, error) {
 	var protectedConfigPaths []string
 	var blockedExternalPaths []string
+	var missingOptionalIncludes []string
+	missingOptionalOverflow := false
 	unauthorizedExternal := false
 	lexicalConfigPaths := make(map[string][]string)
 	observedPathsByRoot := make(map[string][]string)
 	addProtectedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range protectedConfigPaths {
-			if signingPathCaseEquivalent(existing, absolute) {
+			if normalizeSigningLexicalPath(existing) == absolute {
 				return
 			}
 		}
@@ -1368,26 +1377,44 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 	addBlockedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range blockedExternalPaths {
-			if signingPathCaseEquivalent(existing, absolute) {
+			if normalizeSigningLexicalPath(existing) == absolute {
 				return
 			}
 		}
 		blockedExternalPaths = append(blockedExternalPaths, absolute)
 	}
+	addMissingOptionalInclude := func(path string) {
+		path = normalizeSigningLexicalPath(path)
+		if len(path) > signingPlanMaxMissingOptionalIncludePathBytes {
+			missingOptionalOverflow = true
+			return
+		}
+		for _, existing := range missingOptionalIncludes {
+			if existing == path {
+				return
+			}
+		}
+		if len(missingOptionalIncludes) >= signingPlanMaxMissingOptionalIncludes {
+			missingOptionalOverflow = true
+			return
+		}
+		missingOptionalIncludes = append(missingOptionalIncludes, path)
+	}
 	collect := func(path string) ([]string, error) {
 		var collectionErrorPath string
+		var collectionErrorExternal bool
 		observedPaths := make([]string, 0)
 		var identify func(string) (os.FileInfo, error)
-		if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+		if xcconfigUsesIdentityTraversal() {
 			identify = signingXCConfigIdentityFn
 		}
-		files, err := collectXCConfigFilesWithHooksAndIdentity(
+		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 			path,
 			func(filePath string) ([]byte, error) {
 				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
 			},
 			func(filePath string) error {
-				if !allowExternal && !signingPathLexicallyContained(project, filePath) {
+				if !allowExternal && signingPathDefinitelyExternal(project, filePath) {
 					unauthorizedExternal = true
 					return &signingXCConfigAccessError{path: filePath, err: errors.New("path is outside the project directory"), external: true}
 				}
@@ -1396,10 +1423,20 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 					// root, even when its lexical spelling is inside the project.
 					// Treat it as untrusted external content: its target may hide
 					// an entitlement expression that cannot be inventoried here.
-					if !allowExternal && errors.Is(err, rootfs.ErrSymlink) {
+					// ErrEscapesRoot also covers a case-variant spelling rejected
+					// on a modeled case-sensitive Darwin/Windows directory. That
+					// path was not proven to be an internal source, so it must take
+					// the same no-opt-in fail-closed path as other external inputs.
+					pathRejectedAsExternal := !allowExternal &&
+						(errors.Is(err, rootfs.ErrEscapesRoot) || errors.Is(err, rootfs.ErrSymlink))
+					if pathRejectedAsExternal {
 						unauthorizedExternal = true
 					}
-					return &signingXCConfigAccessError{path: filePath, err: err, external: !signingPathLexicallyContained(project, filePath)}
+					return &signingXCConfigAccessError{
+						path:     filePath,
+						err:      err,
+						external: pathRejectedAsExternal || signingPathDefinitelyExternal(project, filePath),
+					}
 				}
 				return nil
 			},
@@ -1414,16 +1451,21 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 				collectionErrorPath = filePath
 			},
 			identify,
+			addMissingOptionalInclude,
 		)
 		observedPathsByRoot[normalizeSigningLexicalPath(path)] = observedPaths
 		if err == nil {
 			return files, nil
 		}
 		if collectionErrorPath != "" {
+			var accessErr *signingXCConfigAccessError
+			if errors.As(err, &accessErr) {
+				collectionErrorExternal = accessErr.external
+			}
 			return nil, &signingXCConfigAccessError{
 				path:     collectionErrorPath,
 				err:      err,
-				external: !signingPathLexicallyContained(project, collectionErrorPath),
+				external: collectionErrorExternal,
 			}
 		}
 		return nil, err
@@ -1446,7 +1488,11 @@ func (project *structuredVersionProject) signingXCConfigConsumers(selectedIDs ma
 			lexicalConfigPaths[configuration.id] = append([]string(nil), observed...)
 		}
 	}
-	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, err
+	if missingOptionalOverflow {
+		err = errors.Join(err, fmt.Errorf("too many missing optional xcconfig includes; refusing to publish a signing plan"))
+	}
+	sort.Strings(missingOptionalIncludes)
+	return consumers, configFiles, identities, uncertain, protectedConfigPaths, blockedExternalPaths, lexicalConfigPaths, unauthorizedExternal, missingOptionalIncludes, err
 }
 
 func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndErrorHook(
@@ -1830,8 +1876,16 @@ func commitVersionWritesWithCreateChecks(
 	beforeCreate func([]preparedVersionWrite) error,
 	afterCreate func([]preparedVersionWrite) error,
 ) (resultErr error) {
+	var retainedIdentities []os.FileInfo
 	defer func() {
-		resultErr = errors.Join(resultErr, closeVersionWrites(writes))
+		closeErr := errors.Join(closeVersionWritesFn(writes), closeVersionIdentities(retainedIdentities))
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+			return
+		}
+		// Publication already succeeded. A later close must not retract a
+		// completed receipt or block apply retry.
+		_ = closeErr
 	}()
 	sort.Slice(writes, func(left, right int) bool {
 		// Finalize create-only artifacts after ordinary project files so a
@@ -1885,6 +1939,9 @@ func commitVersionWritesWithCreateChecks(
 				} else {
 					write.committedInfo, err = portableWritePreparedVersionFile(write, write.updated)
 				}
+			}
+			if write.committedInfo != nil {
+				retainedIdentities = append(retainedIdentities, write.committedInfo)
 			}
 		}
 		if err != nil {
@@ -2101,11 +2158,30 @@ func identityPublicationUnsupported(err error) bool {
 	return errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) || errors.Is(err, rootfs.ErrFileIdentityMutationUnsupported)
 }
 
+var closeVersionWritesFn = closeVersionWrites
+
 func closeVersionWrites(writes []preparedVersionWrite) error {
 	var closeErrors []error
 	for _, write := range writes {
 		if err := write.root.Close(); err != nil {
 			closeErrors = append(closeErrors, fmt.Errorf("close root for %s: %w", write.path, err))
+		}
+	}
+	return errors.Join(closeErrors...)
+}
+
+// closeVersionIdentities releases descriptor-retaining os.FileInfo values
+// returned by the compatibility publication path. Strict identity tokens are
+// released by Root.Close instead.
+func closeVersionIdentities(identities []os.FileInfo) error {
+	var closeErrors []error
+	for _, identity := range identities {
+		closer, ok := identity.(interface{ Close() error })
+		if !ok {
+			continue
+		}
+		if err := closer.Close(); err != nil {
+			closeErrors = append(closeErrors, err)
 		}
 	}
 	return errors.Join(closeErrors...)
