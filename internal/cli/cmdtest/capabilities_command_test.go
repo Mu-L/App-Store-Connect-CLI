@@ -66,6 +66,7 @@ func TestRun_CapabilitiesJSONReportsKnownGaps(t *testing.T) {
 	assertCapability(t, resp, "Metadata and localization sync", "cli-supported", "asc metadata init")
 	assertCapability(t, resp, "Metadata and localization sync", "cli-supported", "asc metadata validate")
 	assertCapability(t, resp, "App privacy data-use declarations", "web-session", "asc web privacy")
+	assertCapability(t, resp, "App Store Regulations and Permits declarations", "web-session", "asc web apps declarations list")
 	assertCapability(t, resp, "App deletion", "web-session", "asc web apps delete")
 	assertCapability(t, resp, "App Store Mac and Vision Pro compatibility opt-ins", "web-session", "asc web apps compatibility")
 	assertCapability(t, resp, "Regulated medical device declaration", "web-session", "asc web apps medical-device")
