@@ -159,6 +159,13 @@ Linux filesystems that cannot inspect or remove the POSIX ACL attribute likewise
 fail closed rather than treating unsupported metadata operations as proof of
 owner-only access.
 
+On macOS, ordinary file creation can apply an inheritable ACL before a
+descriptor can be cleaned. The protected staging creator therefore uses
+Darwin's `open_extended` primitive with an explicit empty, non-inheriting ACL
+at creation time. The generated staging name is the first visible inode, and
+the writer still performs its final pre-write metadata verification before any
+PKCS#12 bytes are written.
+
 Path classification remains platform-aware: a trailing backslash is a
 directory separator only on platforms where `os.IsPathSeparator` reports it as
 such. All user-supplied path bytes are otherwise preserved.

@@ -1219,6 +1219,68 @@ func TestSafeWriteFileNoSymlinkInRootReportsBackupCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestSafeWriteFileNoSymlinkInRootReportsBackupCreationFailure(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "artifact.bin")
+	if err := os.WriteFile(destination, []byte("old"), 0o600); err != nil {
+		t.Fatalf("seed destination: %v", err)
+	}
+	parent, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer parent.Close()
+
+	previousRename := renameInRoot
+	previousBackupCreator := createBackupTempInRoot
+	t.Cleanup(func() {
+		renameInRoot = previousRename
+		createBackupTempInRoot = previousBackupCreator
+	})
+
+	initialRenameErr := errors.New("simulated replacement fallback")
+	backupCreationErr := errors.New("simulated backup creation failure")
+	renameInRoot = func(root *os.Root, oldName, newName string) error {
+		return initialRenameErr
+	}
+	createBackupTempInRoot = func(*os.Root, string, string, os.FileMode) (*os.File, string, error) {
+		return nil, "", backupCreationErr
+	}
+
+	_, err = SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot(
+		parent,
+		destination,
+		"artifact.bin",
+		0o600,
+		true,
+		".safe-write-*",
+		".safe-write-backup-*",
+		nil,
+		nil,
+		func(file *os.File) (int64, error) {
+			n, writeErr := file.Write([]byte("new"))
+			return int64(n), writeErr
+		},
+	)
+	if !errors.Is(err, backupCreationErr) {
+		t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot() error = %v, want backup creation failure", err)
+	}
+	if errors.Is(err, initialRenameErr) {
+		t.Fatalf("SafeWriteFileNoSymlinkWithPreparationAndCreatorInRoot() surfaced stale rename failure: %v", err)
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || string(got) != "old" {
+		t.Fatalf("destination = %q, %v; want unchanged original", got, readErr)
+	}
+	entries, readDirErr := os.ReadDir(directory)
+	if readDirErr != nil {
+		t.Fatalf("ReadDir() error = %v", readDirErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "artifact.bin" {
+		t.Fatalf("directory entries = %v, want only original destination after backup creation failure", entries)
+	}
+}
+
 func TestSafeWriteFileNoSymlinkInRootReportsBackupRestoreFailure(t *testing.T) {
 	directory := t.TempDir()
 	destination := filepath.Join(directory, "artifact.bin")

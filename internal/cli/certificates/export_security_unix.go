@@ -5,8 +5,6 @@ package certificates
 import (
 	"fmt"
 	"os"
-
-	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/secureopen"
 )
 
 func validateCertificateExportProtectedFile(file *os.File, info os.FileInfo, label string) error {
@@ -63,7 +61,7 @@ func prepareCertificateExportOutput(file *os.File) error {
 }
 
 func createCertificateExportStagingFile(root *os.Root, name string, perm os.FileMode) (*os.File, error) {
-	return secureopen.OpenNewFileNoFollowInRoot(root, name, perm)
+	return createCertificateExportStagingFilePlatform(root, name, perm)
 }
 
 func permissionErrorForCertificateExport(label string) error {

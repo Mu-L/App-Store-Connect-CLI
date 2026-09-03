@@ -80,6 +80,37 @@ func TestPrepareCertificateExportOutputStripsExtendedACL(t *testing.T) {
 	}
 }
 
+func TestCreateCertificateExportStagingFileIsOwnerOnlyAtCreation(t *testing.T) {
+	directory := t.TempDir()
+	output, err := exec.Command("/bin/chmod", "+a", "everyone allow read,file_inherit", directory).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot apply inheritable test ACL: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatalf("OpenRoot() error = %v", err)
+	}
+	defer root.Close()
+
+	const name = ".asc-cert-export-staging-security-test"
+	file, err := createCertificateExportStagingFile(root, name, 0o600)
+	if err != nil {
+		t.Fatalf("createCertificateExportStagingFile() error = %v", err)
+	}
+	defer file.Close()
+	defer func() { _ = root.Remove(name) }()
+
+	if darwinFileHasTestACL(t, filepath.Join(directory, name)) {
+		t.Fatal("staging file carried an inherited extended ACL after atomic creation")
+	}
+	// The ordinary writer preparation remains a separate pre-write check and
+	// must be harmless after creator-time hardening.
+	if err := prepareCertificateExportOutput(file); err != nil {
+		t.Fatalf("prepareCertificateExportOutput() error = %v after creator-time hardening", err)
+	}
+}
+
 func TestRunCertificateExportStripsACLInheritedFromDestinationDirectory(t *testing.T) {
 	dir := t.TempDir()
 	artifacts := newCertificateExportTestArtifacts(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))

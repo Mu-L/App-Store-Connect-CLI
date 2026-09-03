@@ -18,7 +18,8 @@ var (
 	renameInRoot          = func(root *os.Root, oldName, newName string) error {
 		return root.Rename(oldName, newName)
 	}
-	linkInRoot = func(root *os.Root, oldName, newName string) error {
+	createBackupTempInRoot = secureopen.CreateTempNoFollowInRoot
+	linkInRoot             = func(root *os.Root, oldName, newName string) error {
 		return root.Link(oldName, newName)
 	}
 	removeRootedFileForWrite       = removeRootedFile
@@ -264,9 +265,9 @@ func writeFileNoSymlinkOverwriteInRoot(parent *os.Root, displayPath, base string
 			return 0, err
 		}
 
-		backupFile, backupName, backupErr := secureopen.CreateTempNoFollowInRoot(parent, ".", backupPattern, perm)
+		backupFile, backupName, backupErr := createBackupTempInRoot(parent, ".", backupPattern, perm)
 		if backupErr != nil {
-			return 0, err
+			return 0, fmt.Errorf("create backup for replacing %q: %w", displayPath, backupErr)
 		}
 		if closeErr := backupFile.Close(); closeErr != nil {
 			return 0, closeErr
