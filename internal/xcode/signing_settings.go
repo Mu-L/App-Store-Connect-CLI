@@ -1351,21 +1351,27 @@ func (resolver *signingSettingResolver) resolveSettingWithContext(
 	return "", "", fmt.Errorf("%s: %w", setting, errVersionSettingNotFound)
 }
 
-func (resolver *signingSettingResolver) expandDirectSetting(
-	configuration *versionConfiguration,
-	setting, value string,
-	stack map[string]bool,
-) (string, string, error) {
-	return resolver.expandDirectSettingWithContext(configuration, configuration, setting, value, stack)
-}
-
 func (resolver *signingSettingResolver) expandDirectSettingWithContext(
 	configuration, expansionConfiguration *versionConfiguration,
 	setting, value string,
 	stack map[string]bool,
 ) (string, string, error) {
+	return resolver.expandDirectAssignmentWithContext(configuration, expansionConfiguration, setting, setting, value, stack)
+}
+
+// expandDirectAssignmentWithContext expands one specific assignment of setting.
+// assignmentKey names the build-setting key the value was written under, so a
+// conditional assignment such as CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] stays
+// distinguishable from the unconditional CODE_SIGN_ENTITLEMENTS slot it
+// inherits from. A caller holding an already-effective value, or one that
+// cannot name the originating slot, passes setting itself.
+func (resolver *signingSettingResolver) expandDirectAssignmentWithContext(
+	configuration, expansionConfiguration *versionConfiguration,
+	setting, assignmentKey, value string,
+	stack map[string]bool,
+) (string, string, error) {
 	if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
-		inherited, err := resolver.resolveInheritedSettingValue(configuration, expansionConfiguration, setting, value, stack)
+		inherited, err := resolver.resolveInheritedSettingValue(configuration, expansionConfiguration, setting, assignmentKey, value, stack)
 		if err != nil {
 			return "", "", fmt.Errorf("resolve inherited %s: %w", setting, err)
 		}
@@ -1377,14 +1383,26 @@ func (resolver *signingSettingResolver) expandDirectSettingWithContext(
 
 func (resolver *signingSettingResolver) resolveInheritedSettingValue(
 	configuration, expansionConfiguration *versionConfiguration,
-	setting, currentValue string,
+	setting, assignmentKey, currentValue string,
 	stack map[string]bool,
 ) (string, error) {
-	// Conditional PBX assignments such as CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]
-	// = $(inherited)Suffix must compose with the same object's unconditional
-	// value before falling through to xcconfig or project layers.
-	if raw, ok := configuration.buildSettings[setting].(string); ok && strings.TrimSpace(raw) != strings.TrimSpace(currentValue) {
-		expanded, _, err := resolver.expandDirectSettingWithContext(configuration, expansionConfiguration, setting, raw, stack)
+	// Xcode resolves $(inherited) to the value the setting holds at the next
+	// level up for the assignment being expanded. A conditional PBX assignment
+	// such as CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = $(inherited)Suffix
+	// therefore composes through the same object's unconditional
+	// CODE_SIGN_ENTITLEMENTS, which only then falls through to the xcconfig and
+	// project layers.
+	//
+	// A conditional assignmentKey names that unconditional slot directly, so
+	// identical expression text at different conditions no longer collapses into
+	// one resolution. The text inequality stays as the conservative fallback for
+	// a caller that cannot name the originating slot; without a key it is the
+	// only available guard against recursing on the assignment being expanded.
+	// Recursion terminates either way because the nested expansion names the
+	// unconditional slot and passes its own text as currentValue.
+	if raw, ok := configuration.buildSettings[setting].(string); ok &&
+		(assignmentKey != setting || strings.TrimSpace(raw) != strings.TrimSpace(currentValue)) {
+		expanded, _, err := resolver.expandDirectAssignmentWithContext(configuration, expansionConfiguration, setting, setting, raw, stack)
 		if err != nil {
 			return "", err
 		}
@@ -2636,7 +2654,11 @@ func signingProjectInputPaths(
 		}
 	}
 	resolver := newSigningSettingResolver(project, configFiles, allowExternal, lexicalConfigPaths)
-	appendResolvedEntitlements := func(configuration *versionConfiguration, value string) error {
+	// assignmentKey names the build-setting key the value was written under.
+	// A conditional key such as CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] composes
+	// its $(inherited) through the object's unconditional assignment; callers
+	// holding an already-effective value pass "CODE_SIGN_ENTITLEMENTS".
+	appendResolvedEntitlements := func(configuration *versionConfiguration, assignmentKey, value string) error {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return nil
@@ -2651,7 +2673,14 @@ func signingProjectInputPaths(
 			// reference. This keeps raw PBX and xcconfig scans aligned with the
 			// effective resolver and prevents an inherited entitlement path from
 			// disappearing from the protected-input inventory.
-			expanded, _, err := resolver.expandDirectSetting(configuration, "CODE_SIGN_ENTITLEMENTS", value, map[string]bool{"CODE_SIGN_ENTITLEMENTS": true})
+			expanded, _, err := resolver.expandDirectAssignmentWithContext(
+				configuration,
+				configuration,
+				"CODE_SIGN_ENTITLEMENTS",
+				assignmentKey,
+				value,
+				map[string]bool{"CODE_SIGN_ENTITLEMENTS": true},
+			)
 			if err != nil {
 				return err
 			}
@@ -2691,7 +2720,7 @@ func signingProjectInputPaths(
 		if authorized {
 			value, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS")
 			if err == nil {
-				if err := appendResolvedEntitlements(configuration, value); err != nil {
+				if err := appendResolvedEntitlements(configuration, "CODE_SIGN_ENTITLEMENTS", value); err != nil {
 					if lexicalErr := appendLexicalEntitlementCandidate(value); lexicalErr != nil {
 						return nil, externalEntitlementPaths, inputBlockers, lexicalErr
 					}
@@ -2724,7 +2753,7 @@ func signingProjectInputPaths(
 					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has unresolved CODE_SIGN_ENTITLEMENTS reference; signing scope is uncertain", configuration.target, configuration.name))
 					continue
 				}
-				if err := appendResolvedEntitlements(configuration, value); err != nil {
+				if err := appendResolvedEntitlements(configuration, key, value); err != nil {
 					if lexicalErr := appendLexicalEntitlementCandidate(value); lexicalErr != nil {
 						return nil, externalEntitlementPaths, inputBlockers, lexicalErr
 					}
@@ -2767,10 +2796,11 @@ func signingProjectInputPaths(
 				if !ok || (!strings.Contains(value, "$(") && !strings.Contains(value, "${")) {
 					continue
 				}
-				expanded, _, err := resolver.expandDirectSettingWithContext(
+				expanded, _, err := resolver.expandDirectAssignmentWithContext(
 					projectCfg,
 					configuration,
 					"CODE_SIGN_ENTITLEMENTS",
+					key,
 					value,
 					map[string]bool{"CODE_SIGN_ENTITLEMENTS": true},
 				)
@@ -2828,7 +2858,7 @@ func signingProjectInputPaths(
 		entitlementCandidatesByConfiguration[configurationID] = candidates
 		configuration := configurationsByID[configurationID]
 		for _, value := range composed {
-			if err := appendResolvedEntitlements(configuration, value); err != nil {
+			if err := appendResolvedEntitlements(configuration, "CODE_SIGN_ENTITLEMENTS", value); err != nil {
 				if lexicalErr := appendLexicalEntitlementCandidate(value); lexicalErr != nil {
 					return nil, externalEntitlementPaths, inputBlockers, lexicalErr
 				}
@@ -2880,7 +2910,11 @@ func signingProjectInputPaths(
 					!entitlementCandidatesByConfiguration[configuration.id][normalizeSigningLexicalPath(filePath)][assignment.lineIndex] {
 					continue
 				}
-				if err := appendResolvedEntitlements(configuration, assignment.value); err != nil {
+				// The xcconfig layer sits below these PBX settings, so the
+				// object's unconditional assignment is not this assignment's
+				// inherited base. Selector-aware composition inside an xcconfig
+				// is handled by signingXCConfigEntitlementAssignmentCandidates.
+				if err := appendResolvedEntitlements(configuration, "CODE_SIGN_ENTITLEMENTS", assignment.value); err != nil {
 					if lexicalErr := appendLexicalEntitlementCandidate(assignment.value); lexicalErr != nil {
 						return nil, externalEntitlementPaths, inputBlockers, lexicalErr
 					}

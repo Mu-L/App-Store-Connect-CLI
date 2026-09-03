@@ -5306,6 +5306,59 @@ func TestSigningPlanProtectsTargetConditionalInheritedEntitlementComposition(t *
 	}
 }
 
+// TestSigningPlanProtectsIdenticalConditionalInheritedEntitlementComposition
+// pins Xcode's build-setting evaluation for a conditional assignment whose text
+// matches the object's unconditional assignment. Xcode resolves $(inherited) to
+// the value the setting has at the next level up for that same assignment slot:
+// a conditional CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] inherits the target's own
+// unconditional CODE_SIGN_ENTITLEMENTS, which only then inherits the xcconfig
+// and project layers. Widget Debug therefore has two live entitlement paths:
+// the unconditional "BaseSuffix" and the conditional "BaseSuffixSuffix". A text
+// comparison between the two assignments cannot tell the conditional caller
+// apart from the unconditional slot it must compose through, so identical
+// expressions must not collapse into a single resolution. The planner stays
+// conservative here: both resolutions remain protected inputs, so widening the
+// inventory cannot drop the path the unconditional assignment already named.
+func TestSigningPlanProtectsIdenticalConditionalInheritedEntitlementComposition(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = Base;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(inherited)Suffix";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = "$(inherited)Suffix";`)
+	projectRoot := filepath.Dir(project)
+	if err := os.WriteFile(filepath.Join(projectRoot, "App.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	composedPath := filepath.Join(projectRoot, "BaseSuffixSuffix")
+	const existingEntitlements = "existing identical conditional composition bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want identical conditional composition rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("identical conditional composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
 func TestSigningPlanProtectsInheritedTargetComposedWithProjectConditional(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
