@@ -165,8 +165,10 @@ or to CI with `asc web auth export` and `asc web auth import`.
   An exported web-session bundle is a live credential. It can act as the Apple
   Account until the cookies expire. Write it only to a `0600` file, store it
   in a secrets manager, and delete the file once it is consumed. Cookie values
-  are never printed to stdout. Importing does not contact Apple; run
-  `asc web auth status` on the target machine to confirm the session still works.
+  are never printed to stdout. Import validates the bundle against Apple's
+  session endpoint before writing to the cache, so the importing machine needs
+  network access to Apple; an invalid, expired, unreachable, or
+  identity-mismatched session is refused without changing the cache.
 </Warning>
 
 ```bash  theme={null}

@@ -113,8 +113,10 @@ Pass `--apple-id` to refuse a bundle that belongs to a different Apple Account.
 Pass `--overwrite` to replace a cached session that already exists for that
 account. Import contacts Apple's session endpoint and refuses invalid,
 expired, unreachable, malformed, or identity-mismatched sessions before any
-cache write. Run `asc web auth status` afterwards to inspect the resumed
-session if needed.
+cache write. That check is not optional: without it a stale or hostile bundle
+would be cached under whatever Apple Account it claims, and a machine that
+cannot reach Apple could not use the imported session anyway. Run
+`asc web auth status` afterwards to inspect the resumed session if needed.
 
 Isolate tests and automation with `ASC_WEB_SESSION_CACHE_DIR` and
 `ASC_WEB_SESSION_CACHE_BACKEND=file`. An unset or `auto` backend still falls
