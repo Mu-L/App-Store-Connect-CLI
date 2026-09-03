@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -174,15 +175,23 @@ func captureWithRootProvider(ctx context.Context, req CaptureRequest, destinatio
 	if closeErr != nil {
 		return nil, fmt.Errorf("close captured image: %w", closeErr)
 	}
-	data, err := scratchOutputRoot.ReadFileLimited(scratchRelative, maxMatrixArtifactBytes)
+	src, err := scratchOutputRoot.OpenFile(scratchRelative)
 	if err != nil {
-		return nil, fmt.Errorf("read captured image: %w", err)
+		return nil, fmt.Errorf("open captured image: %w", err)
 	}
 	if matrixCaptureRootBeforePublishForTest != nil {
 		matrixCaptureRootBeforePublishForTest(outputPath)
 	}
-	if err := destination.WriteFilePreservingMode(relativeOutput, data, 0o644); err != nil {
-		return nil, fmt.Errorf("publish captured image: %w", err)
+	written, writeErr := destination.WriteFromPreservingMode(relativeOutput, &matrixContextReader{ctx: ctx, reader: io.LimitReader(src, maxMatrixArtifactBytes+1)}, 0o644)
+	closeErr = src.Close()
+	if writeErr != nil {
+		return nil, fmt.Errorf("publish captured image: %w", writeErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close captured image: %w", closeErr)
+	}
+	if written > maxMatrixArtifactBytes {
+		return nil, errors.New("captured image exceeds the artifact size limit")
 	}
 
 	return &CaptureResult{

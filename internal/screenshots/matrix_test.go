@@ -4562,6 +4562,40 @@ func TestCaptureWithRootRejectsFinalSymlink(t *testing.T) {
 	}
 }
 
+func TestCaptureWithRootHonorsCancellationDuringPublish(t *testing.T) {
+	dir := t.TempDir()
+	destinationPath := filepath.Join(dir, "destination")
+	if err := os.MkdirAll(destinationPath, 0o755); err != nil {
+		t.Fatalf("create destination: %v", err)
+	}
+	destination, err := rootfs.New(destinationPath)
+	if err != nil {
+		t.Fatalf("open destination: %v", err)
+	}
+	defer destination.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	previousHook := matrixCaptureRootBeforePublishForTest
+	matrixCaptureRootBeforePublishForTest = func(string) {
+		cancel()
+	}
+	t.Cleanup(func() { matrixCaptureRootBeforePublishForTest = previousHook })
+	provider := ProviderFunc(func(_ context.Context, request CaptureRequest) (string, error) {
+		path := filepath.Join(request.OutputDir, request.Name+".png")
+		writeMinimalPNG(t, path, 100, 200)
+		return path, nil
+	})
+	result, err := captureWithRootProvider(ctx, CaptureRequest{Name: "home", OutputDir: destinationPath}, destination, provider)
+	if err == nil {
+		t.Fatal("captureWithRootProvider() error = nil, want canceled publish")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("captureWithRootProvider() error = %v, want context.Canceled", err)
+	}
+	if result != nil {
+		t.Fatalf("capture result = %+v, want no result after canceled publish", result)
+	}
+}
+
 // ProviderFunc adapts a function to the screenshot Provider contract for
 // rooted publication tests.
 type ProviderFunc func(context.Context, CaptureRequest) (string, error)
