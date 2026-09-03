@@ -150,6 +150,24 @@ func TestPlanSigningResignEntitlementsUsesExactKVSProfileValueWithoutAppPrefixDe
 	}
 }
 
+func TestPlanSigningResignEntitlementsRequiresSourceApplicationIdentifierForKVSRebase(t *testing.T) {
+	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
+		signingResignKVStoreEntitlement: "OLDKVS.com.example.app",
+	})
+	delete(target.ExistingEntitlements, "application-identifier")
+	delete(target.ExistingEntitlements, "com.apple.application-identifier")
+	profile := rebaseTestProfile(target.BundleID, "NEWPREFIX", map[string]any{
+		signingResignKVStoreEntitlement: "NEWKVS.com.example.app",
+	})
+	_, err := planSigningResignEntitlements(signingResignArchive{
+		MainPath: "Payload/App.app",
+		Targets:  []signingResignTarget{target},
+	}, map[string]signingResignProfile{target.BundleID: profile}, true)
+	if err == nil || !strings.Contains(err.Error(), "application-identifier") {
+		t.Fatalf("planSigningResignEntitlements() error = %v, want source application-identifier refusal", err)
+	}
+}
+
 func TestPlanSigningResignEntitlementsRejectsWildcardOnlyKVSReplacement(t *testing.T) {
 	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
 		signingResignKVStoreEntitlement: "OLDPREFIX.com.example.app",

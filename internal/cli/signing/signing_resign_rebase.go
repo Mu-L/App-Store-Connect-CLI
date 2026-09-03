@@ -144,6 +144,13 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 					}
 					changed = didChange
 					if changed {
+						// Every actual rebase must be anchored to the source
+						// target's signed application identifier. KVS has its own
+						// transfer-aware destination mapping, but it still cannot
+						// be rebased from a target with no source identity.
+						if _, err := graph.sourcePrefix(bundleID); err != nil {
+							return nil, nil, err
+						}
 						resolvedValue = transformed
 						var err error
 						rewrites, err = appendSigningResignEntitlementRewrites(rewrites, key, value, transformed)
