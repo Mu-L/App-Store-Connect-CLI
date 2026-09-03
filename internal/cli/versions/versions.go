@@ -459,6 +459,7 @@ Examples:
 				VersionString: versionResp.Data.Attributes.VersionString,
 				Platform:      string(versionResp.Data.Attributes.Platform),
 				State:         shared.ResolveAppStoreVersionState(versionResp.Data.Attributes),
+				Downloadable:  versionResp.Data.Attributes.Downloadable,
 			}
 
 			if *includeBuild {
