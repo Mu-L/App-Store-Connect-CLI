@@ -408,28 +408,49 @@ var (
 type twoFactorCodeCommandReader func(ctx context.Context, command string) (string, error)
 
 // readRotatedTwoFactorCodeFromCommand re-runs the configured 2FA code command
-// until it prints a value other than the one Apple already consumed. The wait
-// is bounded, honours cancellation, and never falls back to a prompt, so a
+// until it prints a value other than the one Apple already consumed. Nothing is
+// retried until a code is known to be consumed, so the ordinary first read keeps
+// the plain per-command timeout.
+//
+// The rotation deadline bounds the whole retry, not just the gaps between polls:
+// every poll inherits it, so a slow or blocking command cannot stretch the wait
+// by its own timeout (60s by default, and larger under an ASC_TIMEOUT override).
+// The wait honours caller cancellation and never falls back to a prompt, so a
 // scripted invocation still terminates on its own.
 func readRotatedTwoFactorCodeFromCommand(ctx context.Context, command, consumed string) (string, error) {
-	waitCtx := shared.ContextWithoutTimeout(ctx)
-	deadline := time.Now().Add(webTwoFactorCodeRotationTimeout)
+	if consumed == "" {
+		return readTwoFactorCodeFromCommandFn(ctx, command)
+	}
+
+	// Derive the budget from the untimed parent so the caller's cancellation
+	// still lands while the login deadline, which the 2FA steps re-derive
+	// anyway, cannot cut the rotation wait short.
+	rotationCtx, cancel := context.WithTimeout(shared.ContextWithoutTimeout(ctx), webTwoFactorCodeRotationTimeout)
+	defer cancel()
+	rotationExhausted := func() error {
+		return fmt.Errorf("2fa required: the configured two-factor code command did not produce a code other than the one the expired session already consumed within %s: wait for it to produce a new code, then re-run", webTwoFactorCodeRotationTimeout)
+	}
 	for {
-		code, err := readTwoFactorCodeFromCommandFn(ctx, command)
+		code, err := readTwoFactorCodeFromCommandFn(rotationCtx, command)
 		if err != nil {
+			// Only the rotation budget expiring is ours to explain; a cancelled
+			// caller or a genuinely failing command keeps its own error.
+			if rotationCtx.Err() != nil && ctx.Err() == nil {
+				return "", rotationExhausted()
+			}
 			return "", err
 		}
-		if consumed == "" || code != consumed {
+		if code != consumed {
 			return code, nil
-		}
-		if !time.Now().Before(deadline) {
-			return "", fmt.Errorf("2fa required: the configured two-factor code command kept returning the code that the expired session already consumed for %s: wait for it to produce a new code, then re-run", webTwoFactorCodeRotationTimeout)
 		}
 		timer := time.NewTimer(webTwoFactorCodeRotationPollInterval)
 		select {
-		case <-waitCtx.Done():
+		case <-rotationCtx.Done():
 			timer.Stop()
-			return "", fmt.Errorf("2fa required: waiting for the two-factor code command to produce a new code was interrupted: %w", waitCtx.Err())
+			if ctx.Err() != nil {
+				return "", fmt.Errorf("2fa required: waiting for the two-factor code command to produce a new code was interrupted: %w", ctx.Err())
+			}
+			return "", rotationExhausted()
 		case <-timer.C:
 		}
 	}

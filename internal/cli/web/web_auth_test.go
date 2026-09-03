@@ -2917,6 +2917,84 @@ func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *te
 	}
 }
 
+// The rotation budget has to reach the command itself. A 2FA code command runs
+// with its own generous timeout (60s by default, more under an ASC_TIMEOUT
+// override), so a slow or blocking one would otherwise stretch the retry far
+// past the advertised wait before the deadline is ever consulted.
+func TestResolveSessionBoundsBlockingCommandByRotationDeadlineAfterStaleBootstrap(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+	shortenTwoFactorCodeRotationWait(t)
+	t.Setenv(webTwoFactorCodeCommandEnv, "print-code")
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	commandCalls := 0
+	var commandDeadlines []bool
+
+	deleteWebSessionFn = func(appleID string) error { return nil }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt when a code command is configured")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		commandCalls++
+		if commandCalls == 1 {
+			return "111111", nil
+		}
+		// Stand in for a command that blocks: it only returns once its own
+		// context is done, which happens solely if the rotation deadline is
+		// carried into it.
+		_, hasDeadline := ctx.Deadline()
+		commandDeadlines = append(commandDeadlines, hasDeadline)
+		<-ctx.Done()
+		return "", fmt.Errorf("2fa required: two-factor code command interrupted: %w", ctx.Err())
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		t.Fatalf("did not expect a 2fa submission on the fresh retry, got %q", code)
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+	persistWebSessionFn = func(session *webcore.AuthSession) error {
+		t.Fatal("did not expect a session to be persisted when no new 2fa code is available")
+		return nil
+	}
+
+	started := time.Now()
+	_, _, err := resolveSession(context.Background(), "user@example.com", "", "")
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("expected resolveSession to fail when the 2fa code command blocks past the rotation deadline")
+	}
+	if len(commandDeadlines) == 0 || !commandDeadlines[0] {
+		t.Fatal("expected the rotation deadline to be carried into the 2fa code command context")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("expected the blocked command to be bounded by the rotation deadline, took %s", elapsed)
+	}
+	got := err.Error()
+	if !strings.Contains(got, "already consumed") {
+		t.Fatalf("expected the message to explain that the code was consumed, got %q", got)
+	}
+	if !strings.Contains(got, "two-factor code command") {
+		t.Fatalf("expected the message to point at the 2fa code command, got %q", got)
+	}
+	if strings.Contains(got, "interrupted") {
+		t.Fatalf("expected the rotation budget to be explained rather than surfaced as an interruption, got %q", got)
+	}
+}
+
 // A jar that fails the post-2FA session bootstrap is proven unusable even when
 // the fresh retry itself fails, so the cached entry must be discarded at
 // detection time. Relying on a successful fresh login to overwrite it would let
