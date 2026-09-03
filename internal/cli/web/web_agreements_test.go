@@ -262,6 +262,11 @@ func TestWebAgreementsAcceptFailsWhenReReadOmitsAgreement(t *testing.T) {
 func TestWebAgreementsAcceptFailsWhenVerificationReadFails(t *testing.T) {
 	stubWebAgreementsSession(t)
 	stubWebAgreementsAccept(t, nil, errors.New("portal unavailable"))
+	var persistCalls int
+	persistWebSessionFn = func(session *webcore.AuthSession) error {
+		persistCalls++
+		return nil
+	}
 
 	cmd := WebAgreementsAcceptCommand()
 	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--confirm"}); err != nil {
@@ -276,6 +281,9 @@ func TestWebAgreementsAcceptFailsWhenVerificationReadFails(t *testing.T) {
 	}
 	if stdout != "" {
 		t.Fatalf("expected no receipt on stdout, got %q", stdout)
+	}
+	if persistCalls != 1 {
+		t.Fatalf("persist calls = %d, want 1 so the selected team is retained after a verification failure", persistCalls)
 	}
 }
 

@@ -386,6 +386,9 @@ Examples:
 			if accepted == nil {
 				return fmt.Errorf("web agreements accept failed: missing accept result")
 			}
+			// Persist before verification so a later `agreements status` without
+			// --developer-team still inspects the team that accepted.
+			persistDeveloperPortalSession(session)
 
 			// Verify against the Developer Portal history alone; the combined
 			// status read also depends on the App Store Connect banner endpoint,
@@ -410,7 +413,6 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("web agreements accept failed: %w", err)
 			}
-			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
