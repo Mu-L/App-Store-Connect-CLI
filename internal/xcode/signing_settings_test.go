@@ -220,6 +220,80 @@ func TestSigningApplyRefusesExistingReceiptBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestSigningApplyKeepsCompletedReceiptWhenRetainedCloseFails(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+
+	injected := errors.New("injected retained close failure")
+	originalClose := closeVersionWritesFn
+	closeVersionWritesFn = func(writes []preparedVersionWrite) error {
+		if err := originalClose(writes); err != nil {
+			return errors.Join(err, injected)
+		}
+		return injected
+	}
+	t.Cleanup(func() { closeVersionWritesFn = originalClose })
+
+	result, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath})
+	if err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v, want success when only post-publish close fails", err)
+	}
+	if result == nil || !result.Completed {
+		t.Fatalf("ApplySigningPlan() result = %#v, want completed receipt", result)
+	}
+	if _, statErr := os.Stat(plan.ReceiptPath); statErr != nil {
+		t.Fatalf("receipt after retained close failure = %v, want present", statErr)
+	}
+}
+
+func TestSigningArtifactLexicalPathEqualUsesVolumeSeamOnLinux(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousFn := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "linux"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousFn
+	})
+	if !signingArtifactLexicalPathEqual("/mnt/vfat/plan.json", "/mnt/vfat/PLAN.json") {
+		t.Fatal("linux case-insensitive volume did not treat PLAN.json as an artifact alias")
+	}
+}
+
+func TestWriteSigningPlanArtifactRejectsSymlinkParent(t *testing.T) {
+	realParent := t.TempDir()
+	linkParent := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatalf("Symlink(parent) error = %v", err)
+	}
+	plan := &SigningPlan{
+		SchemaVersion: 1,
+		Command:       "asc xcode signing plan",
+		PlanPath:      filepath.Join(linkParent, "plan.json"),
+		Ready:         true,
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err == nil || !errors.Is(err, rootfs.ErrSymlink) {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v, want symlink parent rejection", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(realParent, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact through symlink parent = %v, want absent", statErr)
+	}
+}
+
 func TestSigningApplyRollsBackProjectWhenReceiptFinalizationFails(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()

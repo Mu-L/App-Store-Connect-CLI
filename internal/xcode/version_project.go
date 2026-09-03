@@ -1801,7 +1801,14 @@ func commitVersionWritesWithCreateCheck(
 ) (resultErr error) {
 	var retainedIdentities []os.FileInfo
 	defer func() {
-		resultErr = errors.Join(resultErr, closeVersionWrites(writes), closeVersionIdentities(retainedIdentities))
+		closeErr := errors.Join(closeVersionWritesFn(writes), closeVersionIdentities(retainedIdentities))
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+			return
+		}
+		// Publication already succeeded. A later close must not retract a
+		// completed receipt or block apply retry.
+		_ = closeErr
 	}()
 	sort.Slice(writes, func(left, right int) bool {
 		// Finalize create-only artifacts after ordinary project files so a
@@ -1995,6 +2002,8 @@ func rollbackOrdinaryVersionWrite(write preparedVersionWrite) error {
 	}
 	return nil
 }
+
+var closeVersionWritesFn = closeVersionWrites
 
 func closeVersionWrites(writes []preparedVersionWrite) error {
 	var closeErrors []error

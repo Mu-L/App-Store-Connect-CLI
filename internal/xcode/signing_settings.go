@@ -3211,7 +3211,15 @@ func WriteSigningPlanArtifact(plan *SigningPlan, overwrite bool) error {
 	if err != nil {
 		return err
 	}
-	root, err := rootfs.New(filepath.Dir(absolute))
+	parent := filepath.Dir(absolute)
+	parentInfo, err := os.Lstat(parent)
+	if err == nil && parentInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("write signing plan %s: %w", absolute, rootfs.ErrSymlink)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat signing plan parent %s: %w", parent, err)
+	}
+	root, err := rootfs.New(parent)
 	if err != nil {
 		return err
 	}
