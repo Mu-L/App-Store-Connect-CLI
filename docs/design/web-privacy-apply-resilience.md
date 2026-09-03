@@ -116,8 +116,10 @@ mutation and reports `applied: true`, `changed: false`.
 All output changes are additive: `changed`, `unknownActions`,
 `notAppliedActions`, and `recheck` on the apply receipt, and `staleTokens` on
 the plan payload. `applied` keeps its meaning - the whole plan committed - and
-is now reachable as `false` on the partial path. `--allow-deletes` and
-`--confirm` gating is unchanged, and no prompt is introduced.
+is now reachable as `false` on the partial path. `changed` is omitted when an
+attempted action is still unresolved, so automation cannot read a failed
+recheck as a confirmed no-op. `--allow-deletes` and `--confirm` gating is
+unchanged, and no prompt is introduced.
 
 The privacy receipts stay CLI-local structs rendered through
 `shared.PrintOutputWithRenderers`, matching every other command in

@@ -2555,6 +2555,9 @@ func TestWebPrivacyApplyOmitsRemainingChangesWhenTheRecheckFails(t *testing.T) {
 	if _, present := recheck["remainingChanges"]; present {
 		t.Fatalf("a failed re-read computed no count, so remainingChanges must be absent: %#v", recheck)
 	}
+	if _, present := payload["changed"]; present {
+		t.Fatalf("an unresolved action must not serialize changed as false: %#v", payload["changed"])
+	}
 	if len(privacyApplyActionKinds(t, payload, "unknownActions")) == 0 {
 		t.Fatalf("the attempted create must remain unknown: %#v", payload)
 	}
@@ -2653,6 +2656,27 @@ func TestApplyPrivacyPlanReportsPlannedStepsAsNotAppliedWhenValidationFails(t *t
 	}
 	if actions["update"] != 2 || actions["create"] != 1 {
 		t.Fatalf("unexpected not-applied buckets: %#v", result.NotApplied)
+	}
+}
+
+func TestPrivacyApplyChangedOmitsWhenOnlyUnknownActionsRemain(t *testing.T) {
+	if got := privacyApplyChanged(privacyApplyResult{
+		Unknown: []privacyApplyAction{{Action: "create"}},
+	}); got != nil {
+		t.Fatalf("unresolved actions must omit changed, got %#v", *got)
+	}
+
+	got := privacyApplyChanged(privacyApplyResult{
+		Applied: []privacyApplyAction{{Action: "update"}},
+		Unknown: []privacyApplyAction{{Action: "create"}},
+	})
+	if got == nil || !*got {
+		t.Fatalf("a confirmed mutation still reports changed=true: %#v", got)
+	}
+
+	got = privacyApplyChanged(privacyApplyResult{})
+	if got == nil || *got {
+		t.Fatalf("a fully resolved no-op reports changed=false: %#v", got)
 	}
 }
 

@@ -123,19 +123,21 @@ type privacyApplyRecheck struct {
 }
 
 type privacyApplyOutput struct {
-	AppID             string                 `json:"appId"`
-	File              string                 `json:"file"`
-	Updates           []privacyPlanChange    `json:"updates,omitempty"`
-	Adds              []privacyPlanChange    `json:"adds"`
-	Deletes           []privacyPlanChange    `json:"deletes"`
-	SkippedDeletes    []privacySkippedDelete `json:"skippedDeletes,omitempty"`
-	Applied           bool                   `json:"applied"`
-	Changed           bool                   `json:"changed"`
-	Actions           []privacyApplyAction   `json:"actions,omitempty"`
-	UnknownActions    []privacyApplyAction   `json:"unknownActions,omitempty"`
-	NotAppliedActions []privacyApplyAction   `json:"notAppliedActions,omitempty"`
-	Recheck           *privacyApplyRecheck   `json:"recheck,omitempty"`
-	APICalls          []privacyAPICall       `json:"apiCalls,omitempty"`
+	AppID          string                 `json:"appId"`
+	File           string                 `json:"file"`
+	Updates        []privacyPlanChange    `json:"updates,omitempty"`
+	Adds           []privacyPlanChange    `json:"adds"`
+	Deletes        []privacyPlanChange    `json:"deletes"`
+	SkippedDeletes []privacySkippedDelete `json:"skippedDeletes,omitempty"`
+	Applied        bool                   `json:"applied"`
+	// Changed is omitted when an attempted action is still unresolved: a
+	// false here would read as a confirmed no-op.
+	Changed           *bool                `json:"changed,omitempty"`
+	Actions           []privacyApplyAction `json:"actions,omitempty"`
+	UnknownActions    []privacyApplyAction `json:"unknownActions,omitempty"`
+	NotAppliedActions []privacyApplyAction `json:"notAppliedActions,omitempty"`
+	Recheck           *privacyApplyRecheck `json:"recheck,omitempty"`
+	APICalls          []privacyAPICall     `json:"apiCalls,omitempty"`
 }
 
 type privacyPublishState struct {
@@ -977,6 +979,24 @@ func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause,
 	return message
 }
 
+// privacyApplyChanged reports whether this invocation confirmed a mutation.
+// When the only attempted action is still unknown, the field is omitted
+// rather than serialized as false, which automation would read as a no-op.
+func privacyApplyChanged(result privacyApplyResult) *bool {
+	if len(result.Applied) == 0 && len(result.Unknown) > 0 {
+		return nil
+	}
+	changed := len(result.Applied) > 0
+	return &changed
+}
+
+func formatPrivacyApplyChanged(changed *bool) string {
+	if changed == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%t", *changed)
+}
+
 // privacyApplyConverged reports whether the post-failure re-read proves the
 // remote declaration already matches the file. Residual skipped deletes count
 // against convergence: an undesired remote tuple Apple returned without a usage
@@ -1445,7 +1465,7 @@ func renderPrivacyApplyTable(payload privacyApplyOutput) error {
 	fmt.Printf("App ID: %s\n", payload.AppID)
 	fmt.Printf("File: %s\n", payload.File)
 	fmt.Printf("Applied: %t\n", payload.Applied)
-	fmt.Printf("Changed: %t\n", payload.Changed)
+	fmt.Printf("Changed: %s\n", formatPrivacyApplyChanged(payload.Changed))
 	fmt.Printf("Updates: %d\n", len(payload.Updates))
 	fmt.Printf("Adds: %d\n", len(payload.Adds))
 	fmt.Printf("Deletes: %d\n", len(payload.Deletes))
@@ -1500,7 +1520,7 @@ func renderPrivacyApplyMarkdown(payload privacyApplyOutput) error {
 	fmt.Printf("**App ID:** %s\n\n", payload.AppID)
 	fmt.Printf("**File:** %s\n\n", payload.File)
 	fmt.Printf("**Applied:** %t\n\n", payload.Applied)
-	fmt.Printf("**Changed:** %t\n\n", payload.Changed)
+	fmt.Printf("**Changed:** %s\n\n", formatPrivacyApplyChanged(payload.Changed))
 	fmt.Printf("**Updates:** %d\n\n", len(payload.Updates))
 	fmt.Printf("**Adds:** %d\n\n", len(payload.Adds))
 	fmt.Printf("**Deletes:** %d\n\n", len(payload.Deletes))
@@ -2033,7 +2053,7 @@ Examples:
 				}
 				payload.Recheck = &recheck
 			}
-			payload.Changed = len(result.Applied) > 0
+			payload.Changed = privacyApplyChanged(result)
 			payload.Actions = result.Applied
 			payload.UnknownActions = result.Unknown
 			payload.NotAppliedActions = result.NotApplied
