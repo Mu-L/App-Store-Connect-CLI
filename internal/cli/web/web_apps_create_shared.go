@@ -397,7 +397,7 @@ func RunAppsCreate(ctx context.Context, opts AppsCreateRunOptions) error {
 		return err
 	}
 
-	requestCtx, cancel := shared.ContextWithTimeout(ctx)
+	requestCtx, cancel := newWebRequestContext(ctx)
 	defer cancel()
 
 	if source == "fresh" {

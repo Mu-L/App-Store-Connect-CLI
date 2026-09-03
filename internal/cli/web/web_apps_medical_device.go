@@ -95,10 +95,8 @@ Examples:
 				return shared.UsageError("--declared true is not yet supported; only false is currently supported")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			accountID, client, requestCtx, cancel, err := resolveWebComplianceClient(ctx, authFlags, "web apps medical-device set")
 			defer cancel()
-
-			accountID, client, err := resolveWebComplianceClient(requestCtx, authFlags, "web apps medical-device set")
 			if err != nil {
 				return err
 			}
