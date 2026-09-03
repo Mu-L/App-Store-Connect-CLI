@@ -82,10 +82,15 @@ step from remote evidence, because a 5xx can still have committed the write:
   present under another key -> not applied; absent entirely -> unknown.
 
 The same re-read produces `recheck.remainingChanges`, the number of plan steps
-still outstanding, so an operator knows how much a rerun has left to do. When
-the re-read itself fails, `recheck.succeeded` is `false`, `remainingChanges` is
-omitted entirely rather than reported as `0`, and attempted steps stay
-`unknown` rather than being reported as either outcome.
+still outstanding, so an operator knows how much a rerun has left to do.
+`remainingChanges` still counts only executable leftover updates, adds, and
+deletes: a skipped delete is not something a rerun can attempt. When the
+re-read leaves `skippedDeletes` populated, the stderr diagnostic does not
+promise that a rerun converges; those tuples have no usage id and need
+manual cleanup. When the re-read itself fails, `recheck.succeeded` is
+`false`, `remainingChanges` is omitted entirely rather than reported as `0`,
+and attempted steps stay `unknown` rather than being reported as either
+outcome.
 
 Apple can also commit the final mutation and still fail the response. When the
 re-read resolves every action and leaves no remaining change, `applied` is

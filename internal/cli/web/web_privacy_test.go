@@ -2463,6 +2463,33 @@ func TestPrivacyApplyFailureMessageReportsConvergence(t *testing.T) {
 	}
 }
 
+func TestPrivacyApplyFailureMessageDoesNotPromiseConvergenceWhenSkippedDeletesRemain(t *testing.T) {
+	message := privacyApplyFailureMessage("123456789", privacyApplyOutput{
+		Actions: []privacyApplyAction{{Action: "update"}},
+		SkippedDeletes: []privacySkippedDelete{
+			{
+				Key:            "PHONE_NUMBER|ANALYTICS|DATA_LINKED_TO_YOU",
+				Category:       "PHONE_NUMBER",
+				Purpose:        "ANALYTICS",
+				DataProtection: dataProtectionLinked,
+				Reason:         "missing_usage_id",
+			},
+		},
+	}, fmt.Errorf("web privacy apply failed: web api error (status 500)"), nil)
+	if strings.Contains(message, "converges") {
+		t.Fatalf("skipped deletes cannot be cleared by a rerun: %q", message)
+	}
+	if strings.Contains(message, "a rerun is a no-op") {
+		t.Fatalf("an undeletable leftover is not a match: %q", message)
+	}
+	if !strings.Contains(message, "skipped deletes have no usage id, so a rerun cannot remove them") {
+		t.Fatalf("message must name the undeletable leftover: %q", message)
+	}
+	if !strings.Contains(message, "partially applied") {
+		t.Fatalf("a committed update with a leftover skipped delete is still a partial apply: %q", message)
+	}
+}
+
 func TestApplyPrivacyPlanReportsPlannedStepsAsNotAppliedWhenValidationFails(t *testing.T) {
 	client := &fakePrivacyMutationClient{}
 	plan := privacyPlanOutput{

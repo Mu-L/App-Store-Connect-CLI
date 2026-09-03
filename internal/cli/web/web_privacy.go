@@ -964,6 +964,9 @@ func privacyApplyFailureMessage(appID string, payload privacyApplyOutput, cause,
 	case len(payload.Actions) == 0:
 		lead = fmt.Sprintf("web privacy apply failed for app %s without a confirmed change", appID)
 	}
+	if !payload.Applied && len(payload.SkippedDeletes) > 0 {
+		trailer = "the receipt above lists each action; skipped deletes have no usage id, so a rerun cannot remove them"
+	}
 	message := fmt.Sprintf("%s: %s; %s", lead, summary, trailer)
 	if cause != nil {
 		if causeText := strings.TrimSpace(cause.Error()); causeText != "" {
@@ -2020,6 +2023,10 @@ Examples:
 					remaining := len(residual.Updates) + len(residual.Adds) + len(residual.Deletes)
 					recheck.Succeeded = true
 					recheck.RemainingChanges = &remaining
+					// Residual skipped deletes are the current remote leftovers
+					// a rerun still cannot delete. Keep them on the receipt so
+					// the failure diagnostic does not promise convergence.
+					payload.SkippedDeletes = residual.SkippedDeletes
 					// Apple can commit the last mutation and still fail the
 					// response. When the re-read proves every planned change
 					// landed, the receipt says so; the exit stays non-zero
