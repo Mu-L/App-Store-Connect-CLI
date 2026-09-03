@@ -394,6 +394,16 @@ func capabilityRows() []Capability {
 			NextAction: "Use App Store Connect web UI, or asc web privacy.",
 		},
 		{
+			Area:       "app-management",
+			Capability: "App Store Regulations and Permits declarations",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps declarations list"},
+			Notes: []string{
+				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; writes other than medical-device --declared false remain website-only. EU DSA trader status is account-level and is not part of this listing.",
+			},
+			NextAction: "Use App Store Connect web UI, or asc web apps declarations list.",
+		},
+		{
 			Area:       "monetization",
 			Capability: "Subscriptions and in-app purchases",
 			Status:     statusCLISupported,
@@ -436,6 +446,16 @@ func capabilityRows() []Capability {
 				"subscriptionOfferCodes",
 				"winBackOffers",
 			},
+		},
+		{
+			Area:       "monetization",
+			Capability: "App and In-App Purchase tax category",
+			Status:     statusNotPublicAPI,
+			Notes: []string{
+				"Apple's published App Store Connect OpenAPI spec has no tax-category endpoint, and no tax-category attribute on apps, appInfos, or inAppPurchases.",
+				"The App Store Connect web endpoints behind the App Information and In-App Purchase tax category pickers have not been captured, so no web-session command is exposed either.",
+			},
+			NextAction: "Set the tax category in App Store Connect under App Information, or in the In-App Purchase settings.",
 		},
 		{
 			Area:       "testflight",

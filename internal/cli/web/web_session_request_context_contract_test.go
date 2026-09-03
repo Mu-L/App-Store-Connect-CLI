@@ -19,6 +19,7 @@ var webSessionResolveNames = map[string]struct{}{
 	"callResolveSessionForProviderSelection": {},
 	"resolveWebSession":                      {},
 	"callResolveAppCreateSessionFn":          {},
+	"resolveWebComplianceClient":             {},
 }
 
 // TestWebCommandsDoNotStartRequestTimeoutBeforeAuthentication is the drift
@@ -91,15 +92,21 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 	}
 
 	timeoutNames := map[string]token.Pos{}
-	var resolveWebSessionForCommandPos token.Pos
+	var sessionResolvePos token.Pos
 	ast.Inspect(body, func(node ast.Node) bool {
 		if _, isLit := node.(*ast.FuncLit); isLit {
 			return false
 		}
-		if call, ok := node.(*ast.CallExpr); ok && identName(call.Fun) == "resolveWebSessionForCommand" {
-			if resolveWebSessionForCommandPos == token.NoPos || call.Pos() < resolveWebSessionForCommandPos {
-				resolveWebSessionForCommandPos = call.Pos()
-			}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := identName(call.Fun)
+		if name != "resolveWebSessionForCommand" && name != "resolveWebComplianceClient" {
+			return true
+		}
+		if sessionResolvePos == token.NoPos || call.Pos() < sessionResolvePos {
+			sessionResolvePos = call.Pos()
 		}
 		return true
 	})
@@ -113,9 +120,9 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 		case *ast.AssignStmt:
 			recordTimeoutAssignments(stmt, timeoutNames)
 		case *ast.CallExpr:
-			if isSharedContextTimeoutCall(stmt.Fun) && resolveWebSessionForCommandPos != token.NoPos && stmt.Pos() < resolveWebSessionForCommandPos {
+			if isSharedContextTimeoutCall(stmt.Fun) && sessionResolvePos != token.NoPos && stmt.Pos() < sessionResolvePos {
 				position := fset.Position(stmt.Pos())
-				violations = append(violations, fmt.Sprintf("%s:%d: %s calls shared.ContextWithTimeout before resolveWebSessionForCommand", relative, position.Line, funcName))
+				violations = append(violations, fmt.Sprintf("%s:%d: %s calls shared.ContextWithTimeout before session resolution", relative, position.Line, funcName))
 			}
 			name := identName(stmt.Fun)
 			if _, isResolve := webSessionResolveNames[name]; !isResolve || len(stmt.Args) == 0 {
