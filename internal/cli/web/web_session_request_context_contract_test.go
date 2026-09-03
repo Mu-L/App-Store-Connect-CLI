@@ -24,7 +24,8 @@ var webSessionResolveNames = map[string]struct{}{
 
 // TestWebCommandsDoNotStartRequestTimeoutBeforeAuthentication is the drift
 // guard for #2333. New web commands must not recreate the expired-context
-// shape that a per-command patch would miss.
+// shape that a per-command patch would miss. Independent bounded preflights
+// that do not flow into session resolution are allowed.
 func TestWebCommandsDoNotStartRequestTimeoutBeforeAuthentication(t *testing.T) {
 	t.Parallel()
 
@@ -92,25 +93,6 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 	}
 
 	timeoutNames := map[string]token.Pos{}
-	var sessionResolvePos token.Pos
-	ast.Inspect(body, func(node ast.Node) bool {
-		if _, isLit := node.(*ast.FuncLit); isLit {
-			return false
-		}
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		name := identName(call.Fun)
-		if name != "resolveWebSessionForCommand" && name != "resolveWebComplianceClient" {
-			return true
-		}
-		if sessionResolvePos == token.NoPos || call.Pos() < sessionResolvePos {
-			sessionResolvePos = call.Pos()
-		}
-		return true
-	})
-
 	var violations []string
 	ast.Inspect(body, func(node ast.Node) bool {
 		if _, isLit := node.(*ast.FuncLit); isLit {
@@ -120,10 +102,6 @@ func requestTimeoutBeforeAuthViolations(fset *token.FileSet, relative, funcName 
 		case *ast.AssignStmt:
 			recordTimeoutAssignments(stmt, timeoutNames)
 		case *ast.CallExpr:
-			if isRequestTimeoutStartCall(stmt.Fun) && sessionResolvePos != token.NoPos && stmt.Pos() < sessionResolvePos {
-				position := fset.Position(stmt.Pos())
-				violations = append(violations, fmt.Sprintf("%s:%d: %s starts a request timeout before session resolution", relative, position.Line, funcName))
-			}
 			name := identName(stmt.Fun)
 			if _, isResolve := webSessionResolveNames[name]; !isResolve || len(stmt.Args) == 0 {
 				return true
