@@ -283,12 +283,12 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 		}
 		for _, rewrite := range target.EntitlementRewrites {
 			*result.EntitlementRewrites = append(*result.EntitlementRewrites, signingResignOutputEntitlementRewrite{
-				RelativePath: target.RelativePath,
-				BundleID:     target.BundleID,
-				Key:          rewrite.Key,
-				Index:        rewrite.Index,
-				From:         rewrite.From,
-				To:           rewrite.To,
+				TargetRelativePath: target.RelativePath,
+				BundleID:           target.BundleID,
+				Key:                rewrite.Key,
+				ElementIndex:       rewrite.Index,
+				From:               rewrite.From,
+				To:                 rewrite.To,
 			})
 		}
 	}
@@ -362,8 +362,8 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 // array element, element index, and canonical old/new values are compared in
 // that order.
 func signingResignOutputEntitlementRewriteLess(first, second signingResignOutputEntitlementRewrite) bool {
-	if first.RelativePath != second.RelativePath {
-		return first.RelativePath < second.RelativePath
+	if first.TargetRelativePath != second.TargetRelativePath {
+		return first.TargetRelativePath < second.TargetRelativePath
 	}
 	if first.BundleID != second.BundleID {
 		return first.BundleID < second.BundleID
@@ -375,11 +375,11 @@ func signingResignOutputEntitlementRewriteLess(first, second signingResignOutput
 	if first.Key != second.Key {
 		return first.Key < second.Key
 	}
-	if (first.Index == nil) != (second.Index == nil) {
-		return first.Index == nil
+	if (first.ElementIndex == nil) != (second.ElementIndex == nil) {
+		return first.ElementIndex == nil
 	}
-	if first.Index != nil && second.Index != nil && *first.Index != *second.Index {
-		return *first.Index < *second.Index
+	if first.ElementIndex != nil && second.ElementIndex != nil && *first.ElementIndex != *second.ElementIndex {
+		return *first.ElementIndex < *second.ElementIndex
 	}
 	firstFrom, secondFrom := signingResignRewriteValueSortKey(first.From), signingResignRewriteValueSortKey(second.From)
 	if firstFrom != secondFrom {

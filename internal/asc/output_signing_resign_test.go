@@ -60,19 +60,19 @@ func TestSigningResignResultEntitlementRewritesAreAdditiveAndOrdered(t *testing.
 		EntitlementRewrites: func() *[]SigningResignEntitlementRewrite {
 			values := []SigningResignEntitlementRewrite{
 				{
-					RelativePath: "Payload/App.app",
-					BundleID:     "com.example.app",
-					Key:          "keychain-access-groups",
-					Index:        &firstIndex,
-					From:         "OLDPREFIX.com.example.app",
-					To:           "NEWPREFIX.com.example.app",
+					TargetRelativePath: "Payload/App.app",
+					BundleID:           "com.example.app",
+					Key:                "keychain-access-groups",
+					ElementIndex:       &firstIndex,
+					From:               "OLDPREFIX.com.example.app",
+					To:                 "NEWPREFIX.com.example.app",
 				},
 				{
-					RelativePath: "Payload/App.app",
-					BundleID:     "com.example.app",
-					Key:          "com.apple.developer.ubiquity-kvstore-identifier",
-					From:         "OLDPREFIX.com.example.app",
-					To:           "NEWPREFIX.com.example.app",
+					TargetRelativePath: "Payload/App.app",
+					BundleID:           "com.example.app",
+					Key:                "com.apple.developer.ubiquity-kvstore-identifier",
+					From:               "OLDPREFIX.com.example.app",
+					To:                 "NEWPREFIX.com.example.app",
 				},
 			}
 			return &values
@@ -86,13 +86,16 @@ func TestSigningResignResultEntitlementRewritesAreAdditiveAndOrdered(t *testing.
 	if !strings.Contains(text, `"entitlementRewrites"`) || strings.Index(text, "keychain-access-groups") > strings.Index(text, "ubiquity-kvstore-identifier") {
 		t.Fatalf("entitlement rewrites JSON is missing or nondeterministic: %s", text)
 	}
+	if !strings.Contains(text, `"targetRelativePath":"Payload/App.app"`) || !strings.Contains(text, `"elementIndex":0`) {
+		t.Fatalf("entitlement rewrite JSON uses the wrong field names: %s", text)
+	}
 	var decoded struct {
 		EntitlementRewrites []SigningResignEntitlementRewrite `json:"entitlementRewrites"`
 	}
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded.EntitlementRewrites) != 2 || decoded.EntitlementRewrites[0].To == nil || decoded.EntitlementRewrites[0].Index == nil || *decoded.EntitlementRewrites[0].Index != 0 {
+	if len(decoded.EntitlementRewrites) != 2 || decoded.EntitlementRewrites[0].To == nil || decoded.EntitlementRewrites[0].ElementIndex == nil || *decoded.EntitlementRewrites[0].ElementIndex != 0 {
 		t.Fatalf("decoded entitlement rewrites = %#v, want every additive rewrite", decoded.EntitlementRewrites)
 	}
 	rows, values := signingResignResultRows(result)

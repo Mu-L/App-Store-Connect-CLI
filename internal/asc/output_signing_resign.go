@@ -38,12 +38,12 @@ type SigningResignTargetResult struct {
 // profile-authorized claim transformation. Values are emitted as the
 // entitlement plist values, not as profile wildcards.
 type SigningResignEntitlementRewrite struct {
-	RelativePath string `json:"relativePath"`
-	BundleID     string `json:"bundleId"`
-	Key          string `json:"key"`
-	Index        *int   `json:"index,omitempty"`
-	From         any    `json:"from"`
-	To           any    `json:"to"`
+	TargetRelativePath string `json:"targetRelativePath"`
+	BundleID           string `json:"bundleId"`
+	Key                string `json:"key"`
+	ElementIndex       *int   `json:"elementIndex,omitempty"`
+	From               any    `json:"from"`
+	To                 any    `json:"to"`
 }
 
 // SigningResignVerification reports the scope and result of post-signing
@@ -98,12 +98,12 @@ func signingResignResultRows(result *SigningResignResult) ([]string, [][]string)
 		prefix := fmt.Sprintf("entitlementRewrite.%03d", index)
 		rows = append(
 			rows,
-			[]string{prefix + ".relativePath", rewrite.RelativePath},
+			[]string{prefix + ".targetRelativePath", rewrite.TargetRelativePath},
 			[]string{prefix + ".bundleId", rewrite.BundleID},
 			[]string{prefix + ".key", rewrite.Key},
 		)
-		if rewrite.Index != nil {
-			rows = append(rows, []string{prefix + ".index", fmt.Sprintf("%d", *rewrite.Index)})
+		if rewrite.ElementIndex != nil {
+			rows = append(rows, []string{prefix + ".elementIndex", fmt.Sprintf("%d", *rewrite.ElementIndex)})
 		}
 		rows = append(
 			rows,

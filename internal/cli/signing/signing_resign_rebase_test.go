@@ -732,27 +732,27 @@ func TestPlanSigningResignEntitlementsDoesNotMutateInputClaims(t *testing.T) {
 func TestSigningResignEntitlementRewriteOrderIsCanonical(t *testing.T) {
 	arrayIndex := 1
 	scalar := signingResignOutputEntitlementRewrite{
-		RelativePath: "Payload/App.app",
-		BundleID:     "com.example.app",
-		Key:          signingResignKeychainGroupsEntitlement,
-		From:         "OLDPREFIX.scalar",
-		To:           "NEWPREFIX.scalar",
+		TargetRelativePath: "Payload/App.app",
+		BundleID:           "com.example.app",
+		Key:                signingResignKeychainGroupsEntitlement,
+		From:               "OLDPREFIX.scalar",
+		To:                 "NEWPREFIX.scalar",
 	}
 	array := signingResignOutputEntitlementRewrite{
-		RelativePath: "Payload/App.app",
-		BundleID:     "com.example.app",
-		Key:          signingResignKeychainGroupsEntitlement,
-		Index:        &arrayIndex,
-		From:         "OLDPREFIX.array",
-		To:           "NEWPREFIX.array",
+		TargetRelativePath: "Payload/App.app",
+		BundleID:           "com.example.app",
+		Key:                signingResignKeychainGroupsEntitlement,
+		ElementIndex:       &arrayIndex,
+		From:               "OLDPREFIX.array",
+		To:                 "NEWPREFIX.array",
 	}
 	otherTarget := scalar
-	otherTarget.RelativePath = "Payload/App.app/PlugIns/Feature.appex"
+	otherTarget.TargetRelativePath = "Payload/App.app/PlugIns/Feature.appex"
 	values := []signingResignOutputEntitlementRewrite{array, otherTarget, scalar}
 	sort.SliceStable(values, func(left, right int) bool {
 		return signingResignOutputEntitlementRewriteLess(values[left], values[right])
 	})
-	if values[0].Index != nil || values[1].Index == nil || values[2].RelativePath != otherTarget.RelativePath {
+	if values[0].ElementIndex != nil || values[1].ElementIndex == nil || values[2].TargetRelativePath != otherTarget.TargetRelativePath {
 		t.Fatalf("canonical rewrite order = %#v, want scalar, array, then later target", values)
 	}
 }
