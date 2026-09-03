@@ -198,8 +198,18 @@ func TestXCConfigQuotedValueRoundTripsEscapedBackslashesAndQuotes(t *testing.T) 
 	}
 }
 
+func TestXCConfigParserPreservesGenericQuotedEscapes(t *testing.T) {
+	document, err := parseXCConfig([]byte(`HEADER_SEARCH_PATHS = "Vendor\ SDK"` + "\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v, want generic quoted escape preserved", err)
+	}
+	if len(document.assignments) != 1 || document.assignments[0].value != `Vendor\ SDK` {
+		t.Fatalf("parseXCConfig() assignments = %#v, want preserved backslash-space", document.assignments)
+	}
+}
+
 func TestXCConfigParserRejectsMalformedQuotedEscapes(t *testing.T) {
-	for _, raw := range []string{`"dangling\`, `"unsupported\q"`} {
+	for _, raw := range []string{`"dangling\`} {
 		if _, _, err := parseXCConfigValue(raw); err == nil {
 			t.Fatalf("parseXCConfigValue(%q) error = nil, want malformed escape rejection", raw)
 		}

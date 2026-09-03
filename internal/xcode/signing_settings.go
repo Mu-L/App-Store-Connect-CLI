@@ -2247,8 +2247,14 @@ func signingPathCaseFoldedPrefixContained(root, absolute string) bool {
 // unresolved until signingPathLexicallyContained can inspect the relevant
 // volume semantics; every other non-contained path is safely external.
 func signingHasIncompleteInternalXCConfig(project *structuredVersionProject, paths []string, allowExternal bool) bool {
-	if allowExternal || len(paths) == 0 {
+	if len(paths) == 0 {
 		return false
+	}
+	if allowExternal {
+		// An opted-in external graph that still failed collection cannot be
+		// inventoried. A blocked plan is unsafe to serialize over an unread
+		// entitlement assignment.
+		return true
 	}
 	for _, path := range paths {
 		if !signingPathDefinitelyExternal(project, path) {

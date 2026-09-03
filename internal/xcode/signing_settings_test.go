@@ -2911,23 +2911,14 @@ func TestSigningPlanKeepsAllowedExternalCollectionFailureBlockedWithoutOverwrite
 		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: stateDir,
 		AllowExternalXCConfig: true,
 	})
-	if err != nil {
-		t.Fatalf("BuildSigningPlan() error = %v, want blocked plan", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want incomplete opted-in collection to fail closed", plan, err)
 	}
-	if plan.Ready || len(plan.Blockers) == 0 {
-		t.Fatalf("allowed external collection failure = ready=%t blockers=%#v, want blocked plan", plan.Ready, plan.Blockers)
-	}
-	if err := WriteSigningPlanArtifact(plan, false); err != nil {
-		t.Fatalf("WriteSigningPlanArtifact() error = %v, want safe distinct artifact", err)
-	}
-	if _, err := os.Stat(plan.PlanPath); err != nil {
-		t.Fatalf("blocked plan artifact stat error = %v", err)
-	}
-	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("receipt after blocked plan = %v, want absent", err)
+	if _, statErr := os.Lstat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after incomplete opted-in collection = %v, want absent", statErr)
 	}
 	if after := mustReadVersionTestFile(t, externalPath); after != before {
-		t.Fatalf("external malformed config changed while writing blocked plan: %q", after)
+		t.Fatalf("external malformed config changed while refusing publication: %q", after)
 	}
 }
 
@@ -2999,24 +2990,11 @@ func TestSigningPlanContinuesXCConfigProtectionAfterSelectedCollectionFailure(t 
 		StateDir:              stateDir,
 		AllowExternalXCConfig: true,
 	})
-	if err != nil {
-		t.Fatalf("BuildSigningPlan() distinct artifact error = %v, want blocked plan", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want incomplete opted-in collection to fail closed", plan, err)
 	}
-	if plan.Ready {
-		t.Fatalf("distinct artifact produced ready plan: %#v", plan)
-	}
-	blockers := strings.Join(plan.Blockers, "\n")
-	if !strings.Contains(blockers, "MissingSelected.xcconfig") || !strings.Contains(blockers, "MissingInclude.xcconfig") {
-		t.Fatalf("blocked plan = %#v, want selected and later collection blockers", plan.Blockers)
-	}
-	if err := WriteSigningPlanArtifact(plan, false); err != nil {
-		t.Fatalf("WriteSigningPlanArtifact() error = %v, want safe blocked artifact", err)
-	}
-	if _, err := os.Stat(plan.PlanPath); err != nil {
-		t.Fatalf("blocked plan artifact stat error = %v", err)
-	}
-	if _, err := os.Lstat(plan.ReceiptPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("receipt after blocked plan = %v, want absent", err)
+	if _, statErr := os.Lstat(filepath.Join(stateDir, "plan.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("plan artifact after incomplete opted-in collection = %v, want absent", statErr)
 	}
 }
 

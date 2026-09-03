@@ -151,7 +151,13 @@ func decodeXCConfigQuotedValue(value string, quote byte) (string, error) {
 		}
 		next := value[index+1]
 		if next != '\\' && next != quote {
-			return "", fmt.Errorf("unsupported escape in quoted xcconfig value")
+			// Version and signing parsers share this decoder. Preserve
+			// generic escapes such as `\ ` so an unrelated assignment cannot
+			// abort the whole document.
+			decoded.WriteByte('\\')
+			decoded.WriteByte(next)
+			index++
+			continue
 		}
 		decoded.WriteByte(next)
 		index++

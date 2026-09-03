@@ -1294,7 +1294,10 @@ func (r Root) RemoveFileIfSame(name string, expected os.FileInfo, expectedData [
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, parent.Close())
+		closeErr := parent.Close()
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
 	}()
 
 	quarantineName, quarantine, _, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
@@ -1552,7 +1555,8 @@ func (r Root) writeFileIfSame(
 	if !retainPublishedIdentity {
 		if err := publishedFile.Close(); err != nil {
 			closePublishedFile = false
-			return nil, quarantineLeftAfterPublication(fmt.Errorf("close published file after identity verification: %w", err))
+			cleanupErr := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData)
+			return publishedInfo, errors.Join(fmt.Errorf("close published file after identity verification: %w", err), cleanupErr)
 		}
 		closePublishedFile = false
 	}
