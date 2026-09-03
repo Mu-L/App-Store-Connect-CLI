@@ -218,11 +218,21 @@ func createMatrixReviewBrowserSnapshotWithContext(ctx context.Context, data []by
 	if err != nil {
 		return "", errMatrixReviewSnapshotUnavailable
 	}
+	createdInfo, err := os.Lstat(snapshotDir)
+	if err != nil || !createdInfo.IsDir() || createdInfo.Mode()&os.ModeSymlink != 0 {
+		_ = os.RemoveAll(snapshotDir)
+		return "", errMatrixReviewSnapshotUnavailable
+	}
 	removeOnError := true
 	defer func() {
-		if removeOnError {
-			_ = os.RemoveAll(snapshotDir)
+		if !removeOnError {
+			return
 		}
+		current, statErr := os.Lstat(snapshotDir)
+		if statErr != nil || !os.SameFile(createdInfo, current) {
+			return
+		}
+		_ = os.RemoveAll(snapshotDir)
 	}()
 	snapshotRoot, err := openCreatedMatrixReviewSnapshotRoot(snapshotDir)
 	if err != nil {

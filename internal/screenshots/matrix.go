@@ -635,6 +635,10 @@ var matrixOutputLockRootOpenedForTest func(*os.Root)
 // returns an error.
 var matrixOutputLockReleaseErrForTest error
 
+// matrixBeforeReviewPublishForTest runs after cells are counted and before
+// the review transaction, while output locks are still held.
+var matrixBeforeReviewPublishForTest func()
+
 func openMatrixOutputRoot(path string) (rootfs.Root, error) {
 	if strings.TrimSpace(path) == "" {
 		return rootfs.Root{}, errors.New("matrix output path is required")
@@ -1596,7 +1600,7 @@ func validateMatrixOutputPaths(output MatrixOutput, baseDir string) error {
 func sameMatrixDirectory(left, right string) bool {
 	left = filepath.Clean(left)
 	right = filepath.Clean(right)
-	if strings.EqualFold(left, right) {
+	if matrixLexicalPathsEqual(left, right) {
 		return true
 	}
 	if leftInfo, leftErr := os.Stat(left); leftErr == nil {
@@ -1606,7 +1610,20 @@ func sameMatrixDirectory(left, right string) bool {
 	}
 	leftPhysical, leftOK := resolveMatrixPhysicalPath(left)
 	rightPhysical, rightOK := resolveMatrixPhysicalPath(right)
-	return leftOK && rightOK && strings.EqualFold(leftPhysical, rightPhysical)
+	return leftOK && rightOK && matrixLexicalPathsEqual(leftPhysical, rightPhysical)
+}
+
+// matrixLexicalPathsEqual reports whether two cleaned paths name the same
+// location using the target filesystem's case semantics. EqualFold is only
+// applied when an existing ancestor aliases a case variant.
+func matrixLexicalPathsEqual(left, right string) bool {
+	if left == right {
+		return true
+	}
+	if !strings.EqualFold(left, right) {
+		return false
+	}
+	return matrixFilesystemCaseInsensitive(left) || matrixFilesystemCaseInsensitive(right)
 }
 
 // resolveMatrixPhysicalPath resolves the existing prefix of a possibly
@@ -1792,12 +1809,12 @@ func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath
 func sameMatrixPath(left, right string) bool {
 	left = filepath.Clean(left)
 	right = filepath.Clean(right)
-	if strings.EqualFold(left, right) || sameMatrixFile(left, right) {
+	if matrixLexicalPathsEqual(left, right) || sameMatrixFile(left, right) {
 		return true
 	}
 	leftPhysical, leftOK := resolveMatrixPhysicalPath(left)
 	rightPhysical, rightOK := resolveMatrixPhysicalPath(right)
-	return leftOK && rightOK && strings.EqualFold(leftPhysical, rightPhysical)
+	return leftOK && rightOK && matrixLexicalPathsEqual(leftPhysical, rightPhysical)
 }
 
 func resolveMatrixValidationPath(baseDir, path string) string {
@@ -2162,6 +2179,20 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		}
 	}
 	countMatrixResultStatuses(result)
+	if matrixBeforeReviewPublishForTest != nil {
+		matrixBeforeReviewPublishForTest()
+	}
+	reviewCtx := context.WithoutCancel(ctx)
+	review, reviewErr := publishMatrixReview(reviewCtx, result, reviewDir, reviewRoot, reviewRootReady, ctx)
+	if reviewErr == nil {
+		result.Review = review
+	} else if runErr == nil {
+		result.Status = MatrixCellFailed
+		runErr = fmt.Errorf("write matrix review: %w", reviewErr)
+	} else {
+		result.Status = MatrixCellFailed
+		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
+	}
 	if releaseOutputLocks != nil {
 		releaseErr := releaseOutputLocks()
 		if matrixOutputLockReleaseErrForTest != nil {
@@ -2177,31 +2208,27 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 			} else {
 				runErr = errors.Join(runErr, lockErr)
 			}
+			if reviewErr == nil {
+				if republished, republishErr := publishMatrixReview(reviewCtx, result, reviewDir, reviewRoot, reviewRootReady, ctx); republishErr == nil {
+					result.Review = republished
+				} else {
+					runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", republishErr))
+				}
+			}
 		}
-	}
-	reviewCtx := context.WithoutCancel(ctx)
-	var review *MatrixReviewResult
-	var reviewErr error
-	reviewRequest := MatrixReviewRequest{Result: result, OutputDir: reviewDir, LockContext: ctx}
-	if reviewRootReady {
-		if err := verifyMatrixRetainedOutputRoot(reviewRoot); err != nil {
-			reviewErr = err
-		} else {
-			review, reviewErr = generateMatrixReviewWithRoot(reviewCtx, reviewRequest, reviewRoot)
-		}
-	} else {
-		review, reviewErr = GenerateMatrixReview(reviewCtx, reviewRequest)
-	}
-	if reviewErr == nil {
-		result.Review = review
-	} else if runErr == nil {
-		result.Status = MatrixCellFailed
-		runErr = fmt.Errorf("write matrix review: %w", reviewErr)
-	} else {
-		result.Status = MatrixCellFailed
-		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
 	}
 	return result, runErr
+}
+
+func publishMatrixReview(ctx context.Context, result *MatrixResult, reviewDir string, reviewRoot rootfs.Root, reviewRootReady bool, lockCtx context.Context) (*MatrixReviewResult, error) {
+	reviewRequest := MatrixReviewRequest{Result: result, OutputDir: reviewDir, LockContext: lockCtx}
+	if reviewRootReady {
+		if err := verifyMatrixRetainedOutputRoot(reviewRoot); err != nil {
+			return nil, err
+		}
+		return generateMatrixReviewWithRoot(ctx, reviewRequest, reviewRoot)
+	}
+	return GenerateMatrixReview(ctx, reviewRequest)
 }
 
 func resolveMatrixExecution(execution MatrixExecution, options MatrixOptions) (int, int, time.Duration, error) {

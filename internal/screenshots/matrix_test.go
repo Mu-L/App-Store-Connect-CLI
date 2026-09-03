@@ -2058,15 +2058,20 @@ func TestMatrixResultJSONDoesNotPersistSimulatorSecrets(t *testing.T) {
 
 func TestRunMatrix_BoundsConcurrencyAndWritesPartialSafeResult(t *testing.T) {
 	dir := t.TempDir()
+	previousLockBase := matrixGlobalLockBaseDirForTest
+	matrixGlobalLockBaseDirForTest = t.TempDir()
+	t.Cleanup(func() { matrixGlobalLockBaseDirForTest = previousLockBase })
 	basePath := filepath.Join(dir, "base.json")
 	matrixPath := filepath.Join(dir, "matrix.json")
+	udidA := "UDID-A-" + filepath.Base(dir)
+	udidB := "UDID-B-" + filepath.Base(dir)
 	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"launch"},{"action":"screenshot","name":"home"}]}`)
-	writeMatrixTestFile(t, matrixPath, `{
+	writeMatrixTestFile(t, matrixPath, fmt.Sprintf(`{
   "version":1,"base_plan":"base.json",
-  "devices":[{"id":"phone-a","udid":"UDID-A"},{"id":"phone-b","udid":"UDID-B"}],
+  "devices":[{"id":"phone-a","udid":%q},{"id":"phone-b","udid":%q}],
   "locales":["en-US","ja-JP"],"appearances":["light"],"content_variants":[{"id":"default"}],
   "output":{"raw_dir":"raw","review_dir":"review"}
-}`)
+}`, udidA, udidB))
 	matrixPlan, err := LoadMatrixPlan(matrixPath)
 	if err != nil {
 		t.Fatalf("LoadMatrixPlan() error = %v", err)
@@ -2163,6 +2168,56 @@ func TestRunMatrix_OutputLockReleaseFailureMarksResultFailed(t *testing.T) {
 	}
 	if manifest.Status != MatrixCellFailed {
 		t.Fatalf("published review status = %q, want failed to match the command result", manifest.Status)
+	}
+}
+
+func TestRunMatrix_HoldsOutputLocksThroughReviewPublish(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	rawDir := filepath.Join(dir, "raw")
+	reviewDir := filepath.Join(dir, "review")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{
+  "version":1,"base_plan":"base.json",
+  "devices":[{"id":"phone","udid":"UDID-LOCK-HOLD"}],
+  "locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],
+  "output":{"raw_dir":"raw","review_dir":"review"}
+}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	previous := matrixBeforeReviewPublishForTest
+	matrixBeforeReviewPublishForTest = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+		defer cancel()
+		release, lockErr := acquireMatrixOutputLocks(ctx, []string{rawDir, reviewDir})
+		if release != nil {
+			if releaseErr := release(); releaseErr != nil {
+				t.Errorf("release competing output lock: %v", releaseErr)
+			}
+			t.Errorf("acquired output locks during review publish")
+			return
+		}
+		if !errors.Is(lockErr, context.DeadlineExceeded) {
+			t.Errorf("competing output lock error = %v, want deadline while the run still holds them", lockErr)
+		}
+	}
+	t.Cleanup(func() { matrixBeforeReviewPublishForTest = previous })
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance:  &matrixTestAppearance{},
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v", runErr)
+	}
+	if result == nil || result.Status != MatrixCellSuccess || result.Review == nil {
+		t.Fatalf("result = %+v, want successful review publication while output locks were held", result)
 	}
 }
 
@@ -3194,6 +3249,25 @@ func TestRunMatrixRejectsPhysicallyAliasedOutputDirectories(t *testing.T) {
 	}
 	if runCalled {
 		t.Fatal("RunMatrixWithDependencies() invoked the screenshot plan before rejecting aliased output roots")
+	}
+}
+
+func TestValidateMatrixOutputPathsHonorsFilesystemCase(t *testing.T) {
+	dir := t.TempDir()
+	output := MatrixOutput{
+		RawDir:    filepath.Join(dir, "raw"),
+		FramedDir: filepath.Join(dir, "Raw"),
+		ReviewDir: filepath.Join(dir, "review"),
+	}
+	err := validateMatrixOutputPaths(output, "")
+	if matrixFilesystemCaseInsensitive(dir) {
+		if err == nil || !strings.Contains(err.Error(), "must be different directories") {
+			t.Fatalf("validateMatrixOutputPaths() error = %v, want case-insensitive collision", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("validateMatrixOutputPaths() error = %v, want distinct case-sensitive output roots", err)
 	}
 }
 

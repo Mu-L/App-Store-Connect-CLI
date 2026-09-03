@@ -53,6 +53,10 @@ func TestCreateMatrixReviewBrowserSnapshotRejectsReplacementBeforeRootPin(t *tes
 		}
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Errorf("create replacement snapshot directory: %v", err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(path, "replacement-sentinel"), []byte("keep"), 0o600); err != nil {
+			t.Errorf("write replacement sentinel: %v", err)
 		}
 	}
 	t.Cleanup(func() {
@@ -67,6 +71,12 @@ func TestCreateMatrixReviewBrowserSnapshotRejectsReplacementBeforeRootPin(t *tes
 	path, err := createMatrixReviewBrowserSnapshotWithContext(context.Background(), []byte("<html></html>"), nil)
 	if !errors.Is(err, errMatrixReviewSnapshotUnavailable) || path != "" {
 		t.Fatalf("createMatrixReviewBrowserSnapshotWithContext() = %q, %v, want replacement rejection", path, err)
+	}
+	if originalPath == "" {
+		t.Fatal("replacement hook did not observe the created snapshot path")
+	}
+	if _, err := os.Stat(filepath.Join(originalPath, "replacement-sentinel")); err != nil {
+		t.Fatalf("replacement snapshot was removed after pin failure: %v", err)
 	}
 }
 
