@@ -656,7 +656,7 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		return target, reason, true
 	}
 	if tokenContains(queryTokens, "xcode") && tokenContains(queryTokens, "cloud") {
-		if tokenContains(queryTokens, "duplicate") {
+		if tokenContains(queryTokens, "duplicate") && tokenContains(queryTokens, "workflow") {
 			return "asc xcode-cloud workflows duplicate", "canonical:xcode-cloud-workflow-duplicate", true
 		}
 		// "run" doubles as the build-run resource noun, so an explicit read

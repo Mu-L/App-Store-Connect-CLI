@@ -2,6 +2,7 @@ package search
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -248,5 +249,19 @@ func TestScopedCanonicalIntentLeavesAppReviewDashboardForAggregateStatus(t *test
 	target, _, ok := scopedCanonicalIntent([]string{"testflight", "and", "app", "review", "dashboard"})
 	if ok {
 		t.Fatalf("expected aggregate dashboard scoring, got scoped target %q", target)
+	}
+}
+
+func TestScopedCanonicalIntentRequiresWorkflowForXcodeCloudDuplicate(t *testing.T) {
+	for _, query := range [][]string{
+		{"duplicate", "xcode", "cloud", "artifact"},
+		{"duplicate", "xcode", "cloud", "build", "run", "status"},
+	} {
+		t.Run(strings.Join(query, "-"), func(t *testing.T) {
+			target, reason, _ := scopedCanonicalIntent(query)
+			if target == "asc xcode-cloud workflows duplicate" || reason == "canonical:xcode-cloud-workflow-duplicate" {
+				t.Fatalf("expected non-workflow Xcode Cloud routing, got duplicate target %q", target)
+			}
+		})
 	}
 }

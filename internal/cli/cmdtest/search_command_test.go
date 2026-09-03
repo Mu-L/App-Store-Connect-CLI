@@ -208,6 +208,54 @@ func TestSearchKeepsAppReviewStatusAheadOfAggregateDashboard(t *testing.T) {
 	}
 }
 
+func TestSearchDoesNotPrioritizeWorkflowDuplicateForOtherXcodeCloudResources(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		query    []string
+		expected string
+	}{
+		{
+			name:     "duplicate artifact",
+			query:    []string{"duplicate", "Xcode", "Cloud", "artifact"},
+			expected: "asc xcode-cloud artifacts",
+		},
+		{
+			name:  "duplicate build run status",
+			query: []string{"duplicate", "Xcode", "Cloud", "build", "run", "status"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var code int
+			stdout, stderr := captureOutput(t, func() {
+				args := []string{"search", "--output", "json", "--limit", "5"}
+				args = append(args, test.query...)
+				code = rootcmd.Run(args, "1.2.3")
+			})
+
+			if code != 0 {
+				t.Fatalf("expected exit code 0, got %d with stderr %q", code, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+
+			var response searchResponse
+			if err := json.Unmarshal([]byte(stdout), &response); err != nil {
+				t.Fatalf("failed to unmarshal search JSON: %v\nstdout=%s", err, stdout)
+			}
+			if len(response.Results) == 0 {
+				t.Fatalf("expected search results, got %#v", response)
+			}
+			if response.Results[0].Command == "asc xcode-cloud workflows duplicate" {
+				t.Fatalf("expected a non-workflow Xcode Cloud result first, got %#v", response.Results)
+			}
+			if test.expected != "" && response.Results[0].Command != test.expected {
+				t.Fatalf("expected %q first, got %#v", test.expected, response.Results)
+			}
+		})
+	}
+}
+
 func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 	tests := []struct {
 		name     string
