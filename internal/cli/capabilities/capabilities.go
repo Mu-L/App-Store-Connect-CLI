@@ -325,7 +325,7 @@ func capabilityRows() []Capability {
 			Area:       "app-management",
 			Capability: "Last-compatible version settings inspection",
 			Status:     statusPartial,
-			Commands:   []string{"asc versions list --output json", "asc versions view --output json", "asc web apps last-compatible-version view"},
+			Commands:   []string{"asc versions list --paginate --output json", "asc versions view --output json", "asc web apps last-compatible-version view"},
 			Notes:      []string{"Public versions JSON preserves downloadable when Apple returns it; the default table omits the field. The web command mirrors App Store Connect's Last-Compatible Version Settings iris read and relationship order."},
 			NextAction: "Use public versions JSON for API-key reads, or asc web apps last-compatible-version view for the UI-matched read.",
 		},

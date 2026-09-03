@@ -14,7 +14,7 @@ func TestLastCompatibleVersionCapabilityIncludesPublicJSON(t *testing.T) {
 		if capability.Status != statusPartial {
 			t.Fatalf("status = %q, want %q", capability.Status, statusPartial)
 		}
-		if !slices.Contains(capability.Commands, "asc versions list --output json") {
+		if !slices.Contains(capability.Commands, "asc versions list --paginate --output json") {
 			t.Fatalf("missing public versions JSON command: %+v", capability.Commands)
 		}
 		for _, note := range capability.Notes {
