@@ -91,6 +91,48 @@ func TestWebAPIKeysCreateSavesP8AndPrintsMetadata(t *testing.T) {
 	}
 }
 
+func TestWebAPIKeysCreateHelpDocumentsCaseInsensitiveRole(t *testing.T) {
+	help := WebAPIKeysCreateCommand().LongHelp
+	if strings.Contains(help, "must\nbe an uppercase identifier") || strings.Contains(help, "must be an uppercase identifier") {
+		t.Fatalf("help still claims --role must be uppercase even though lowercase input is accepted:\n%s", help)
+	}
+	if !strings.Contains(help, "case-insensitive") {
+		t.Fatalf("help should say --role is case-insensitive:\n%s", help)
+	}
+}
+
+func TestWebAPIKeysCreateUpperCasesLowercaseRole(t *testing.T) {
+	restore := installWebAPIKeyCreateFakes(t)
+	t.Cleanup(restore)
+
+	originalCreate := createWebAPIKeyFn
+	var sentRole string
+	createWebAPIKeyFn = func(ctx context.Context, client *webcore.Client, attrs webcore.APIKeyCreateAttributes) (*webcore.APIKey, error) {
+		sentRole = attrs.Role
+		return originalCreate(ctx, client, attrs)
+	}
+	t.Cleanup(func() { createWebAPIKeyFn = originalCreate })
+
+	cmd := WebAPIKeysCreateCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--name", "Release automation",
+		"--role", "app_manager",
+		"--output-dir", t.TempDir(),
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	captureOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("expected lowercase role to be accepted, got %v", err)
+		}
+	})
+	if sentRole != "APP_MANAGER" {
+		t.Fatalf("expected role sent as APP_MANAGER, got %q", sentRole)
+	}
+}
+
 func TestWebAPIKeysCreateValidatesBeforeResolvingSession(t *testing.T) {
 	resolveCalled := false
 	restoreSession := SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
@@ -108,7 +150,7 @@ func TestWebAPIKeysCreateValidatesBeforeResolvingSession(t *testing.T) {
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("expected usage error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "uppercase identifier") {
+	if !strings.Contains(err.Error(), "--role must be a role identifier such as ADMIN or APP_MANAGER") {
 		t.Fatalf("expected identifier-shape stderr, got %v", err)
 	}
 	if resolveCalled {
