@@ -1034,6 +1034,13 @@ are never returned because this surface is read-only.
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.WithDiagnostic(
+					shared.UsageErrorf("unexpected argument(s): %s", strings.Join(args, " ")),
+					shared.DiagnosticInvalidInput,
+					"args",
+				)
+			}
 			trimmedAppID := strings.TrimSpace(*appID)
 			if trimmedAppID == "" {
 				return shared.WithDiagnostic(

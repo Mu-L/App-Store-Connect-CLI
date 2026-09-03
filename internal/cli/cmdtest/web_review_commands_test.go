@@ -194,3 +194,23 @@ func TestWebReviewThreadsRejectsPlainTextWithoutDrafts(t *testing.T) {
 		t.Fatalf("expected --plain-text guidance, got %q", stderr)
 	}
 }
+
+func TestWebReviewThreadsRejectsPositionalArguments(t *testing.T) {
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "review", "threads", "--app", "123456789", "stray"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "unexpected argument") {
+		t.Fatalf("expected unexpected-argument guidance, got %q", stderr)
+	}
+}
