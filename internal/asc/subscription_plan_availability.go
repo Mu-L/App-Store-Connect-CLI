@@ -213,6 +213,27 @@ func (c *Client) UpdateSubscriptionPlanAvailability(ctx context.Context, planAva
 	return &response, nil
 }
 
+// GetSubscriptionPlanAvailability retrieves a subscription plan availability by ID.
+func (c *Client) GetSubscriptionPlanAvailability(ctx context.Context, planAvailabilityID string) (*SubscriptionPlanAvailabilityResponse, error) {
+	planAvailabilityID = strings.TrimSpace(planAvailabilityID)
+	if planAvailabilityID == "" {
+		return nil, fmt.Errorf("plan availability ID is required")
+	}
+
+	path := fmt.Sprintf("/v1/subscriptionPlanAvailabilities/%s", planAvailabilityID)
+	data, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var response SubscriptionPlanAvailabilityResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &response, nil
+}
+
 // GetSubscriptionPlanAvailabilitiesForSubscription retrieves plan availabilities for a subscription.
 func (c *Client) GetSubscriptionPlanAvailabilitiesForSubscription(ctx context.Context, subID string, opts ...SubscriptionPlanAvailabilitiesOption) (*SubscriptionPlanAvailabilitiesResponse, error) {
 	subID = strings.TrimSpace(subID)

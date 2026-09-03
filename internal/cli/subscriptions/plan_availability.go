@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -59,6 +60,9 @@ territories included.
 
 Apple caps the included availableTerritories linkages at 50 per plan
 availability and reports the real count in the response paging metadata.
+show warns on stderr when that cap truncates the included list; do not pass
+the truncated include to set --territories. set reads the complete
+relationship before replacing it.
 
 Examples:
   asc subscriptions pricing plan-availability show --subscription-id "SUB_ID"
@@ -94,6 +98,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("subscriptions pricing plan-availability show: failed to fetch: %w", err)
 			}
+			warnTruncatedPlanAvailabilityTerritories(resp)
 
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 		},
@@ -274,7 +279,16 @@ Examples:
 				)
 			}
 
-			verifiedAvailableInNew := resp.Data.Attributes.AvailableInNewTerritories
+			readCtx, readCancel := shared.ContextWithTimeout(ctx)
+			verified, err := client.GetSubscriptionPlanAvailability(readCtx, planAvailabilityID)
+			readCancel()
+			if err != nil {
+				return fmt.Errorf("subscriptions pricing plan-availability set: failed to verify plan availability: %w", err)
+			}
+			if verified == nil {
+				return fmt.Errorf("subscriptions pricing plan-availability set: App Store Connect returned no plan availability after the write")
+			}
+			verifiedAvailableInNew := verified.Data.Attributes.AvailableInNewTerritories
 			if availableInNewProvided && (verifiedAvailableInNew == nil || *verifiedAvailableInNew != *availableInNew) {
 				return fmt.Errorf(
 					"subscriptions pricing plan-availability set: plan availability %q reports availableInNewTerritories=%s after requesting %t",
@@ -371,6 +385,26 @@ func formatTerritoryList(territoryIDs []string) string {
 		return "none"
 	}
 	return strings.Join(territoryIDs, ",")
+}
+
+func warnTruncatedPlanAvailabilityTerritories(resp *asc.SubscriptionPlanAvailabilitiesResponse) {
+	if resp == nil {
+		return
+	}
+	for _, item := range resp.Data {
+		ids, total, known := asc.SubscriptionPlanAvailabilityIncludedTerritories(item.Relationships)
+		if !known || total <= len(ids) {
+			continue
+		}
+		fmt.Fprintf(
+			os.Stderr,
+			"Warning: plan availability %q includes %d of %d availableTerritories; Apple caps include=availableTerritories at %d. Do not pass this incomplete list to set --territories; set reads the complete relationship before replacing it.\n",
+			item.ID,
+			len(ids),
+			total,
+			asc.SubscriptionPlanAvailabilityIncludedTerritoriesLimit,
+		)
+	}
 }
 
 func formatOptionalBool(value *bool) string {

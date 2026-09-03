@@ -775,7 +775,10 @@ asc subscriptions pricing plan-availability set \
 
 `show` prints `GET /v1/subscriptions/{id}/planAvailabilities` with
 `include=availableTerritories`. Apple caps the included linkages at 50 per plan
-availability and reports the real count in the response paging metadata.
+availability and reports the real count in the response paging metadata. When
+that cap truncates the included list, `show` warns on stderr; do not pass the
+truncated include to `set --territories`. `set` reads the complete relationship
+before replacing it.
 
 `set` is a desired-state write. The complete `--territories` list replaces the
 plan's territories: territories missing from the list are removed and new ones
@@ -783,7 +786,7 @@ are added. Before writing, the CLI reads the plan's current territories through
 `GET /v1/subscriptionPlanAvailabilities/{id}/relationships/availableTerritories`
 and reports the diff; when the plan already matches the request it makes no
 write and reports `changed: false`. After writing it re-reads the territories and
-fails if they do not match the request.
+the plan availability resource and fails if they do not match the request.
 
 **Flags:**
 

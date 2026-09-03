@@ -1,6 +1,7 @@
 package asc
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -61,5 +62,27 @@ func TestFormatSubscriptionPlanAvailabilityTerritoryCellSummarizesLongLists(t *t
 	}
 	if short := formatSubscriptionPlanAvailabilityTerritoryCell([]string{"USA", "CAN"}); short != "USA,CAN" {
 		t.Fatalf("expected short lists to render verbatim, got %q", short)
+	}
+}
+
+func TestSubscriptionPlanAvailabilitiesRowsIncludesTerritories(t *testing.T) {
+	availableInNew := true
+	resp := &SubscriptionPlanAvailabilitiesResponse{
+		Data: []Resource[SubscriptionPlanAvailabilityAttributes]{{
+			ID: "plan-upfront",
+			Attributes: SubscriptionPlanAvailabilityAttributes{
+				PlanType:                  SubscriptionPlanTypeUpfront,
+				AvailableInNewTerritories: &availableInNew,
+			},
+			Relationships: json.RawMessage(`{"availableTerritories":{"data":[{"type":"territories","id":"USA"}],"meta":{"paging":{"total":175,"limit":50}}}}`),
+		}},
+	}
+
+	headers, rows := subscriptionPlanAvailabilitiesRows(resp)
+	if len(headers) != 4 || headers[3] != "Territories" {
+		t.Fatalf("expected a Territories column, got %v", headers)
+	}
+	if len(rows) != 1 || !strings.Contains(rows[0][3], "USA") || !strings.Contains(rows[0][3], "+174 more") {
+		t.Fatalf("expected included territories plus the paging remainder, got %v", rows)
 	}
 }

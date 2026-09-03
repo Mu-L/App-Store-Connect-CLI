@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	cmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
@@ -236,6 +237,8 @@ func TestSubscriptionsPricingPlanAvailabilitySetAppliesTerritoryDiff(t *testing.
 			}
 			patched = true
 			return jsonResponse(http.StatusOK, `{"data":{"type":"subscriptionPlanAvailabilities","id":"plan-upfront","attributes":{"planType":"UPFRONT","availableInNewTerritories":true}}}`)
+		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-upfront" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":{"type":"subscriptionPlanAvailabilities","id":"plan-upfront","attributes":{"planType":"UPFRONT","availableInNewTerritories":true}}}`)
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil
@@ -375,6 +378,8 @@ func TestSubscriptionsPricingPlanAvailabilitySetCreatesMissingPlan(t *testing.T)
 			return jsonResponse(http.StatusCreated, `{"data":{"type":"subscriptionPlanAvailabilities","id":"plan-monthly","attributes":{"planType":"MONTHLY","availableInNewTerritories":false}}}`)
 		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-monthly/relationships/availableTerritories" && req.Method == http.MethodGet:
 			return jsonResponse(http.StatusOK, `{"data":[{"type":"territories","id":"NOR"}],"links":{"next":""}}`)
+		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-monthly" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":{"type":"subscriptionPlanAvailabilities","id":"plan-monthly","attributes":{"planType":"MONTHLY","availableInNewTerritories":false}}}`)
 		default:
 			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
 			return nil, nil
@@ -511,5 +516,175 @@ func TestSubscriptionsPricingPlanAvailabilitySetRendersTableReceipt(t *testing.T
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("expected table output to contain %q, got %q", want, stdout)
 		}
+	}
+}
+
+func TestSubscriptionsPricingPlanAvailabilitySetOmitsMonthlyWarningWithoutConfirm(t *testing.T) {
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"subscriptions", "pricing", "plan-availability", "set",
+			"--subscription-id", "sub-1",
+			"--plan-type", "MONTHLY",
+			"--territories", "United States,Norway",
+		}, "1.2.3")
+		if code != cmd.ExitUsage {
+			t.Fatalf("expected exit code %d, got %d", cmd.ExitUsage, code)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "--confirm is required") {
+		t.Fatalf("expected --confirm to be required, got %q", stderr)
+	}
+	if strings.Contains(stderr, "Warning:") {
+		t.Fatalf("rejected invocation warned about a write it never attempted: %q", stderr)
+	}
+}
+
+func TestSubscriptionsPricingPlanAvailabilitySetFailsWhenAttributeReadbackDiffers(t *testing.T) {
+	setupAuth(t)
+
+	var patched bool
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Path == "/v1/subscriptions/8000000001/planAvailabilities" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":[{"type":"subscriptionPlanAvailabilities","id":"plan-upfront","attributes":{"planType":"UPFRONT","availableInNewTerritories":false}}]}`)
+		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-upfront/relationships/availableTerritories" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":[{"type":"territories","id":"USA"}],"links":{"next":""}}`)
+		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-upfront" && req.Method == http.MethodPatch:
+			patched = true
+			return jsonResponse(http.StatusOK, `{"data":{"type":"subscriptionPlanAvailabilities","id":"plan-upfront","attributes":{"planType":"UPFRONT","availableInNewTerritories":true}}}`)
+		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-upfront" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":{"type":"subscriptionPlanAvailabilities","id":"plan-upfront","attributes":{"planType":"UPFRONT","availableInNewTerritories":false}}}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "plan-availability", "set",
+			"--subscription-id", "8000000001",
+			"--plan-type", "UPFRONT",
+			"--territories", "United States",
+			"--available-in-new-territories",
+			"--confirm",
+			"--output", "json",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		err := root.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "availableInNewTerritories") {
+			t.Fatalf("expected availableInNewTerritories readback failure, got %v", err)
+		}
+	})
+	if !patched {
+		t.Fatal("expected a PATCH before attribute readback")
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout on verification failure, got %q", stdout)
+	}
+}
+
+func TestSubscriptionsPricingPlanAvailabilityShowTableIncludesTerritories(t *testing.T) {
+	setupAuth(t)
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/subscriptions/8000000001/planAvailabilities" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+		body := `{
+			"data":[{
+				"type":"subscriptionPlanAvailabilities","id":"plan-upfront",
+				"attributes":{"planType":"UPFRONT","availableInNewTerritories":true},
+				"relationships":{
+					"availableTerritories":{
+						"data":[{"type":"territories","id":"USA"},{"type":"territories","id":"CAN"}],
+						"meta":{"paging":{"total":2,"limit":50}}
+					}
+				}
+			}]
+		}`
+		return jsonResponse(http.StatusOK, body)
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "plan-availability", "show",
+			"--subscription-id", "8000000001",
+			"--output", "table",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+	if runErr != nil {
+		t.Fatalf("run error: %v; stderr=%q stdout=%q", runErr, stderr, stdout)
+	}
+	if strings.Contains(stderr, "Warning:") {
+		t.Fatalf("did not expect a truncated-include warning, got %q", stderr)
+	}
+	for _, want := range []string{"Plan Type", "Territories", "USA", "CAN"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected table output to contain %q, got %q", want, stdout)
+		}
+	}
+}
+
+func TestSubscriptionsPricingPlanAvailabilityShowWarnsWhenIncludedTerritoriesAreCapped(t *testing.T) {
+	setupAuth(t)
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/subscriptions/8000000001/planAvailabilities" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+		body := `{
+			"data":[{
+				"type":"subscriptionPlanAvailabilities","id":"plan-upfront",
+				"attributes":{"planType":"UPFRONT","availableInNewTerritories":true},
+				"relationships":{
+					"availableTerritories":{
+						"data":[{"type":"territories","id":"USA"}],
+						"meta":{"paging":{"total":175,"limit":50}}
+					}
+				}
+			}]
+		}`
+		return jsonResponse(http.StatusOK, body)
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "plan-availability", "show",
+			"--subscription-id", "8000000001",
+			"--output", "json",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+	if runErr != nil {
+		t.Fatalf("run error: %v; stderr=%q stdout=%q", runErr, stderr, stdout)
+	}
+	if !strings.Contains(stderr, "plan-upfront") || !strings.Contains(stderr, "175") {
+		t.Fatalf("expected a truncated-include warning naming the plan and total, got %q", stderr)
+	}
+	if strings.Contains(stdout, `"subscriptionId"`) {
+		t.Fatalf("expected Apple's unmodified envelope on stdout, got %q", stdout)
 	}
 }
