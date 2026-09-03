@@ -53,11 +53,12 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 - `asc web sandbox create` requires `--first-name`, `--last-name`, `--email`, `--password`, and `--territory`
 - Password must include uppercase, lowercase, and a number (8+ chars)
-- Historical public v1 create also required password confirmation, a secret question/answer, and a birth date; that create endpoint is not exposed by the current CLI
+- Historical public v1 create also required password confirmation, a secret question/answer, and a birth date; that removed v1 contract does not establish that those fields are accepted by the current private web flow
 - Sandbox territory inputs accept alpha-2, alpha-3, and exact English country names, but the CLI sends canonical 3-letter App Store territory codes (for example, `US`, `USA`, and `United States` all resolve to `USA`)
 - This normalization is limited to verified ASC alpha-3 territory surfaces, including customer-review filters; public storefront and finance region flags keep their existing namespaces
 - List, view, update, and clear-history use the v2 API through `asc sandbox`
-- Public `asc sandbox` does not expose create or delete. Create testers with `asc web sandbox create`, which posts to `/sandbox/v2/account/create`
+- `asc web sandbox create` currently sends three private web-session requests: `POST /sandbox/v2/account/validateFields` with `firstName`, `lastName`, and `acAccountName`; the same path with `acAccountPassword` added; then `POST /sandbox/v2/account/create` with `firstName`, `lastName`, `acAccountName`, `acAccountPassword`, and `storeFront`. This is the source-backed client request shape; Apple acceptance of extra portal fields has not been live-captured. See issue #2294.
+- Public `asc sandbox` does not expose create or delete, and the current web-session CLI has no delete path. Do not infer a private delete endpoint from the removed v1 surface without a fresh capture.
 
 ## App Store Regulations & Permits declarations
 
