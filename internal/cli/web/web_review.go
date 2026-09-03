@@ -184,10 +184,11 @@ func summarizeDraftForTable(draft *webcore.ResolutionCenterDraftMessage) string 
 		return "none"
 	}
 	return fmt.Sprintf(
-		"id=%s created=%s attachments=%d",
+		"id=%s created=%s attachments=%d body=%s",
 		normalizeReviewShowValue(draft.ID),
 		normalizeReviewShowValue(draft.CreatedDate),
 		len(draft.Attachments),
+		summarizeHTMLBodyForTable(draft.MessageBodyPlain, draft.MessageBody),
 	)
 }
 
@@ -260,10 +261,10 @@ func summarizeSubmissionItemRelated(related []webcore.ReviewSubmissionItemRelati
 	return strings.Join(parts, ", ")
 }
 
-func summarizeMessageForTable(message webcore.ResolutionCenterMessage) string {
-	body := strings.TrimSpace(message.MessageBodyPlain)
+func summarizeHTMLBodyForTable(plain, raw string) string {
+	body := strings.TrimSpace(plain)
 	if body == "" {
-		body = strings.TrimSpace(message.MessageBody)
+		body = strings.TrimSpace(raw)
 	}
 	body = strings.NewReplacer(
 		"<br>", "\n",
@@ -277,6 +278,10 @@ func summarizeMessageForTable(message webcore.ResolutionCenterMessage) string {
 	body = reviewHTMLTagPattern.ReplaceAllString(body, " ")
 	body = html.UnescapeString(body)
 	return normalizeReviewShowValue(body)
+}
+
+func summarizeMessageForTable(message webcore.ResolutionCenterMessage) string {
+	return summarizeHTMLBodyForTable(message.MessageBodyPlain, message.MessageBody)
 }
 
 func summarizeReasonForTable(reason webcore.ReviewRejectionReason) string {

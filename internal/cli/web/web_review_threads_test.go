@@ -245,10 +245,33 @@ func TestWebReviewThreadsRendersTable(t *testing.T) {
 	}
 	stdout, _ := runWebReviewCommand(t, func() error { return cmd.Exec(context.Background(), nil) })
 
-	for _, want := range []string{"Thread ID", "Draft", "thread-sub", "thread-app", "REJECTION_BINARY", "draft-1", "none"} {
+	for _, want := range []string{"Thread ID", "Draft", "thread-sub", "thread-app", "REJECTION_BINARY", "draft-1", "none", "Draft reply & notes"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("table output missing %q: %s", want, stdout)
 		}
+	}
+}
+
+func TestWebReviewThreadsRendersPlainTextDraftBodyInMarkdown(t *testing.T) {
+	stubWebReviewSession(t, map[string]string{
+		"/iris/v1/apps/app-1/resolutionCenterThreads":                              reviewThreadsAppFixture,
+		"/iris/v1/resolutionCenterThreads/thread-sub/resolutionCenterDraftMessage": reviewThreadsDraftFixture,
+		"/iris/v1/resolutionCenterThreads/thread-app/resolutionCenterDraftMessage": `{"data": null}`,
+	})
+
+	cmd := WebReviewThreadsCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", "app-1", "--drafts", "--plain-text", "--output", "markdown"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, _ := runWebReviewCommand(t, func() error { return cmd.Exec(context.Background(), nil) })
+
+	for _, want := range []string{"Draft", "draft-1", "none", "Draft reply & notes"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("markdown output missing %q: %s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "<p>") || strings.Contains(stdout, "&amp;") {
+		t.Fatalf("markdown draft body should be plain text, got %s", stdout)
 	}
 }
 
