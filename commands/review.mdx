@@ -67,12 +67,12 @@ asc review doctor --app "123456789" --version-id "VERSION_ID"
 
 `asc review doctor` checks submission readiness exposed by the public App Store
 Connect API. App Store Regulations and Permits declarations—including whether
-the app is a personal service—are managed on the App Store Connect website and
-are not checked. Doctor output reports this boundary under `coverageWarnings`
-in JSON and under **Coverage Warnings** in table and Markdown output. Coverage
-warnings do not change blocker counts or exit behavior. When no public-API
-blockers are found, the next action still directs you to verify these web-only
-declarations before submission.
+the app is a personal service—are not checked because doctor uses an API key.
+Doctor output reports this boundary under `coverageWarnings` in JSON and
+under **Coverage Warnings** in table and Markdown output. Coverage warnings do
+not change blocker counts or exit behavior. When no public-API blockers are
+found, the next action still directs you to inspect these declarations with
+`asc web apps declarations list --app APP_ID` before submission.
 
 ***
 
