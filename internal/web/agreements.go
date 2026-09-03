@@ -352,28 +352,12 @@ func (c *Client) getContractMessages(ctx context.Context) ([]asc.WebAgreementCon
 
 func (c *Client) doDeveloperPortalAgreementsRequest(ctx context.Context, path string, payload any) (*developerAgreementsEnvelope, error) {
 	headers := developerPortalAgreementsHeaders()
-	csrf, csrfTS := c.developerCSRFTokens()
-	if csrf != "" {
-		headers.Set("csrf", csrf)
-	}
-	if csrfTS != "" {
-		headers.Set("csrf_ts", csrfTS)
-	}
-	body, response, err := c.doDeveloperPortalHTTP(ctx, http.MethodPost, c.developerPortalOrigin()+path, payload, headers)
-	if err != nil {
+	if err := c.applyDeveloperPortalCSRF(headers, false); err != nil {
 		return nil, err
 	}
-	c.captureDeveloperCSRFTokens(response.Header)
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return nil, developerPortalSessionError(response.StatusCode)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, &APIError{
-			Status:         response.StatusCode,
-			AppleRequestID: extractAppleRequestID(response.Header),
-			CorrelationKey: strings.TrimSpace(response.Header.Get("X-Apple-Jingle-Correlation-Key")),
-			rawBody:        body,
-		}
+	body, err := c.doDeveloperPortalHTTPAndCapture(ctx, http.MethodPost, c.developerPortalOrigin()+path, payload, headers)
+	if err != nil {
+		return nil, err
 	}
 	var envelope developerAgreementsEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {

@@ -461,6 +461,49 @@ func TestWebBundleIDCapabilitiesEnableHelpUsesSupportedLoginFlags(t *testing.T) 
 	}
 }
 
+func TestWebBundleIDCapabilitiesEnablePersistsTeamWhenPortalResponseIsAmbiguous(t *testing.T) {
+	origResolveSession := resolveSessionFn
+	origNewWebClient := newWebClientFn
+	origEnable := enableDeveloperBundleIDCapabilityFn
+	origPersist := persistWebSessionFn
+	t.Cleanup(func() {
+		resolveSessionFn = origResolveSession
+		newWebClientFn = origNewWebClient
+		enableDeveloperBundleIDCapabilityFn = origEnable
+		persistWebSessionFn = origPersist
+	})
+
+	resolveSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{}, "cache", nil
+	}
+	newWebClientFn = func(session *webcore.AuthSession) *webcore.Client {
+		return &webcore.Client{}
+	}
+	enableDeveloperBundleIDCapabilityFn = func(context.Context, *webcore.Client, webcore.DeveloperBundleIDCapabilityEnableRequest) (*webcore.DeveloperBundleIDCapabilityEnableResult, error) {
+		return nil, errors.New("failed to read Developer Portal capability response")
+	}
+	persistCalls := 0
+	persistWebSessionFn = func(*webcore.AuthSession) error {
+		persistCalls++
+		return nil
+	}
+
+	cmd := WebBundleIDCapabilitiesEnableCommand()
+	if err := cmd.FlagSet.Parse([]string{"--bundle-id", "bundle-1", "--capability", "PRIVATE_CLOUD_COMPUTE", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, _ = captureWebCommandOutput(t, func() {
+		runErr = cmd.Exec(context.Background(), nil)
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "failed to read Developer Portal capability response") {
+		t.Fatalf("expected the ambiguous enable error to propagate, got %v", runErr)
+	}
+	if persistCalls != 1 {
+		t.Fatalf("persist calls = %d, want 1 so a later retry without --developer-team still targets the team that may have enabled the capability", persistCalls)
+	}
+}
+
 func TestWebBundleIDCapabilitiesEnableCallsDeveloperPortalClient(t *testing.T) {
 	origResolveSession := resolveSessionFn
 	origNewWebClient := newWebClientFn
