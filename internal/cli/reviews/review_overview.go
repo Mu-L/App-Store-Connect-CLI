@@ -563,7 +563,7 @@ func buildReviewDoctorResult(snapshot reviewSnapshot, report validation.Report) 
 		NextAction:             "Create or select an App Store version before diagnosing review blockers.",
 		BlockingChecks:         make([]validation.CheckResult, 0),
 		WarningChecks:          make([]validation.CheckResult, 0),
-		CoverageWarnings:       reviewDoctorCoverageWarnings(),
+		CoverageWarnings:       reviewDoctorCoverageWarnings(snapshot.AppID),
 	}
 
 	if snapshot.Version == nil {
@@ -636,19 +636,27 @@ func buildReviewDoctorResult(snapshot reviewSnapshot, report validation.Report) 
 	case strings.EqualFold(strings.TrimSpace(snapshot.Version.State), "READY_FOR_SALE"):
 		result.NextAction = "No action needed."
 	default:
-		result.NextAction = "No public-API submission blockers detected. Run `asc web apps declarations list` before submission."
+		result.NextAction = "No public-API submission blockers detected. Run `" + reviewDeclarationsListCommand(snapshot.AppID) + "` before submission."
 	}
 
 	return result
 }
 
-func reviewDoctorCoverageWarnings() []reviewCoverageWarning {
+func reviewDeclarationsListCommand(appID string) string {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return "asc web apps declarations list"
+	}
+	return "asc web apps declarations list --app \"" + appID + "\""
+}
+
+func reviewDoctorCoverageWarnings(appID string) []reviewCoverageWarning {
 	return []reviewCoverageWarning{
 		{
 			ID:          "review.coverage.app_store_regulations_and_permits",
 			Status:      "NOT_CHECKED",
 			Message:     "App Store Regulations and Permits declarations, including the personal-service declaration, are managed on the App Store Connect website and are not checked by asc review doctor.",
-			Remediation: "Run `asc web apps declarations list --app APP_ID` with a web session, then answer outstanding requirements in App Store Connect or with `asc web apps medical-device set --declared false`.",
+			Remediation: "Run `" + reviewDeclarationsListCommand(appID) + "` with a web session, then answer outstanding requirements in App Store Connect or with `asc web apps medical-device set --declared false`.",
 		},
 	}
 }

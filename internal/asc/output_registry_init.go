@@ -18,6 +18,8 @@ func registerAllOutputRenderers() {
 	registerRows(webAgreementsAcceptRows)
 	registerRows(webAgreementDownloadRows)
 	registerRows(webAppDeleteRows)
+	registerRows(webAppDeclarationListRows)
+	registerRows(webMedicalDeviceDeclarationStateRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
 	registerRows(webAppGroupDeleteRows)

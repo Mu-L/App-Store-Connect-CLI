@@ -181,7 +181,7 @@ Notes:
 * `asc web apps create` is the canonical app-creation path in the `web` family
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
-* `asc web apps declarations list` is read-only and reports each app-scoped requirement with its status; a requirement still at `PENDING_COLLECTION` blocks App Store submission
+* `asc web apps declarations list` is read-only and reports each app-scoped requirement with its status; a required requirement still at `PENDING_COLLECTION` blocks App Store submission
 * `asc web apps medical-device set` currently supports only `--declared false`, reads the stored declaration first, and reports `changed: false` when no write was needed
 * Writes other than `medical-device set --declared false` remain website-only. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability

@@ -30,8 +30,9 @@ the public App Store Connect API, so this command uses the same web-session
 compliance-form endpoint the website uses.
 
 Requirements Apple reports here include the regulated medical device
-declaration and any other declaration Apple requires for the app; a requirement
-that is still at ` + "`PENDING_COLLECTION`" + ` blocks App Store submission.
+declaration and any other declaration Apple requires for the app. A required
+requirement that is still at ` + "`PENDING_COLLECTION`" + ` blocks App Store submission;
+optional uncollected rows do not.
 
 `
 
@@ -105,31 +106,8 @@ func WebAppsDeclarationsListCommand() *ffcli.Command {
 				return withWebAuthHint(err, "web apps declarations list")
 			}
 
-			headers := []string{"Requirement", "Status", "Required", "Requirement ID", "Form ID"}
-			rows := make([][]string, 0, len(declarations))
-			for _, declaration := range declarations {
-				rows = append(rows, []string{
-					declaration.RequirementName,
-					valueOrNA(declaration.Status),
-					fmt.Sprintf("%t", declaration.Required),
-					valueOrNA(declaration.RequirementID),
-					valueOrNA(declaration.FormID),
-				})
-			}
-
-			return shared.PrintOutputWithRenderers(
-				declarations,
-				*output.Output,
-				*output.Pretty,
-				func() error {
-					asc.RenderTable(headers, rows)
-					return nil
-				},
-				func() error {
-					asc.RenderMarkdown(headers, rows)
-					return nil
-				},
-			)
+			outputList := webAppDeclarationListOutput(declarations)
+			return shared.PrintOutput(&outputList, *output.Output, *output.Pretty)
 		},
 	}
 }
@@ -190,30 +168,41 @@ Examples:
 				return fmt.Errorf("web apps medical-device view failed: missing declaration state")
 			}
 
-			headers := []string{"App ID", "Requirement", "Declaration", "Status", "Required", "Countries/Regions"}
-			rows := [][]string{{
-				state.AppID,
-				state.RequirementName,
-				valueOrNA(state.Declaration),
-				valueOrNA(state.Status),
-				fmt.Sprintf("%t", state.Required),
-				valueOrNA(strings.Join(state.CountriesOrRegions, ",")),
-			}}
-
-			return shared.PrintOutputWithRenderers(
-				state,
-				*output.Output,
-				*output.Pretty,
-				func() error {
-					asc.RenderTable(headers, rows)
-					return nil
-				},
-				func() error {
-					asc.RenderMarkdown(headers, rows)
-					return nil
-				},
-			)
+			return shared.PrintOutput(webMedicalDeviceDeclarationStateOutput(state), *output.Output, *output.Pretty)
 		},
+	}
+}
+
+func webAppDeclarationListOutput(declarations []webcore.AppDeclaration) asc.WebAppDeclarationList {
+	out := make(asc.WebAppDeclarationList, 0, len(declarations))
+	for _, declaration := range declarations {
+		out = append(out, asc.WebAppDeclaration{
+			AppID:           declaration.AppID,
+			RequirementID:   declaration.RequirementID,
+			RequirementName: declaration.RequirementName,
+			Ref:             declaration.Ref,
+			Status:          declaration.Status,
+			FormID:          declaration.FormID,
+			DateSigned:      declaration.DateSigned,
+			Required:        declaration.Required,
+		})
+	}
+	return out
+}
+
+func webMedicalDeviceDeclarationStateOutput(state *webcore.MedicalDeviceDeclarationState) *asc.WebMedicalDeviceDeclarationState {
+	if state == nil {
+		return nil
+	}
+	return &asc.WebMedicalDeviceDeclarationState{
+		AppID:              state.AppID,
+		RequirementID:      state.RequirementID,
+		RequirementName:    state.RequirementName,
+		Status:             state.Status,
+		FormID:             state.FormID,
+		Required:           state.Required,
+		Declaration:        state.Declaration,
+		CountriesOrRegions: state.CountriesOrRegions,
 	}
 }
 
