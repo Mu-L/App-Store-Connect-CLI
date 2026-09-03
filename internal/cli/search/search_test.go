@@ -229,6 +229,9 @@ func TestScopedCanonicalIntentPrefersMostSpecificNamedLeaf(t *testing.T) {
 		{name: "beta app review cancellation stays on TestFlight", query: []string{"cancel", "beta", "app", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
 		{name: "cross-surface cancellation stays on App Store", query: []string{"cancel", "testflight", "app", "store", "submission", "status"}, expected: "asc submit cancel"},
 		{name: "cross-surface App Review cancellation stays on App Store", query: []string{"cancel", "testflight", "and", "app", "review", "submission", "status"}, expected: "asc submit cancel"},
+		{name: "explicit beta and App Review cancellation is cross-surface", query: []string{"cancel", "testflight", "beta", "and", "app", "review", "submission", "status"}, expected: "asc submit cancel"},
+		{name: "implicit TestFlight App Review cancellation stays scoped", query: []string{"cancel", "testflight", "app", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
+		{name: "status conjunction does not imply cross-surface cancellation", query: []string{"cancel", "testflight", "app", "review", "submission", "and", "status"}, expected: "asc testflight review submissions view"},
 		{name: "agreement download", query: []string{"download", "apple", "developer", "agreement", "status"}, expected: "asc web agreements download"},
 		{name: "Xcode Cloud workflow duplicate", query: []string{"duplicate", "xcode", "cloud", "workflow", "status"}, expected: "asc xcode-cloud workflows duplicate"},
 	}

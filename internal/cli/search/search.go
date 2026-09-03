@@ -794,11 +794,22 @@ func testFlightScopedQuery(queryTokens []string) bool {
 		!crossSurfaceAppReviewQuery(queryTokens)
 }
 
-// crossSurfaceAppReviewQuery reports whether App Review wording names the App
-// Store review surface as a second surface. "beta app review" is TestFlight
-// terminology for the same words, so a beta-scoped query stays on TestFlight.
+// crossSurfaceAppReviewQuery reports whether App Review wording unambiguously
+// names the App Store review surface as a second surface. A bare "TestFlight
+// App Review" query is TestFlight terminology and stays scoped; conjunction
+// wording such as "TestFlight and App Review" explicitly names both surfaces.
 func crossSurfaceAppReviewQuery(queryTokens []string) bool {
-	return appReviewContext(queryTokens) && !tokenContains(queryTokens, "beta")
+	for i, token := range queryTokens {
+		if token != "and" {
+			continue
+		}
+		left, right := queryTokens[:i], queryTokens[i+1:]
+		if (testFlightContext(left) && appReviewContext(right)) ||
+			(testFlightContext(right) && appReviewContext(left)) {
+			return true
+		}
+	}
+	return false
 }
 
 func testFlightContext(queryTokens []string) bool {
