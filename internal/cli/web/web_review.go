@@ -546,6 +546,9 @@ func newDownloadRoot(outDir string) (rootfs.Root, string, error) {
 					return root, relative, nil
 				}
 			}
+			// The output directory lives outside cwd; release this candidate
+			// before anchoring a root there instead.
+			_ = root.Close()
 		}
 	}
 	root, err := rootfs.New(absolute)
