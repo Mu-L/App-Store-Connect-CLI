@@ -548,6 +548,8 @@ func registerAllOutputRenderers() {
 	registerRows(signingSyncRows)
 	registerRows(signingKeychainInstallRows)
 	registerRows(xcodeTestResultRows)
+	registerRows(xcodeSigningPlanOutputRows)
+	registerRows(xcodeSigningApplyOutputRows)
 	registerRows(xcodeCloudRunResultRows)
 	registerRows(xcodeCloudStatusResultRows)
 	registerDirect(xcodeCloudDoctorResultTables)
