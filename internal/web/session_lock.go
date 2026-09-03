@@ -16,7 +16,7 @@ import (
 //
 // The lock is taken at two anchors, in a fixed order so concurrent holders
 // cannot deadlock against each other. The session cache directory covers
-// file-backed entries, which live there anyway. A per-user temporary directory
+// file-backed entries, which live there anyway. A stable per-user OS directory
 // covers the keychain store, which is global to the user: two processes that
 // select the keychain backend under different ASC_WEB_SESSION_CACHE_DIR or HOME
 // values share no cache directory, yet still read and write the same keychain
@@ -26,15 +26,15 @@ import (
 // The lock is advisory and best effort by design. Acquisition is bounded, a
 // lock left behind by a killed process remains harmless because advisory locks
 // are released when descriptors close, and any failure to lock falls through
-// to the unlocked operation: refusing to persist or discard
-// a session because a lock file cannot be created would turn a cache
+// to the unlocked operation: refusing to persist or discard a session because
+// a lock file cannot be created would turn a cache
 // optimization into an auth outage, and refusing to discard one would leave a
 // proven-stale jar to burn another 2FA code.
 var (
 	errSessionLockHeld      = errors.New("session lock is held")
 	sessionLockPollInterval = 2 * time.Millisecond
 	sessionLockWaitTimeout  = 2 * time.Second
-	sessionLockTempDir      = platformSessionLockRoot
+	sessionSharedLockRoot   = platformSessionLockRoot
 )
 
 // withSessionEntryLock runs fn while holding the advisory lock for one cached
@@ -74,15 +74,15 @@ func sessionEntryLockPaths(key string) []string {
 	if dir, err := webSessionCacheDir(); err == nil && strings.TrimSpace(dir) != "" {
 		paths = append(paths, filepath.Join(dir, name))
 	}
-	if dir := strings.TrimSpace(sessionLockTempDir()); dir != "" {
+	if dir := strings.TrimSpace(sessionSharedLockRoot()); dir != "" {
 		paths = append(paths, filepath.Join(dir, sessionSharedLockDirName(), name))
 	}
 	return paths
 }
 
-// sessionSharedLockDirName keeps the shared anchor per user: a lock file in a
-// world-writable temporary directory can only be removed by its owner, so
-// mixing users there would make every stale lock permanent for everyone else.
+// sessionSharedLockDirName keeps the persistent shared anchor per OS user. Its
+// parent is stable across process-local cache, HOME, and temporary-directory
+// settings so processes that reach the same keychain derive the same path.
 func sessionSharedLockDirName() string { return platformSessionLockDirName() }
 
 func acquireLockFile(path string) (func(), bool) {

@@ -54,7 +54,7 @@ func TestWithSessionEntryLockExcludesConcurrentHolders(t *testing.T) {
 // must not depend on the cache directory.
 func TestSessionEntryLockSharesAnAnchorAcrossCacheDirs(t *testing.T) {
 	shared := t.TempDir()
-	withStubbedSessionLockTempDir(t, shared)
+	withStubbedSessionSharedLockRoot(t, shared)
 
 	key := webSessionCacheKey("user@example.com")
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "cache-a"))
@@ -78,8 +78,10 @@ func TestSessionEntryLockSharesAnAnchorAcrossCacheDirs(t *testing.T) {
 
 func TestSessionEntryLockSharedAnchorIgnoresTempDir(t *testing.T) {
 	key := webSessionCacheKey("user@example.com")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "cache-a"))
 	first := sessionEntryLockPaths(key)[1]
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "different"))
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "cache-b"))
 	second := sessionEntryLockPaths(key)[1]
 	if first != second {
 		t.Fatalf("shared anchor changed with TMPDIR: %q -> %q", first, second)
@@ -89,7 +91,7 @@ func TestSessionEntryLockSharedAnchorIgnoresTempDir(t *testing.T) {
 // The shared anchor has to actually exclude: a holder configured with one cache
 // directory must block a second one configured with another.
 func TestSessionEntryLockExcludesHoldersWithDifferentCacheDirs(t *testing.T) {
-	withStubbedSessionLockTempDir(t, t.TempDir())
+	withStubbedSessionSharedLockRoot(t, t.TempDir())
 	withShortSessionLockWait(t, 100*time.Millisecond)
 
 	key := webSessionCacheKey("user@example.com")
@@ -125,7 +127,7 @@ func TestSessionEntryLockExcludesHoldersWithDifferentCacheDirs(t *testing.T) {
 // Releasing one descriptor must not remove or damage the persistent anchor.
 func TestSessionEntryLockReleaseKeepsPersistentAnchor(t *testing.T) {
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
-	withStubbedSessionLockTempDir(t, t.TempDir())
+	withStubbedSessionSharedLockRoot(t, t.TempDir())
 
 	key := webSessionCacheKey("user@example.com")
 	release := acquireSessionEntryLock(key)
@@ -143,11 +145,11 @@ func TestSessionEntryLockReleaseKeepsPersistentAnchor(t *testing.T) {
 	}
 }
 
-func withStubbedSessionLockTempDir(t *testing.T, dir string) {
+func withStubbedSessionSharedLockRoot(t *testing.T, dir string) {
 	t.Helper()
-	prev := sessionLockTempDir
-	sessionLockTempDir = func() string { return dir }
-	t.Cleanup(func() { sessionLockTempDir = prev })
+	prev := sessionSharedLockRoot
+	sessionSharedLockRoot = func() string { return dir }
+	t.Cleanup(func() { sessionSharedLockRoot = prev })
 }
 
 func withShortSessionLockWait(t *testing.T, wait time.Duration) {

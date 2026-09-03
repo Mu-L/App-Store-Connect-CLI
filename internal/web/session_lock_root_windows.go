@@ -2,13 +2,14 @@
 
 package web
 
-import "os"
+import "golang.org/x/sys/windows"
 
 func platformSessionLockRoot() string {
-	if dir, err := os.UserConfigDir(); err == nil {
-		return dir
+	dir, err := windows.KnownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return ""
 	}
-	return os.TempDir()
+	return dir
 }
 
 func platformSessionLockDirName() string { return "asc-web-session-locks" }
