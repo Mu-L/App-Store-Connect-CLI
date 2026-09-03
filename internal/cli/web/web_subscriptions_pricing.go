@@ -184,7 +184,13 @@ resolution but does not mutate App Store Connect.
 			monthlyAvailability, found := findPlanAvailabilityByType(availabilities, "MONTHLY")
 			created := false
 			if found && availabilityExcludesTerritory(monthlyAvailability, territoryID) {
-				return fmt.Errorf("MONTHLY plan availability %q exists but does not include %s; update its territories before bootstrapping prices", monthlyAvailability.ID, territoryID)
+				return fmt.Errorf(
+					"MONTHLY plan availability %q exists but does not include %s; add it with 'asc subscriptions pricing plan-availability set --subscription-id %s --plan-type MONTHLY --territories <complete list including %s> --confirm' before bootstrapping prices",
+					monthlyAvailability.ID,
+					territoryID,
+					id,
+					territoryID,
+				)
 			}
 			if *dryRun {
 				result := asc.WebSubscriptionMonthlyCommitmentBootstrapResult{
