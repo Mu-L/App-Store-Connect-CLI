@@ -433,6 +433,7 @@ func TestFrame_InputModeCleansTemporaryKoubouDirectory(t *testing.T) {
 
 func installFrameTestMockKou(t *testing.T, fixturePath, outputPath string) {
 	t.Helper()
+	skipWindowsUnixExecutableFixtures(t)
 
 	binDir := t.TempDir()
 	kouPath := filepath.Join(binDir, "kou")

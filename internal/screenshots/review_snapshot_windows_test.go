@@ -139,6 +139,9 @@ func TestCaptureWithRootWindowsRejectsProviderScratchReplacement(t *testing.T) {
 		renameErr = os.Rename(request.OutputDir, replacement)
 		if renameErr == nil {
 			_ = os.Rename(replacement, request.OutputDir)
+			if windowsProcessTokenBypassesDACLs(t) {
+				t.Skip("current Windows token bypasses directory DACLs; restricted-token tests still cover the lock")
+			}
 			t.Fatalf("provider renamed private scratch directory despite its protected parent")
 		}
 		path := filepath.Join(request.OutputDir, request.Name+".png")
@@ -361,8 +364,32 @@ func assertWindowsRenameDenied(t *testing.T, original, replacement string) {
 	t.Helper()
 	if err := os.Rename(original, replacement); err == nil {
 		_ = os.Rename(replacement, original)
+		if windowsProcessTokenBypassesDACLs(t) {
+			t.Skip("current Windows token bypasses directory DACLs; restricted-token tests still cover the lock")
+		}
 		t.Fatalf("rename %q succeeded while its parent was protected", original)
 	}
+}
+
+func windowsProcessTokenBypassesDACLs(t *testing.T) bool {
+	t.Helper()
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
+		t.Fatalf("OpenProcessToken() error: %v", err)
+	}
+	defer token.Close()
+	if token.IsElevated() {
+		return true
+	}
+	admin, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		t.Fatalf("CreateWellKnownSid() error: %v", err)
+	}
+	member, err := token.IsMember(admin)
+	if err != nil {
+		t.Fatalf("IsMember(Administrators) error: %v", err)
+	}
+	return member
 }
 
 func mustOpenWindowsDirectory(t *testing.T, path string) *os.File {

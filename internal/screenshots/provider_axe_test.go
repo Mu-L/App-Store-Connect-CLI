@@ -86,6 +86,7 @@ done
 
 func writeExecutable(t *testing.T, path string, content string) {
 	t.Helper()
+	skipWindowsUnixExecutableFixtures(t)
 	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
 		t.Fatalf("write executable %q: %v", path, err)
 	}

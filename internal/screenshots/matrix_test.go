@@ -773,6 +773,7 @@ func TestValidateMatrixFrameMappingForSimulatorUsesActualFamily(t *testing.T) {
 }
 
 func TestCheckMatrixDeviceRejectsOversizedInventory(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	xcrunPath := filepath.Join(binDir, "xcrun")
 	script := "#!/bin/sh\nexec /usr/bin/head -c 4194305 /dev/zero\n"
@@ -788,6 +789,7 @@ func TestCheckMatrixDeviceRejectsOversizedInventory(t *testing.T) {
 }
 
 func TestCheckMatrixDevicesUsesSimulatorModelForFrameFamily(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	xcrunPath := filepath.Join(binDir, "xcrun")
 	script := `#!/bin/sh
@@ -815,6 +817,7 @@ printf '%s\n' '{"devices":{"runtime":[{"udid":"SIM-UDID","state":"Booted","isAva
 }
 
 func TestReadMatrixSimulatorInventoryUsesBoundedTimeout(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	xcrunPath := filepath.Join(binDir, "xcrun")
 	script := "#!/bin/sh\nwhile :; do :; done\n"
@@ -836,6 +839,7 @@ func TestReadMatrixSimulatorInventoryUsesBoundedTimeout(t *testing.T) {
 }
 
 func TestReadMatrixSimulatorInventoryWithTimeoutPreservesParentContext(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	tests := []struct {
 		name       string
 		newContext func() (context.Context, context.CancelFunc)
@@ -882,6 +886,7 @@ func TestReadMatrixSimulatorInventoryWithTimeoutPreservesParentContext(t *testin
 }
 
 func TestSimctlMatrixAppearanceUsesSupportedUIContractAndRestores(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "xcrun.log")
 	xcrunPath := filepath.Join(binDir, "xcrun")
@@ -931,6 +936,7 @@ fi
 }
 
 func TestSimctlMatrixAppearanceBoundsCapturedOutput(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	xcrunPath := filepath.Join(binDir, "xcrun")
 	script := "#!/bin/sh\nexec /usr/bin/head -c " + fmt.Sprint(maxMatrixAppearanceBytes+1) + " /dev/zero\n"
@@ -1083,6 +1089,7 @@ func TestGenerateMatrixReview_DoesNotReplaceManifestWhenHTMLPublishFails(t *test
 }
 
 func TestGenerateMatrixReviewPreservesExistingFileModes(t *testing.T) {
+	skipWindowsUnixFileModes(t)
 	dir := t.TempDir()
 	for _, name := range []string{"index.html", "manifest.json"} {
 		path := filepath.Join(dir, name)
@@ -1110,6 +1117,7 @@ func TestGenerateMatrixReviewPreservesExistingFileModes(t *testing.T) {
 }
 
 func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T) {
+	skipWindowsUnixFileModes(t)
 	dir := t.TempDir()
 	oldHTML := []byte("<html>previous</html>\n")
 	oldManifest := []byte("{\"status\":\"previous\"}\n")
@@ -1712,6 +1720,7 @@ func TestPromoteMatrixArtifactRejectsFinalSymlink(t *testing.T) {
 }
 
 func TestPromoteMatrixArtifactPreservesExistingMode(t *testing.T) {
+	skipWindowsUnixFileModes(t)
 	dir := t.TempDir()
 	outputDir := filepath.Join(dir, "raw")
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
@@ -2056,11 +2065,22 @@ func TestRunMatrix_BoundsConcurrencyAndWritesPartialSafeResult(t *testing.T) {
 		if err := waitContext(ctx, 5*time.Millisecond); err != nil {
 			return nil, err
 		}
-		writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+		if err := writeMatrixPNGFile(filepath.Join(plan.App.OutputDir, "home.png")); err != nil {
+			return nil, err
+		}
 		return &RunResult{BundleID: plan.App.BundleID, UDID: plan.App.UDID, OutputDir: plan.App.OutputDir, Steps: []RunStepResult{{Index: 1, Action: "screenshot", Status: "ok"}}}, nil
 	}
-	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{MaxConcurrency: 2}, MatrixDependencies{RunPlan: runPlan, Appearance: appearance})
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{MaxConcurrency: 2}, MatrixDependencies{
+		RunPlan:     runPlan,
+		Appearance:  appearance,
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
 	if runErr != nil {
+		if result != nil {
+			for _, cell := range result.Cells {
+				t.Logf("cell %s status=%s stage=%s code=%s err=%v", cell.ID, cell.Status, cell.FailureStage, cell.FailureCode, cell.Error)
+			}
+		}
 		t.Fatalf("RunMatrixWithDependencies() error = %v", runErr)
 	}
 	if maxActive > 2 {
@@ -2436,6 +2456,7 @@ func TestRunMatrix_InventoryCancellationMarksAllCellsCanceled(t *testing.T) {
 }
 
 func TestRunMatrixReportsFrameFamilyMismatchPreflight(t *testing.T) {
+	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
 	xcrunPath := filepath.Join(binDir, "xcrun")
 	script := `#!/bin/sh
@@ -2631,15 +2652,19 @@ func makeMatrixLocales(count int) []string {
 	return values
 }
 
-func writeMatrixPNG(t *testing.T, path string) {
-	t.Helper()
+func writeMatrixPNGFile(path string) error {
 	file, err := os.Create(path)
 	if err != nil {
-		t.Fatalf("create fake screenshot: %v", err)
+		return err
 	}
 	defer file.Close()
-	if err := png.Encode(file, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
-		t.Fatalf("encode fake screenshot: %v", err)
+	return png.Encode(file, image.NewRGBA(image.Rect(0, 0, 2, 2)))
+}
+
+func writeMatrixPNG(t *testing.T, path string) {
+	t.Helper()
+	if err := writeMatrixPNGFile(path); err != nil {
+		t.Fatalf("write fake screenshot: %v", err)
 	}
 }
 
@@ -3983,8 +4008,8 @@ func TestMatrixAttemptProvidersUsePrivatePinnedDestinations(t *testing.T) {
 			info, statErr := os.Stat(plan.App.OutputDir)
 			if statErr != nil {
 				t.Errorf("stat private capture output directory: %v", statErr)
-			} else if got := info.Mode().Perm(); got != 0o700 {
-				t.Errorf("capture output directory mode = %o, want 700", got)
+			} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+				t.Errorf("capture output directory mode = %o, want 700", info.Mode().Perm())
 			}
 			runChecked = true
 			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
@@ -3998,8 +4023,8 @@ func TestMatrixAttemptProvidersUsePrivatePinnedDestinations(t *testing.T) {
 			info, statErr := os.Stat(frameDir)
 			if statErr != nil {
 				t.Errorf("stat private framing output directory: %v", statErr)
-			} else if got := info.Mode().Perm(); got != 0o700 {
-				t.Errorf("framing output directory mode = %o, want 700", got)
+			} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+				t.Errorf("framing output directory mode = %o, want 700", info.Mode().Perm())
 			}
 			frameChecked = true
 			writeMatrixPNG(t, request.OutputPath)
@@ -4836,6 +4861,9 @@ func TestMatrixAttemptRejectsReplacedPrivateFrameRoot(t *testing.T) {
 }
 
 func TestCreateMatrixPrivateAttemptRootRejectsParentReplacementBeforeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows temporary volumes do not reliably distinguish a replaced parent directory identity")
+	}
 	var parentPath, originalPath, replacementSentinel string
 	var swapErr error
 	previous := matrixPrivateAttemptParentCreatedForTest

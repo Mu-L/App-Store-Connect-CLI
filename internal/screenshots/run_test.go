@@ -16,6 +16,13 @@ func skipWindowsUnixExecutableFixtures(t *testing.T) {
 	}
 }
 
+func skipWindowsUnixFileModes(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not preserve Unix permission bits")
+	}
+}
+
 func TestAxeMatchesTarget_ParsesJSONWhenStderrHasWarnings(t *testing.T) {
 	skipWindowsUnixExecutableFixtures(t)
 	binDir := t.TempDir()
