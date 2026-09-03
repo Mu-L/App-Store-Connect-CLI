@@ -141,6 +141,13 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - `GET /v1/apps/{id}/builds` has no documented default order and rejects `sort` with 400 `PARAMETER_ERROR.ILLEGAL`; with `limit=1` it can return a weeks-stale build that reads as "latest". Use the top-level collection instead: `GET /v1/builds?filter[app]={id}&sort=-uploadedDate&limit=1`.
 - General shape of the trap: a relationship endpoint (`/v1/{parent}/{id}/{children}`) and its top-level collection (`/v1/{children}?filter[{parent}]=`) accept different query parameters, so a `sort` or `filter` that works on one can 400 on the other.
 
+## Xcode Cloud workflows
+
+- `GET /v1/ciWorkflows/{id}` returns relationships with links only by default: `repository` and `buildRuns` come back without a `data` linkage, and `product`, `xcodeVersion`, and `macOsVersion` are absent from the response entirely. `POST /v1/ciWorkflows` requires all four linkages, so any read-then-recreate flow must request `?include=product,repository,xcodeVersion,macOsVersion`, which populates them.
+- `GET /v1/ciWorkflows/{id}` also emits JSON `null` for optional action and start-condition properties (`destination`, `testConfiguration`, `filesAndFoldersRule`) that `CiWorkflowCreateRequest` does not mark nullable. `workflows duplicate` omits those nulls so the create body stays schema-clean; unused nullable start conditions are omitted rather than sent as `null`.
+- `CiAction` has no post-actions: the public workflow schema covers `BUILD`, `ANALYZE`, `TEST`, and `ARCHIVE` actions plus `buildDistributionAudience`, but TestFlight post-actions (beta group and tester assignment) exist only in the private `/ci/api/` workflow payload. A workflow recreated through the public API therefore loses its TestFlight post-actions.
+- Workflow-scoped environment variables and secrets are also absent from `CiWorkflowCreateRequest`; they live on the private `/ci/api/` workflow payload. `workflows duplicate` cannot copy them. Use `asc web xcode-cloud env-vars` after creating the copy.
+
 ## Devices
 
 - No DELETE endpoint; devices can only be enabled/disabled via PATCH.
