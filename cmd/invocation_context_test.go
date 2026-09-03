@@ -229,6 +229,38 @@ func TestRuntimeFailureContextDoesNotTreatLocalStaplerExitAsAPIStatus(t *testing
 	}
 }
 
+func TestRuntimeFailureContextKeepsInterruptedLocalStaplerExitOutOfAPIBuckets(t *testing.T) {
+	analysis := invocationAnalysis{shape: telemetry.InvocationShapeLeaf}
+	tests := []struct {
+		name        string
+		contextErr  error
+		wantOutcome telemetry.OutcomeKind
+	}{
+		{name: "cancellation", contextErr: context.Canceled, wantOutcome: telemetry.OutcomeCancelled},
+		{name: "deadline", contextErr: context.DeadlineExceeded, wantOutcome: telemetry.OutcomeTransportError},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// A stapler child can return a concrete status in the same window in
+			// which the caller's context is canceled, so the local status and the
+			// context error travel together.
+			cause := errors.Join(&localxcode.StaplerCommandError{
+				Operation: string(localxcode.StaplerOperationStaple),
+				ExitCode:  66,
+				Err:       errors.New("local stapler failure"),
+			}, test.contextErr)
+			err := shared.NewProcessExitErrorWithCause(66, cause)
+			got := runtimeFailureContext(analysis, err, 66)
+			if got.ErrorKind != telemetry.ErrorKindOther || got.FailureStage != telemetry.FailureStageExecution || got.HTTPStatus != 0 {
+				t.Fatalf("runtimeFailureContext() = %+v, want local execution failure without API classification", got)
+			}
+			if got.OutcomeKind != test.wantOutcome {
+				t.Fatalf("runtimeFailureContext() outcome = %v, want %v", got.OutcomeKind, test.wantOutcome)
+			}
+		})
+	}
+}
+
 func TestValidationFailureContextPrefersStructuredDiagnostic(t *testing.T) {
 	err := shared.WithDiagnostic(
 		shared.NewReportedUsageError(shared.UsageErrorMissingRequired, "--issuer-id is required"),
