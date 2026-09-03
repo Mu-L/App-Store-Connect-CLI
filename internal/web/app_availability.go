@@ -120,7 +120,90 @@ func (c *Client) GetAppAvailability(ctx context.Context, appID string) (*AppAvai
 	}
 
 	availability := decodeAppAvailabilityResource(payload.Data)
+	if availability.AvailableTerritoriesLoaded {
+		return &availability, nil
+	}
+	if strings.TrimSpace(availability.ID) == "" {
+		return nil, fmt.Errorf("app availability id missing from response")
+	}
+
+	territories, err := c.listAppTerritoryAvailabilities(ctx, availability.ID)
+	if err != nil {
+		return nil, fmt.Errorf("could not read territoryAvailabilities for app availability %q: %w", availability.ID, err)
+	}
+	availability.AvailableTerritories = territories
+	availability.AvailableTerritoriesLoaded = true
 	return &availability, nil
+}
+
+func (c *Client) webIrisV2BaseURL() string {
+	base := strings.TrimRight(strings.TrimSpace(c.baseURL), "/")
+	switch {
+	case strings.HasSuffix(base, "/iris/v1"):
+		return strings.TrimSuffix(base, "/iris/v1") + "/iris/v2"
+	case strings.HasSuffix(base, "/iris/v2"):
+		return base
+	case base == "":
+		return irisV2BaseURL
+	default:
+		return base + "/iris/v2"
+	}
+}
+
+func (c *Client) listAppTerritoryAvailabilities(ctx context.Context, availabilityID string) ([]string, error) {
+	availabilityID = strings.TrimSpace(availabilityID)
+	if availabilityID == "" {
+		return nil, fmt.Errorf("app availability id is required")
+	}
+
+	query := url.Values{}
+	query.Set("include", "territory")
+	query.Set("limit", "200")
+	path := queryPath("/appAvailabilities/"+url.PathEscape(availabilityID)+"/territoryAvailabilities", query)
+
+	payload, err := c.fetchJSONAPIPagesFrom(ctx, c.webIrisV2BaseURL(), path, "territory availabilities")
+	if err != nil {
+		return nil, err
+	}
+
+	territories := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, resource := range payload.Data {
+		available, known := boolAttrKnown(resource.Attributes, "available")
+		if !known {
+			id := strings.TrimSpace(resource.ID)
+			if id == "" {
+				id = "unknown"
+			}
+			return nil, fmt.Errorf("territory availability %q omitted or mistyped the available attribute", id)
+		}
+		if !available {
+			continue
+		}
+		territoryID := territoryIDFromAvailabilityResource(resource)
+		if territoryID == "" {
+			return nil, fmt.Errorf("territory availability %q is available but omitted the territory linkage", strings.TrimSpace(resource.ID))
+		}
+		if _, ok := seen[territoryID]; ok {
+			continue
+		}
+		seen[territoryID] = struct{}{}
+		territories = append(territories, territoryID)
+	}
+	slices.Sort(territories)
+	return territories, nil
+}
+
+func territoryIDFromAvailabilityResource(resource jsonAPIResource) string {
+	relationship, ok := resource.Relationships["territory"]
+	if !ok {
+		return ""
+	}
+	refs := parseRelationshipRefs(relationship.Data)
+	if len(refs) == 0 {
+		return ""
+	}
+	return strings.ToUpper(strings.TrimSpace(refs[0].ID))
 }
 
 // CreateAppAvailability creates the initial app availability via the internal web API.

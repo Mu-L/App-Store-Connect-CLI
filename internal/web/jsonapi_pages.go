@@ -13,6 +13,13 @@ import (
 // data and included resources. Duplicate or self-referential next paths abort
 // with a pagination-loop error instead of spinning.
 func (c *Client) fetchJSONAPIPages(ctx context.Context, path, responseName string) (jsonAPIListPayload, error) {
+	return c.fetchJSONAPIPagesFrom(ctx, c.baseURL, path, responseName)
+}
+
+// fetchJSONAPIPagesFrom is fetchJSONAPIPages against an explicit JSON:API base,
+// so iris v2 collections can follow absolute next links without rejoining them
+// onto the client's iris v1 baseURL.
+func (c *Client) fetchJSONAPIPagesFrom(ctx context.Context, baseURL, path, responseName string) (jsonAPIListPayload, error) {
 	nextPath := strings.TrimSpace(path)
 	if nextPath == "" {
 		return jsonAPIListPayload{}, fmt.Errorf("%s path is required", responseName)
@@ -31,7 +38,7 @@ func (c *Client) fetchJSONAPIPages(ctx context.Context, path, responseName strin
 		visited[nextPath] = struct{}{}
 		currentPath := nextPath
 
-		responseBody, err := c.doRequest(ctx, http.MethodGet, nextPath, nil)
+		responseBody, err := c.doJSONAPIRequest(ctx, baseURL, http.MethodGet, nextPath)
 		if err != nil {
 			return jsonAPIListPayload{}, err
 		}
@@ -51,13 +58,23 @@ func (c *Client) fetchJSONAPIPages(ctx context.Context, path, responseName strin
 			nextPath = ""
 			continue
 		}
-		nextPath, err = resolveJSONAPINextPath(nextLink, currentPath, c.baseURL)
+		nextPath, err = resolveJSONAPINextPath(nextLink, currentPath, baseURL)
 		if err != nil {
 			return jsonAPIListPayload{}, fmt.Errorf("failed to normalize %s pagination link: %w", responseName, err)
 		}
 	}
 
 	return combined, nil
+}
+
+func (c *Client) doJSONAPIRequest(ctx context.Context, baseURL, method, path string) ([]byte, error) {
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Accept", "application/json")
+	headers.Set("X-Requested-With", "XMLHttpRequest")
+	headers.Set("Origin", appStoreBaseURL)
+	headers.Set("Referer", appStoreBaseURL+"/")
+	return c.doRequestBase(ctx, baseURL, method, path, nil, headers)
 }
 
 func resolveJSONAPINextPath(nextLink, currentPath, baseURL string) (string, error) {
