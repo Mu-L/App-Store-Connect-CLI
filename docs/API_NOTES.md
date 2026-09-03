@@ -63,6 +63,34 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - The readable source is the iris v2 related collection: `GET /iris/v2/appAvailabilities/{id}/territoryAvailabilities?include=territory&limit=200`. Follow `links.next`. `filter[available]=true` is rejected with 400 `PARAMETER_ERROR.ILLEGAL`; filter client-side on `attributes.available`.
 - `asc web apps delete` uses this collection for the "removed from sale in all territories" preflight. The public API counterpart is `/v2/appAvailabilities/{id}/territoryAvailabilities`.
 
+## Web-session app distribution method
+
+- The public App Store Connect API has no distribution-method surface: `App` and `AppUpdateRequest` in `docs/openapi/latest.json` expose only `contentRightsDeclaration`, `streamlinedPurchasingEnabled`, subscription status URLs, and identity fields, and `AppAvailabilityV2` only carries `availableInNewTerritories`. The setting is web-session only.
+- `asc web apps distribution view --app APP_ID` reads the internal app resource (`GET /iris/v1/apps/{id}`) and reports the `distributionType` and `educationDiscountType` attributes verbatim, alongside `name` and `bundleId`. No sparse fieldset or include is requested, because those attributes are returned on the plain resource read and an unknown `fields[apps]` value would fail the request outright.
+- Observed values are `APP_STORE` (public App Store distribution) and `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager). Apple omits the attribute for accounts or apps that never carried it; the command reports `unknown` in table output and omits the field in JSON rather than defaulting it to `APP_STORE`.
+- Writes are not shipped. The observed write contract pairs `distributionType` with `educationDiscountType` in a single app PATCH, and public/private transitions carry Apple-side eligibility restrictions that are not observable from the read payload, so the CLI fails closed and leaves the change to the App Store Connect web UI.
+- Unlisted App Store distribution is a request form reviewed by Apple, not an attribute value on this resource. There is no captured endpoint for it, so no flag is offered.
+## Web-session last-compatible version settings
+
+- App Store Connect's Last-Compatible Version Settings screen has no dedicated resource and no `lastCompatibleVersion` attribute. The feature is carried by the boolean `downloadable` attribute on the existing `appStoreVersions` resource; `lastCompatibleVersion` is only a client-side label App Store Connect puts on the `appStoreVersions` collection it reads back. The public OpenAPI snapshot documents `downloadable` on `AppStoreVersion` and `AppStoreVersionUpdateRequest`, but the public CLI versions client does not currently request or print it.
+- `asc web apps last-compatible-version view --app APP_ID` reuses App Store Connect's own read: `GET /iris/v1/apps/{id}?include=appStoreVersions&fields[appStoreVersions]=appStoreState,appVersionState,platform,versionString,downloadable,createdDate,distributions,reviewType&limit[appStoreVersions]=2000`. The sparse fieldset and limit are kept identical to Apple's request rather than trimmed, because the response interceptor on that screen keys off the echoed `downloadable` field in `links.self`. This remains a web-session command so it matches that screen's relationship order and fieldset; a public-API versions surface is a separate follow-up.
+- Versions are reported in the order Apple lists them in the app's `appStoreVersions` relationship, not in `included` order. Apple omits `downloadable` on versions that never carried the setting; the command reports `unknown` rather than defaulting it to `true`.
+- `appStoreState` and `appVersionState` are both printed verbatim. App Store Connect's web client populates `appStoreState` from `appVersionState` and applies legacy remapping (`READY_FOR_DISTRIBUTION` to `READY_FOR_SALE`) purely client-side, so raw responses can carry either field or both. The CLI does not reproduce that remapping.
+- The write is not shipped. The PATCH target is `PATCH /iris/v1/appStoreVersions/{id}`, but the serialized request body is assembled in an authenticated micro-frontend that is not observable without a live session capture, so the attribute-level write contract is unverified.
+
+## Web-session app status history
+
+- The public App Store Connect API has no status-history endpoint. fastlane's only status-history path is the retired legacy tunes API (`GET ra/apps/{id}/stateHistory?platform=...`), which has no app-level iris counterpart.
+- The modern equivalent is version-scoped: `GET /iris/v1/appStoreVersions/{appStoreVersionId}/appStoreVersionStateChanges`, whose resources carry `appStoreState`, `date`, and `initiator`. `initiator` is the actor App Store Connect shows for the change.
+- There is no app-level history endpoint, so `asc web apps history --app APP_ID` lists the app's versions with `GET /iris/v1/apps/{id}/appStoreVersions` and then fans out one state-change request per version. `--version-id` scopes the read to a single version and skips the fan-out after verifying that version's app relationship matches `--app`.
+- Both readers follow `links.next` internally, so the command has no `--paginate` flag, matching `asc web api-keys list`.
+- The fan-out is serial and shares one request timeout, so an app with a long release history can exceed the 30s default. Scope the read with `--version-id`, or raise `ASC_TIMEOUT`. Requests are not parallelized, to avoid hammering a web session with concurrent internal-API calls.
+- `AppStatusHistory` is a role capability in App Store Connect, so accounts without it can get an authorization error on the state-change read even when the app list succeeds.
+
+## Web-session review submissions (iris)
+
+- `GET /iris/v1/reviewSubmissions/{id}/items` rejects `include=appStoreVersionExperimentV2` with HTTP 400 `PARAMETER_ERROR.INVALID` even though the public OpenAPI snapshot lists that relationship. Verified live 2026-09-03. `asc web review show` omits it from the items include and keeps the iris-accepted names, including `inAppPurchaseVersion`, `subscriptionVersion`, and `subscriptionGroupVersion`.
+
 ## TestFlight Distribution
 
 - `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.
