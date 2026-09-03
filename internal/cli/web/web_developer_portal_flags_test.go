@@ -200,3 +200,26 @@ func TestWebAgreementsStatusAcceptsDeveloperTeamFlag(t *testing.T) {
 		t.Fatal("expected --developer-team on web agreements status")
 	}
 }
+
+func TestValidateDeveloperPortalFlagsRejectsBlankSelector(t *testing.T) {
+	omitted := bindDeveloperPortalFlags(flag.NewFlagSet("omit", flag.ContinueOnError))
+	if err := validateDeveloperPortalFlags(omitted); err != nil {
+		t.Fatalf("omitted flag: %v", err)
+	}
+
+	blank := bindDeveloperPortalFlags(flag.NewFlagSet("blank", flag.ContinueOnError))
+	if err := blank.fs.Parse([]string{"--developer-team", ""}); err != nil {
+		t.Fatalf("parse blank: %v", err)
+	}
+	if err := validateDeveloperPortalFlags(blank); err == nil || !strings.Contains(err.Error(), "--developer-team must be") {
+		t.Fatalf("blank selector error = %v", err)
+	}
+
+	spaces := bindDeveloperPortalFlags(flag.NewFlagSet("spaces", flag.ContinueOnError))
+	if err := spaces.fs.Parse([]string{"--developer-team", "   "}); err != nil {
+		t.Fatalf("parse spaces: %v", err)
+	}
+	if err := validateDeveloperPortalFlags(spaces); err == nil {
+		t.Fatal("expected whitespace-only --developer-team to fail")
+	}
+}

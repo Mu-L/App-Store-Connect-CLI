@@ -6,12 +6,14 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 const developerTeamFlagUsage = "Developer Portal team ID (or exact team name) to use; required when the Apple Account belongs to multiple Developer Portal teams and none matches the selected App Store Connect provider"
 
 type developerPortalFlags struct {
+	fs            *flag.FlagSet
 	developerTeam *string
 }
 
@@ -25,8 +27,32 @@ func bindDeveloperPortalFlagsExperimental(fs *flag.FlagSet) developerPortalFlags
 
 func bindDeveloperPortalFlagsWithUsage(fs *flag.FlagSet, usage string) developerPortalFlags {
 	return developerPortalFlags{
+		fs:            fs,
 		developerTeam: fs.String("developer-team", "", usage),
 	}
+}
+
+func (flags developerPortalFlags) developerTeamWasSet() bool {
+	if flags.fs == nil {
+		return false
+	}
+	set := false
+	flags.fs.Visit(func(flag *flag.Flag) {
+		if flag.Name == "developer-team" {
+			set = true
+		}
+	})
+	return set
+}
+
+func validateDeveloperPortalFlags(flags developerPortalFlags) error {
+	if !flags.developerTeamWasSet() {
+		return nil
+	}
+	if flags.developerTeam == nil || strings.TrimSpace(*flags.developerTeam) == "" {
+		return shared.UsageError("--developer-team must be a Developer Portal team ID or exact team name")
+	}
+	return nil
 }
 
 func newDeveloperPortalClient(session *webcore.AuthSession, flags developerPortalFlags) *webcore.Client {
@@ -34,7 +60,7 @@ func newDeveloperPortalClient(session *webcore.AuthSession, flags developerPorta
 	if client == nil {
 		return nil
 	}
-	if flags.developerTeam != nil {
+	if flags.developerTeamWasSet() {
 		client.SetDeveloperTeamSelector(strings.TrimSpace(*flags.developerTeam))
 	}
 	return client

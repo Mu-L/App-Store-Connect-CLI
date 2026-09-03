@@ -133,6 +133,9 @@ Authentication:
 			case resolvedCapability != "PRIVATE_CLOUD_COMPUTE":
 				return shared.UsageErrorf("unsupported Developer Portal capability %q (supported: PRIVATE_CLOUD_COMPUTE)", resolvedCapability)
 			}
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()

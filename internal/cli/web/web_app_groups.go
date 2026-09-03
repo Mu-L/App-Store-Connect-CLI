@@ -108,6 +108,9 @@ Example:
 			if len(args) > 0 {
 				return shared.UsageError("web app-groups list does not accept positional arguments")
 			}
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
@@ -168,6 +171,9 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
@@ -235,6 +241,9 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
@@ -303,6 +312,9 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
@@ -367,6 +379,9 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
@@ -426,6 +441,9 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 			session, err := resolveWebSessionForCommand(requestCtx, authFlags)

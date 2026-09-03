@@ -104,6 +104,9 @@ Example:
 				return shared.UsageError("web agreements status does not accept positional arguments")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
@@ -198,6 +201,9 @@ Examples:
 				return fmt.Errorf("web agreements download failed: %w", err)
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
@@ -354,6 +360,9 @@ Examples:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 

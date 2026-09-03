@@ -37,3 +37,8 @@ func TestWebDeveloperTeamFlagAcceptedOnPortalCommands(t *testing.T) {
 func TestWebPrivacyPullRejectsDeveloperTeamFlag(t *testing.T) {
 	assertUsageExit(t, []string{"web", "privacy", "pull", "--app", "123", "--developer-team", "X"}, "unknown flag `--developer-team`")
 }
+
+func TestWebDeveloperTeamRejectsBlankSelectorBeforeSession(t *testing.T) {
+	assertUsageExit(t, []string{"web", "app-groups", "list", "--developer-team", "", "--output", "json"}, "--developer-team must be a Developer Portal team ID or exact team name")
+	assertUsageExit(t, []string{"web", "app-groups", "create", "--name", "X", "--identifier", "group.x", "--confirm", "--developer-team", "   "}, "--developer-team must be a Developer Portal team ID or exact team name")
+}
