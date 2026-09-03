@@ -93,8 +93,6 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 			endIndex++
 			nextBody := strings.TrimSuffix(lines[endIndex], "\n")
 			nextBody = strings.TrimSuffix(nextBody, "\r")
-			_, nextBlock := maskXCConfigComments(nextBody, inBlockComment)
-			inBlockComment = nextBlock
 			joined = trimXCConfigLineContinuation(joined) + nextBody
 			logical, _ = maskXCConfigComments(joined, false)
 			value, quote, err = parseXCConfigValue(logical)

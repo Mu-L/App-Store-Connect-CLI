@@ -1895,12 +1895,19 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfigWithContext(
 	read := func(includePath string) ([]byte, error) {
 		return resolver.readXCConfigFor(configuration, includePath)
 	}
-	return resolveXCConfigSettingWithBaseReader(
+	var identify func(string) (os.FileInfo, error)
+	if xcconfigUsesIdentityTraversal() {
+		identify = func(includePath string) (os.FileInfo, error) {
+			return resolver.identifyXCConfigFor(configuration, includePath)
+		}
+	}
+	return resolveXCConfigSettingWithBaseReaderAndIdentity(
 		path,
 		setting,
 		base,
 		read,
 		stat,
+		identify,
 	)
 }
 
@@ -2495,6 +2502,10 @@ func validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receip
 		if !protectedPathIsAuthorized(protectedPath, authorizedProtectedPaths) {
 			continue
 		}
+		info, infoErr := signingArtifactPathInfoFn(protectedPath)
+		if infoErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("protected project input %s is a symlink and cannot be aliased by an artifact", protectedPath)))
+		}
 		physical, err := signingResolveProspectivePathFn(protectedPath)
 		if err != nil {
 			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("resolve prospective protected project input %s: %w", protectedPath, err)))
@@ -2807,6 +2818,13 @@ func signingProjectInputPaths(
 			}
 		}
 		_, targetDefinesUnconditional := configuration.buildSettings["CODE_SIGN_ENTITLEMENTS"].(string)
+		if !targetDefinesUnconditional && authorized {
+			if files := configFiles[configuration.id]; len(files) > 0 {
+				if resolved, resolveErr := resolver.resolveConfigurationXCConfigWithContext(configuration, configuration, files[0], "CODE_SIGN_ENTITLEMENTS"); resolveErr == nil && resolved.found && resolved.exact {
+					targetDefinesUnconditional = true
+				}
+			}
+		}
 		if targetDefinesUnconditional {
 			continue
 		}

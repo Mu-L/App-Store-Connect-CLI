@@ -198,6 +198,16 @@ func TestXCConfigQuotedValueRoundTripsEscapedBackslashesAndQuotes(t *testing.T) 
 	}
 }
 
+func TestXCConfigParserPreservesQuoteStateForContinuedBlockCommentDelimiters(t *testing.T) {
+	document, err := parseXCConfig([]byte("HEADER_SEARCH_PATHS = \"Vendor\\\n/*SDK\"\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v, want quoted continuation containing /* accepted", err)
+	}
+	if len(document.assignments) != 1 || !strings.Contains(document.assignments[0].value, "Vendor") || !strings.Contains(document.assignments[0].value, "/*SDK") {
+		t.Fatalf("parseXCConfig() assignments = %#v, want quoted /* preserved across the continuation", document.assignments)
+	}
+}
+
 func TestXCConfigParserPreservesQuoteStateAcrossContinuedLines(t *testing.T) {
 	document, err := parseXCConfig([]byte("HEADER_SEARCH_PATHS = \"https:\\\n//host/path\"\n"))
 	if err != nil {

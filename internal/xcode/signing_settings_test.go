@@ -4900,6 +4900,58 @@ func TestSigningPlanProtectsProjectConditionalInheritedEntitlementComposition(t 
 	}
 }
 
+func TestSigningPlanSkipsProjectEntitlementExpressionsShadowedByTargetXCConfig(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = "$(MISSING).entitlements";`)
+	projectRoot := filepath.Dir(project)
+	appXCConfig := filepath.Join(projectRoot, "App.xcconfig")
+	if err := os.WriteFile(appXCConfig, []byte("CODE_SIGN_ENTITLEMENTS = App.entitlements\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "App.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	fileReference := "\t\tCCCCCCCCCCCCCCCCCCCCCCCC /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = App.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+marker, 1)
+	appConfiguration := "999999999999999999999993 /* App Debug */ = {isa = XCBuildConfiguration;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	updatedAppConfiguration := "999999999999999999999993 /* App Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = CCCCCCCCCCCCCCCCCCCCCCCC;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	if !strings.Contains(contents, appConfiguration) {
+		t.Fatal("project fixture is missing App Debug configuration")
+	}
+	contents = strings.Replace(contents, appConfiguration, updatedAppConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = Widget.entitlements;`)
+	if err := os.WriteFile(filepath.Join(projectRoot, "Widget.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(Widget.entitlements) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want target xcconfig to shadow the project entitlement expression", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("target xcconfig-shadowed project entitlement blocked planning: %#v", plan.Blockers)
+	}
+}
+
 func TestSigningPlanSkipsShadowedProjectEntitlementExpressions(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")

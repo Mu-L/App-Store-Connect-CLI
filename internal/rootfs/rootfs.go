@@ -1814,23 +1814,22 @@ func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base st
 	if err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
-		return err
-	}
+	closeErr := file.Close()
 	if err := secureopen.RenameNoReplaceInRoot(parent, quarantineName, base); err == nil {
-		return r.syncConditionalParentDirectory(parent)
+		return errors.Join(closeErr, r.syncConditionalParentDirectory(parent))
 	} else if errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
-		return errors.Join(err, fmt.Errorf("quarantined file %q was left in place", quarantineName))
+		return errors.Join(closeErr, err, fmt.Errorf("quarantined file %q was left in place", quarantineName))
 	} else if errors.Is(err, os.ErrExist) {
 		// A replacement already occupies the original name. Keep the
 		// quarantined entry as a recoverable copy rather than deleting either
 		// the replacement or the original transaction state.
 		return errors.Join(
+			closeErr,
 			fmt.Errorf("preserve concurrent replacement: %w", err),
 			fmt.Errorf("quarantined file %q was left in place", quarantineName),
 		)
 	} else {
-		return err
+		return errors.Join(closeErr, err)
 	}
 }
 
