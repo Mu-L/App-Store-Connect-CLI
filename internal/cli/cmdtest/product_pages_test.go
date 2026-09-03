@@ -152,9 +152,7 @@ func TestProductPagesCustomPagesListRejectsInvalidLimit(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "Error: "+"custom-pages list: --limit must be between 1 and 200") {
-				t.Fatalf("expected usage error on stderr, got %q", stderr)
-			}
+			assertUsageDiagnosticFirstLine(t, stderr, "custom-pages list: --limit must be between 1 and 200")
 		})
 	}
 }
@@ -178,9 +176,7 @@ func TestProductPagesCustomPagesListRejectsInvalidNextURL(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "Error: "+"custom-pages list: --next must be an App Store Connect URL") {
-		t.Fatalf("expected usage error on stderr, got %q", stderr)
-	}
+	assertUsageDiagnosticFirstLine(t, stderr, "custom-pages list: --next must be an App Store Connect URL")
 }
 
 func TestProductPagesExperimentTreatmentLocalizationMediaSetsValidationErrors(t *testing.T) {
@@ -358,9 +354,7 @@ func TestProductPagesCustomPagesLocalizationsPreviewSetsListRejectsInvalidLimit(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "Error: "+"custom-pages localizations preview-sets list: --limit must be between 1 and 200") {
-				t.Fatalf("expected usage error on stderr, got %q", stderr)
-			}
+			assertUsageDiagnosticFirstLine(t, stderr, "custom-pages localizations preview-sets list: --limit must be between 1 and 200")
 		})
 	}
 }
@@ -384,9 +378,7 @@ func TestProductPagesCustomPagesLocalizationsPreviewSetsListRejectsInvalidNextUR
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "Error: "+"custom-pages localizations preview-sets list: --next must be an App Store Connect URL") {
-		t.Fatalf("expected usage error on stderr, got %q", stderr)
-	}
+	assertUsageDiagnosticFirstLine(t, stderr, "custom-pages localizations preview-sets list: --next must be an App Store Connect URL")
 }
 
 func TestProductPagesCustomPagesLocalizationsScreenshotSetsListRejectsInvalidLimit(t *testing.T) {
@@ -424,9 +416,7 @@ func TestProductPagesCustomPagesLocalizationsScreenshotSetsListRejectsInvalidLim
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "Error: "+"custom-pages localizations screenshot-sets list: --limit must be between 1 and 200") {
-				t.Fatalf("expected usage error on stderr, got %q", stderr)
-			}
+			assertUsageDiagnosticFirstLine(t, stderr, "custom-pages localizations screenshot-sets list: --limit must be between 1 and 200")
 		})
 	}
 }
@@ -450,9 +440,7 @@ func TestProductPagesCustomPagesLocalizationsScreenshotSetsListRejectsInvalidNex
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "Error: "+"custom-pages localizations screenshot-sets list: --next must be an App Store Connect URL") {
-		t.Fatalf("expected usage error on stderr, got %q", stderr)
-	}
+	assertUsageDiagnosticFirstLine(t, stderr, "custom-pages localizations screenshot-sets list: --next must be an App Store Connect URL")
 }
 
 func TestProductPagesCustomPagesLocalizationsSearchKeywordsListRequiresLocalizationID(t *testing.T) {

@@ -18,10 +18,21 @@ func expectedLocalizationsStderr(argsPrefix []string) string {
 	return ""
 }
 
+// runLocalizationsInvalidNextURLCases exercises the shared --next validation
+// contract for the localization list surfaces.
+//
+// wantUsageExit is true once the command routes its pre-request validation
+// through shared.UsageError, which prints the diagnostic itself and classifies
+// the failure as usage exit code 2. It stays false for a command re-parented by
+// a command-tree rewriter: shared.UsageError writes the message before the
+// rewriter can correct the command path, so those keep returning a plain error
+// until the rewrite runs ahead of the diagnostic. Asserting the classification
+// per case keeps a migrated command from silently regressing to fmt.Errorf.
 func runLocalizationsInvalidNextURLCases(
 	t *testing.T,
 	argsPrefix []string,
 	wantErrPrefix string,
+	wantUsageExit bool,
 ) {
 	t.Helper()
 
@@ -66,16 +77,17 @@ func runLocalizationsInvalidNextURLCases(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			// Commands that classify this as a usage error print the
-			// diagnostic themselves and exit 2; the rest still surface it
-			// only through the returned error. Both shapes are accepted here
-			// because this runner is shared across command groups that are
-			// migrating to shared.UsageError at different times.
-			if errors.Is(runErr, flag.ErrHelp) {
-				if !strings.Contains(stderr, test.wantErr) {
-					t.Fatalf("expected stderr to contain %q, got %q", test.wantErr, stderr)
+			if wantUsageExit {
+				if !errors.Is(runErr, flag.ErrHelp) {
+					t.Fatalf("expected a usage-classified error, got %v", runErr)
 				}
-			} else if wantWarning := expectedLocalizationsStderr(argsPrefix); wantWarning != "" {
+				assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
+				return
+			}
+			if errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("expected a plain error for the deferred command, got a usage error: %v", runErr)
+			}
+			if wantWarning := expectedLocalizationsStderr(argsPrefix); wantWarning != "" {
 				if !strings.Contains(stderr, wantWarning) {
 					t.Fatalf("expected deprecation warning %q, got %q", wantWarning, stderr)
 				}
@@ -167,6 +179,7 @@ func TestBetaAppLocalizationsListRejectsInvalidNextURL(t *testing.T) {
 		t,
 		[]string{"testflight", "app-localizations", "list"},
 		"testflight app-localizations list: --next",
+		false,
 	)
 }
 
@@ -194,6 +207,7 @@ func TestBuildLocalizationsListRejectsInvalidNextURL(t *testing.T) {
 		t,
 		[]string{"build-localizations", "list", "--build-id", "build-1"},
 		"build-localizations list: --next",
+		true,
 	)
 }
 
