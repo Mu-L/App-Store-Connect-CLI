@@ -3065,6 +3065,9 @@ func signingXCConfigEntitlementAssignmentCandidates(
 		default:
 			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
 				previous := accumulated[selector]
+				if previous == "" && selector != "CODE_SIGN_ENTITLEMENTS" {
+					previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
+				}
 				value = strings.ReplaceAll(value, "$(inherited)", previous)
 				value = strings.ReplaceAll(value, "${inherited}", previous)
 			}

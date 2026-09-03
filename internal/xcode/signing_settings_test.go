@@ -1556,6 +1556,39 @@ func TestSigningPlanProtectsUnconditionalEntitlementWhenConditionalResolutionDiv
 	}
 }
 
+func TestSigningPlanProtectsConditionalInheritedEntitlementPath(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	composedPath := filepath.Join(projectRoot, "BaseSuffix")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+	attachSigningWidgetXCConfig(
+		t, project,
+		"CODE_SIGN_ENTITLEMENTS = Base\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = $(inherited)Suffix\n",
+	)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want conditional inherited entitlement path rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
 func TestSigningPlanProtectsConditionalComposedEntitlementAppendPath(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	projectRoot := filepath.Dir(project)
