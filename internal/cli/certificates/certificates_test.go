@@ -615,3 +615,13 @@ func TestCertificatesCreateCommand_PassTypeRequirementSurvivesNonCanonicalSpelli
 		t.Fatalf("CSR should not be generated, stat error: %v", statErr)
 	}
 }
+
+func TestCertificatesCreateCommand_HelpOmitsApplePayTypes(t *testing.T) {
+	usage := CertificatesCreateCommand().FlagSet.Lookup("certificate-type").Usage
+	if strings.Contains(usage, "APPLE_PAY") {
+		t.Fatalf("--certificate-type help offers Apple Pay types the command rejects: %q", usage)
+	}
+	if !strings.Contains(usage, "MAC_INSTALLER_DISTRIBUTION") {
+		t.Fatalf("--certificate-type help should list the creatable types, got %q", usage)
+	}
+}

@@ -283,7 +283,7 @@ Examples:
 func CertificatesCreateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 
-	certificateType := fs.String("certificate-type", "", "Certificate type: "+strings.Join(shared.CertificateTypeList(), ", "))
+	certificateType := fs.String("certificate-type", "", "Certificate type: "+strings.Join(shared.CertificateCreateTypeList(), ", "))
 	passTypeID := fs.String("pass-type-id", "", "Pass Type ID resource ID (required for PASS_TYPE_ID and PASS_TYPE_ID_WITH_NFC)")
 	csrPath := fs.String("csr", "", "CSR file path")
 	generateCSR := fs.Bool("generate-csr", false, "Generate a private key and CSR before creating the certificate")
@@ -317,22 +317,14 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --certificate-type is required")
 				return shared.MissingRequiredUsageError("--certificate-type")
 			}
-			canonicalCertificateType, err := shared.ValidateCertificateType("--certificate-type", certificateValue)
+			// Rejects unknown types and the Apple Pay types this command cannot
+			// create, before --generate-csr writes a private key and CSR for a
+			// request App Store Connect will refuse.
+			canonicalCertificateType, err := shared.ValidateCertificateCreateType("--certificate-type", certificateValue)
 			if err != nil {
 				return err
 			}
 			certificateValue = canonicalCertificateType
-			// APPLE_PAY, APPLE_PAY_MERCHANT_IDENTITY, APPLE_PAY_PSP_IDENTITY, and
-			// APPLE_PAY_RSA are valid CertificateType values, but Apple requires a
-			// merchantId relationship that this command cannot send. Reject them here,
-			// before --generate-csr writes a private key and CSR for a request App Store
-			// Connect will refuse.
-			if strings.HasPrefix(certificateValue, "APPLE_PAY") {
-				return shared.UsageErrorf(
-					"--certificate-type %s needs a merchant ID relationship that asc certificates create does not support yet; inspect existing Apple Pay certificates with 'asc merchant-ids certificates list --merchant-id MERCHANT_ID' and create new ones in the Apple Developer portal",
-					certificateValue,
-				)
-			}
 			passTypeIDValue := strings.TrimSpace(*passTypeID)
 			isPassTypeCertificate := certificateValue == "PASS_TYPE_ID" || certificateValue == "PASS_TYPE_ID_WITH_NFC"
 			if isPassTypeCertificate && passTypeIDValue == "" {

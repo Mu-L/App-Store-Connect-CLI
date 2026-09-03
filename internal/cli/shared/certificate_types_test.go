@@ -1,6 +1,10 @@
 package shared
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func TestCanonicalCertificateTypeNormalizesSeparatorsAndCase(t *testing.T) {
 	cases := []struct {
@@ -35,16 +39,55 @@ func TestCanonicalCertificateTypeRejectsUnknownValues(t *testing.T) {
 	}
 }
 
-func TestValidateCertificateTypeReturnsCanonicalValue(t *testing.T) {
-	got, err := ValidateCertificateType("--certificate-type", "developer-id-application-g2")
+func TestCertificateCreateTypeListExcludesApplePay(t *testing.T) {
+	values := CertificateCreateTypeList()
+	if len(values) == 0 {
+		t.Fatal("CertificateCreateTypeList() returned no values")
+	}
+	for _, value := range values {
+		if strings.HasPrefix(value, "APPLE_PAY") {
+			t.Fatalf("CertificateCreateTypeList() offers %q, which asc certificates create cannot create", value)
+		}
+	}
+	if len(values) != len(certificateTypeValues)-4 {
+		t.Fatalf("expected the four Apple Pay types to be the only exclusions, got %d of %d", len(values), len(certificateTypeValues))
+	}
+	if !slices.Contains(values, "MAC_INSTALLER_DISTRIBUTION") {
+		t.Fatal("CertificateCreateTypeList() dropped a creatable type")
+	}
+}
+
+func TestValidateCertificateCreateTypeReturnsCanonicalValue(t *testing.T) {
+	got, err := ValidateCertificateCreateType("--certificate-type", "developer-id-application-g2")
 	if err != nil {
-		t.Fatalf("ValidateCertificateType() error: %v", err)
+		t.Fatalf("ValidateCertificateCreateType() error: %v", err)
 	}
 	if got != "DEVELOPER_ID_APPLICATION_G2" {
-		t.Fatalf("ValidateCertificateType() = %q, want %q", got, "DEVELOPER_ID_APPLICATION_G2")
+		t.Fatalf("ValidateCertificateCreateType() = %q, want %q", got, "DEVELOPER_ID_APPLICATION_G2")
 	}
+}
 
-	if _, err := ValidateCertificateType("--certificate-type", "DEVELOPER_ID_INSTALLER"); err == nil {
+func TestValidateCertificateCreateTypeRejectsApplePayWithMerchantGuidance(t *testing.T) {
+	for _, value := range []string{"APPLE_PAY", "apple-pay-merchant-identity", "APPLE_PAY_PSP_IDENTITY", "APPLE_PAY_RSA"} {
+		_, err := ValidateCertificateCreateType("--certificate-type", value)
+		if err == nil {
+			t.Fatalf("expected %q to be rejected", value)
+		}
+		if !strings.Contains(err.Error(), "merchant ID relationship") {
+			t.Fatalf("expected merchant ID guidance for %q, got %v", value, err)
+		}
+	}
+}
+
+func TestValidateCertificateCreateTypeDoesNotOfferApplePayForUnknownValues(t *testing.T) {
+	_, err := ValidateCertificateCreateType("--certificate-type", "DEVELOPER_ID_INSTALLER")
+	if err == nil {
 		t.Fatal("expected an error for an unsupported certificate type")
+	}
+	if strings.Contains(err.Error(), "APPLE_PAY") {
+		t.Fatalf("the allowed-values diagnostic must not recommend Apple Pay types, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "MAC_INSTALLER_DISTRIBUTION") {
+		t.Fatalf("expected the creatable types in the diagnostic, got %v", err)
 	}
 }
