@@ -2917,6 +2917,84 @@ func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *te
 	}
 }
 
+// The rotation budget deliberately outlives the login timeout, so by the time
+// the window closes the login context has normally expired. Classifying that as
+// caller cancellation would bury the actionable consumed-code guidance under a
+// bare "context deadline exceeded". Cancellation has to be read from the untimed
+// parent the budget is derived from, not the superseded login context.
+func TestReadRotatedTwoFactorCodeReportsExhaustionAfterTheLoginTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		command func(ctx context.Context, command string) (string, error)
+	}{
+		{
+			name: "command keeps returning the consumed code",
+			command: func(ctx context.Context, command string) (string, error) {
+				return "111111", nil
+			},
+		},
+		{
+			name: "command blocks until its context is done",
+			command: func(ctx context.Context, command string) (string, error) {
+				<-ctx.Done()
+				return "", fmt.Errorf("2fa required: two-factor code command interrupted: %w", ctx.Err())
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			origRead := readTwoFactorCodeFromCommandFn
+			t.Cleanup(func() { readTwoFactorCodeFromCommandFn = origRead })
+			shortenTwoFactorCodeRotationWait(t)
+			// The budget must outlive the login deadline, as it does in production.
+			webTwoFactorCodeRotationTimeout = 80 * time.Millisecond
+			readTwoFactorCodeFromCommandFn = tt.command
+
+			loginCtx, cancel := shared.ContextWithTimeoutDuration(context.Background(), 10*time.Millisecond)
+			defer cancel()
+
+			_, err := readRotatedTwoFactorCodeFromCommand(loginCtx, "print-code", "111111")
+			if err == nil {
+				t.Fatal("expected the exhausted rotation budget to fail")
+			}
+			got := err.Error()
+			if !strings.Contains(got, "already consumed") {
+				t.Fatalf("expected the consumed-code guidance, got %q", got)
+			}
+			if strings.Contains(got, "interrupted") {
+				t.Fatalf("expected rotation exhaustion not to be reported as cancellation, got %q", got)
+			}
+		})
+	}
+}
+
+// A genuinely cancelled caller still has to be reported as an interruption
+// rather than dressed up as an exhausted rotation budget.
+func TestReadRotatedTwoFactorCodeReportsGenuineCallerCancellation(t *testing.T) {
+	origRead := readTwoFactorCodeFromCommandFn
+	t.Cleanup(func() { readTwoFactorCodeFromCommandFn = origRead })
+	shortenTwoFactorCodeRotationWait(t)
+	webTwoFactorCodeRotationTimeout = 10 * time.Second
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		return "111111", nil
+	}
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	loginCtx, cancel := shared.ContextWithTimeoutDuration(parent, 5*time.Second)
+	defer cancel()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancelParent()
+	}()
+
+	_, err := readRotatedTwoFactorCodeFromCommand(loginCtx, "print-code", "111111")
+	if err == nil {
+		t.Fatal("expected the cancelled caller to fail")
+	}
+	if got := err.Error(); !strings.Contains(got, "interrupted") {
+		t.Fatalf("expected a cancellation to be reported as an interruption, got %q", got)
+	}
+}
+
 // The fresh retry raises a brand-new Apple challenge, so the code the failed
 // attempt consumed is dead and a replacement has just been delivered. Recovery
 // through the existing prompt is the point of the retry for an interactive

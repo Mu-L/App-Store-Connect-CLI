@@ -424,8 +424,12 @@ func readRotatedTwoFactorCodeFromCommand(ctx context.Context, command, consumed 
 
 	// Derive the budget from the untimed parent so the caller's cancellation
 	// still lands while the login deadline, which the 2FA steps re-derive
-	// anyway, cannot cut the rotation wait short.
-	rotationCtx, cancel := context.WithTimeout(shared.ContextWithoutTimeout(ctx), webTwoFactorCodeRotationTimeout)
+	// anyway, cannot cut the rotation wait short. Cancellation is then read from
+	// that same parent: the budget outlives the login deadline by design, so by
+	// the time the window closes the login context has normally expired, and
+	// reading it would report every ordinary exhaustion as an interruption.
+	waitCtx := shared.ContextWithoutTimeout(ctx)
+	rotationCtx, cancel := context.WithTimeout(waitCtx, webTwoFactorCodeRotationTimeout)
 	defer cancel()
 	rotationExhausted := func() error {
 		return fmt.Errorf("2fa required: the configured two-factor code command did not produce a code other than the one the expired session already consumed within %s: wait for it to produce a new code, then re-run", webTwoFactorCodeRotationTimeout)
@@ -435,7 +439,7 @@ func readRotatedTwoFactorCodeFromCommand(ctx context.Context, command, consumed 
 		if err != nil {
 			// Only the rotation budget expiring is ours to explain; a cancelled
 			// caller or a genuinely failing command keeps its own error.
-			if rotationCtx.Err() != nil && ctx.Err() == nil {
+			if rotationCtx.Err() != nil && waitCtx.Err() == nil {
 				return "", rotationExhausted()
 			}
 			return "", err
@@ -447,8 +451,8 @@ func readRotatedTwoFactorCodeFromCommand(ctx context.Context, command, consumed 
 		select {
 		case <-rotationCtx.Done():
 			timer.Stop()
-			if ctx.Err() != nil {
-				return "", fmt.Errorf("2fa required: waiting for the two-factor code command to produce a new code was interrupted: %w", ctx.Err())
+			if waitCtx.Err() != nil {
+				return "", fmt.Errorf("2fa required: waiting for the two-factor code command to produce a new code was interrupted: %w", waitCtx.Err())
 			}
 			return "", rotationExhausted()
 		case <-timer.C:
