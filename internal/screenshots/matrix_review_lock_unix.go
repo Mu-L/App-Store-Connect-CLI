@@ -26,7 +26,7 @@ func tryMatrixReviewFileLock(file *os.File) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.ENOLCK) || errors.Is(err, unix.EINTR) {
+	if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
 		return false, nil
 	}
 	return false, err

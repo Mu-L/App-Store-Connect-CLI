@@ -2271,6 +2271,17 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		}
 	}
 	countMatrixResultStatuses(result)
+	if matrixOutputLockReleaseErrForTest != nil {
+		lockErr := matrixLockError("output release", matrixOutputLockReleaseErrForTest)
+		if result.Status == MatrixCellSuccess {
+			result.Status = MatrixCellFailed
+		}
+		if runErr == nil {
+			runErr = lockErr
+		} else {
+			runErr = errors.Join(runErr, lockErr)
+		}
+	}
 	if matrixBeforeReviewPublishForTest != nil {
 		matrixBeforeReviewPublishForTest()
 	}
@@ -2287,9 +2298,6 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 	}
 	if releaseOutputLocks != nil {
 		releaseErr := releaseOutputLocks()
-		if matrixOutputLockReleaseErrForTest != nil {
-			releaseErr = errors.Join(releaseErr, matrixOutputLockReleaseErrForTest)
-		}
 		if releaseErr != nil {
 			lockErr := matrixLockError("output release", releaseErr)
 			if result.Status == MatrixCellSuccess {
@@ -2299,13 +2307,6 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 				runErr = lockErr
 			} else {
 				runErr = errors.Join(runErr, lockErr)
-			}
-			if reviewErr == nil {
-				if republished, republishErr := publishMatrixReview(reviewCtx, result, reviewDir, reviewRoot, reviewRootReady, ctx); republishErr == nil {
-					result.Review = republished
-				} else {
-					runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", republishErr))
-				}
 			}
 		}
 	}

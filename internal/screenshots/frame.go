@@ -686,10 +686,13 @@ func frame(ctx context.Context, req FrameRequest, rootedOutput *rootfs.Root) (re
 			if openErr != nil {
 				return nil, fmt.Errorf("open generated screenshot: %w", openErr)
 			}
-			_, writeErr := rootedOutput.WriteFromPreservingMode(rootedOutputPath, sourceFile, 0o644)
+			written, writeErr := rootedOutput.WriteFromPreservingMode(rootedOutputPath, &matrixContextReader{ctx: ctx, reader: io.LimitReader(sourceFile, maxMatrixArtifactBytes+1)}, 0o644)
 			closeErr := sourceFile.Close()
 			if writeErr != nil {
 				return nil, fmt.Errorf("publish framed screenshot: %w", writeErr)
+			}
+			if written > maxMatrixArtifactBytes {
+				return nil, errors.New("framed screenshot exceeds the artifact size limit")
 			}
 			if closeErr != nil {
 				return nil, fmt.Errorf("close generated screenshot: %w", closeErr)
