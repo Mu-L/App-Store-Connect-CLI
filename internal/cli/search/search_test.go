@@ -228,6 +228,7 @@ func TestScopedCanonicalIntentPrefersMostSpecificNamedLeaf(t *testing.T) {
 		{name: "beta cancellation stays on TestFlight", query: []string{"cancel", "beta", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
 		{name: "beta app review cancellation stays on TestFlight", query: []string{"cancel", "beta", "app", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
 		{name: "cross-surface cancellation stays on App Store", query: []string{"cancel", "testflight", "app", "store", "submission", "status"}, expected: "asc submit cancel"},
+		{name: "cross-surface App Review cancellation stays on App Store", query: []string{"cancel", "testflight", "and", "app", "review", "submission", "status"}, expected: "asc submit cancel"},
 		{name: "agreement download", query: []string{"download", "apple", "developer", "agreement", "status"}, expected: "asc web agreements download"},
 		{name: "Xcode Cloud workflow duplicate", query: []string{"duplicate", "xcode", "cloud", "workflow", "status"}, expected: "asc xcode-cloud workflows duplicate"},
 	}
@@ -261,6 +262,20 @@ func TestScopedCanonicalIntentRequiresWorkflowForXcodeCloudDuplicate(t *testing.
 			target, reason, _ := scopedCanonicalIntent(query)
 			if target == "asc xcode-cloud workflows duplicate" || reason == "canonical:xcode-cloud-workflow-duplicate" {
 				t.Fatalf("expected non-workflow Xcode Cloud routing, got duplicate target %q", target)
+			}
+		})
+	}
+}
+
+func TestScopedCanonicalIntentLeavesTestFlightAgreementDownloadUnscoped(t *testing.T) {
+	for _, query := range [][]string{
+		{"download", "testflight", "beta", "license", "agreement"},
+		{"download", "beta", "license", "agreement"},
+	} {
+		t.Run(strings.Join(query, "-"), func(t *testing.T) {
+			target, reason, _ := scopedCanonicalIntent(query)
+			if target == "asc web agreements download" || reason == "canonical:agreement-download" {
+				t.Fatalf("expected TestFlight agreement scoring, got scoped target %q", target)
 			}
 		})
 	}

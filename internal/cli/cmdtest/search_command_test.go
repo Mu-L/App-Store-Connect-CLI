@@ -1128,6 +1128,11 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc web agreements download",
 		},
 		{
+			name:     "download TestFlight beta license agreement",
+			query:    []string{"download", "TestFlight", "beta", "license", "agreement"},
+			expected: "asc testflight agreements",
+		},
+		{
 			name:     "agreement status without acceptance",
 			query:    []string{"Apple", "Developer", "agreement", "status"},
 			expected: "asc web agreements status",
@@ -1186,6 +1191,11 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			name:     "cancel beta app review submission status",
 			query:    []string{"cancel", "beta", "app", "review", "submission", "status"},
 			expected: "asc testflight review submissions view",
+		},
+		{
+			name:     "cancel TestFlight and App Review submission status",
+			query:    []string{"cancel", "TestFlight", "and", "App", "Review", "submission", "status"},
+			expected: "asc submit cancel",
 		},
 		{
 			name:     "cancel TestFlight review submission for build status",

@@ -648,7 +648,10 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		if tokenContains(queryTokens, "accept") {
 			return "asc web agreements accept", "canonical:agreement-accept", true
 		}
-		if tokenContains(queryTokens, "download") {
+		// TestFlight beta license agreements live under
+		// "asc testflight agreements", so a TestFlight-scoped download must
+		// not claim the Developer Program agreement leaf.
+		if tokenContains(queryTokens, "download") && !testFlightContext(queryTokens) {
 			return "asc web agreements download", "canonical:agreement-download", true
 		}
 	}
@@ -786,7 +789,16 @@ func testFlightReviewSubmissionIntent(queryTokens []string) (string, string, boo
 // without also naming the App Store review surface, so a cross-surface query
 // keeps its App Store route.
 func testFlightScopedQuery(queryTokens []string) bool {
-	return testFlightContext(queryTokens) && !appStoreContext(queryTokens)
+	return testFlightContext(queryTokens) &&
+		!appStoreContext(queryTokens) &&
+		!crossSurfaceAppReviewQuery(queryTokens)
+}
+
+// crossSurfaceAppReviewQuery reports whether App Review wording names the App
+// Store review surface as a second surface. "beta app review" is TestFlight
+// terminology for the same words, so a beta-scoped query stays on TestFlight.
+func crossSurfaceAppReviewQuery(queryTokens []string) bool {
+	return appReviewContext(queryTokens) && !tokenContains(queryTokens, "beta")
 }
 
 func testFlightContext(queryTokens []string) bool {
