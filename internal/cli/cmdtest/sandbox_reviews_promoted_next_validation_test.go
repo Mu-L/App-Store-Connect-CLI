@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 )
 
 func TestSandboxListRejectsInvalidNextURL(t *testing.T) {
@@ -49,7 +51,12 @@ func TestSandboxListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			assertOnlyDeprecatedCommandWarnings(t, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			if !strings.Contains(stderr, "Error: "+test.wantErr) {
+				t.Fatalf("expected usage error on stderr, got %q", stderr)
+			}
 		})
 	}
 }
@@ -154,8 +161,11 @@ func TestPromotedPurchasesListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if stderr != "" {
-				t.Fatalf("expected empty stderr, got %q", stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			if !strings.Contains(stderr, "Error: "+test.wantErr) {
+				t.Fatalf("expected usage error on stderr, got %q", stderr)
 			}
 		})
 	}
