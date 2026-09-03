@@ -733,3 +733,85 @@ func TestImportSessionBundleDoesNotMergeDifferentAppleIDs(t *testing.T) {
 		t.Fatalf("last session UserEmail = %q, want second@example.com", last.UserEmail)
 	}
 }
+
+func TestImportSessionBundleOverwriteRemovesFileFallbackOnKeychainBackend(t *testing.T) {
+	withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	if err := writeSessionToFile(key, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err != nil {
+		t.Fatalf("ImportSessionBundleWithOptions() error = %v", err)
+	}
+	if _, ok, err := readSessionFromKeychain(key); err != nil {
+		t.Fatalf("readSessionFromKeychain() error = %v", err)
+	} else if !ok {
+		t.Fatal("keychain overwrite did not persist the imported session")
+	}
+	if _, ok, err := readSessionFromFile(key); err != nil {
+		t.Fatalf("readSessionFromFile() error = %v", err)
+	} else if ok {
+		t.Fatal("overwrite left the stale file fallback credential behind")
+	}
+	if _, ok, err := readLastKeyFromFile(); err != nil {
+		t.Fatalf("readLastKeyFromFile() error = %v", err)
+	} else if ok {
+		t.Fatal("overwrite left the stale file last-session pointer behind")
+	}
+}
+
+func TestImportSessionBundleLeavesFileCacheIntactWhenKeychainCleanupFails(t *testing.T) {
+	withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	if err := writeSessionToFile(key, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+
+	// A refused keychain unlock is not an unavailable keyring, so the mirrored
+	// cleanup fails for a reason the import must report.
+	previousOpen := sessionKeyringOpen
+	sessionKeyringOpen = func() (keyring.Keyring, error) {
+		return nil, errors.New("keychain unlock refused")
+	}
+	t.Cleanup(func() { sessionKeyringOpen = previousOpen })
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err == nil {
+		t.Fatal("ImportSessionBundleWithOptions() error = nil, want the mirrored keychain cleanup failure")
+	}
+
+	sess, ok, err := readSessionFromFile(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the untouched cached session", ok, err)
+	}
+	cookies := sess.Cookies["https://appstoreconnect.apple.com/"]
+	if len(cookies) != 1 || cookies[0].Value != "old-token" {
+		t.Fatalf("cached cookies = %#v, want the import to report failure without replacing them", cookies)
+	}
+}

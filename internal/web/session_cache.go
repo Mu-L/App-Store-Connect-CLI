@@ -882,11 +882,23 @@ func persistSessionBySelection(selection backendSelection, key string, sess pers
 	}
 }
 
+// persistImportedSessionBySelection stores an imported session in the selected
+// backend and clears the credential mirrored in the other backend when the
+// operator asked to overwrite. The mirror is dropped before the replacement is
+// written so a failed cleanup reports an error with the cache untouched,
+// instead of leaving the replacement live behind a failure the caller reports.
+// The mirror is only ever removed for an overwrite the operator asked for, and
+// the bundle being imported remains a durable copy of the replacement.
 func persistImportedSessionBySelection(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
 	switch selection.backend {
 	case sessionBackendOff:
 		return nil
 	case sessionBackendKeychain:
+		if overwrite && selection.fallbackFile {
+			if err := deleteMirroredSessionFromFile(key); err != nil {
+				return err
+			}
+		}
 		if err := writeSessionToKeychainWithRecovery(key, sess, overwrite); err != nil {
 			if selection.fallbackFile && isKeyringUnavailable(err) {
 				return writeSessionToFile(key, sess)
@@ -895,15 +907,12 @@ func persistImportedSessionBySelection(selection backendSelection, key string, s
 		}
 		return nil
 	case sessionBackendFile:
-		if err := writeSessionToFile(key, sess); err != nil {
-			return err
-		}
 		if overwrite && selection.fallbackKeychain {
 			if err := ignoreUnavailableKeyringError(deleteSessionFromKeychainWithRecovery(key, true)); err != nil {
 				return err
 			}
 		}
-		return nil
+		return writeSessionToFile(key, sess)
 	default:
 		return nil
 	}
