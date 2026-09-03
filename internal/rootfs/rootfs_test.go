@@ -1851,6 +1851,54 @@ func TestWriteFileIfSameWithInfoReturnsIdentityAfterParentSyncFailure(t *testing
 	}
 }
 
+func TestWriteFileIfSameCleansQuarantineAndSyncsAfterPublishedCloseFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "old"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(source) error = %v", err)
+	}
+	closeErr := errors.New("injected published close failure")
+	syncErr := errors.New("injected cleanup sync failure")
+	root.closePublishedFileForTest = func(file *os.File) error {
+		if err := file.Close(); err != nil {
+			t.Fatalf("close published file in failure hook: %v", err)
+		}
+		return closeErr
+	}
+	var syncObserved bool
+	root.syncDirectoryForTest = func(_ *os.Root) error {
+		syncObserved = true
+		return syncErr
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("updated"), 0o640, expected, []byte(original), true)
+	if err == nil || !errors.Is(err, closeErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want published close failure", err)
+	}
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want cleanup sync failure", err)
+	}
+	if !syncObserved {
+		t.Fatal("quarantine cleanup did not sync its parent directory")
+	}
+	if got := mustRead(t, path); got != "updated" {
+		t.Fatalf("published content = %q, want updated", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("quarantine entries remain after close failure cleanup: %v", matches)
+	}
+}
+
 func TestCreateNewFileFallsBackWhenAtomicRenameIsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
