@@ -1308,18 +1308,16 @@ func (r Root) RemoveFileIfSame(name string, expected os.FileInfo, expectedData [
 	if err != nil {
 		return err
 	}
-	if err := quarantine.Close(); err != nil {
-		return errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
-	}
 	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
 		return errors.Join(
 			fmt.Errorf("destination was replaced while removing the expected file"),
-			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
+			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, quarantine),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = quarantine.Close()
 		return errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
-	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
+	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, quarantine); err != nil {
 		return err
 	}
 	if err := r.syncConditionalParentDirectory(parent); err != nil {
@@ -1408,7 +1406,7 @@ func (r Root) writeFileIfSame(
 		return nil, errors.Join(
 			fmt.Errorf("destination changed while preparing replacement"),
 			closeErr,
-			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
+			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, nil),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
@@ -1443,11 +1441,13 @@ func (r Root) writeFileIfSame(
 	} else if err := temporary.Chmod(perm); err != nil {
 		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
-	if err := quarantine.Close(); err != nil {
+	if runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+		if err := quarantine.Close(); err != nil {
+			quarantineClosed = true
+			return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		}
 		quarantineClosed = true
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
-	quarantineClosed = true
 	written, err := io.Copy(temporary, bytes.NewReader(data))
 	if err != nil {
 		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
@@ -1576,7 +1576,12 @@ func (r Root) writeFileIfSame(
 		}
 		if err := closePublished(); err != nil {
 			closePublishedFile = false
-			cleanupErr := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData)
+			live := (*os.File)(nil)
+			if !quarantineClosed {
+				live = quarantine
+				quarantineClosed = true
+			}
+			cleanupErr := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, live)
 			if cleanupErr == nil {
 				cleanupErr = r.syncConditionalParentDirectory(parent)
 			}
@@ -1587,7 +1592,12 @@ func (r Root) writeFileIfSame(
 	// The published destination is complete, so only the transaction's
 	// quarantined inode is removed. A concurrent replacement at base is never
 	// targeted by this cleanup.
-	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
+	live := (*os.File)(nil)
+	if !quarantineClosed {
+		live = quarantine
+		quarantineClosed = true
+	}
+	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, live); err != nil {
 		return publishedInfo, errors.Join(err, publicationCleanupErr)
 	}
 	if err := r.syncConditionalParentDirectory(parent); err != nil {
@@ -1715,23 +1725,39 @@ func (r Root) openExpectedRootedFile(parent *os.Root, name string, expected os.F
 	return openExpectedRootedFile(parent, name, expected, expectedData)
 }
 
-func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, expected os.FileInfo, expectedData []byte) error {
-	file, _, err := r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
-	if err != nil {
-		return fmt.Errorf("verify quarantined file before removal: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return err
+func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, expected os.FileInfo, expectedData []byte, live *os.File) error {
+	var (
+		file *os.File
+		info os.FileInfo
+		err  error
+	)
+	if live != nil {
+		file = live
+		info, err = live.Stat()
+		if err != nil {
+			_ = live.Close()
+			return fmt.Errorf("stat live quarantined file before removal: %w", err)
+		}
+	} else {
+		file, info, err = r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
+		if err != nil {
+			return fmt.Errorf("verify quarantined file before removal: %w", err)
+		}
 	}
 	if r.beforeConditionalQuarantineRemovalForTest != nil {
 		r.beforeConditionalQuarantineRemovalForTest(parent, quarantineName)
 	}
 	latest, err := parent.Lstat(quarantineName)
 	if err != nil {
+		_ = file.Close()
 		return fmt.Errorf("recheck quarantined file before removal: %w", err)
 	}
-	if !os.SameFile(expected, latest) || latest.Mode().Perm() != expected.Mode().Perm() {
+	if !os.SameFile(info, latest) || latest.Mode().Perm() != info.Mode().Perm() {
+		_ = file.Close()
 		return fmt.Errorf("quarantined file identity changed before removal")
+	}
+	if err := file.Close(); err != nil {
+		return err
 	}
 	// There is no portable compare-and-unlink primitive for the final Lstat
 	// and path-based Remove. The unpredictable quarantine name and the
