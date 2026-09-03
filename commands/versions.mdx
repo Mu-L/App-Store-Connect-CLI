@@ -212,7 +212,7 @@ Update an app store version.
 </ParamField>
 
 <ParamField path="--confirm" type="boolean">
-  Required with `--downloadable false`, because making a previously released version unavailable for download is not reversible from every state.
+  Required with `--downloadable false`, because making a previously released version unavailable for download is not reversible from every state. It is rejected as a usage error in any other combination rather than silently ignored.
 </ParamField>
 
 **Examples:**
@@ -226,7 +226,7 @@ asc versions update --version-id "VERSION_ID" --downloadable true
 asc versions update --version-id "VERSION_ID" --downloadable false --confirm
 ```
 
-Read the current value with `asc versions list --app "APP_ID" --output json` or `asc versions view --version-id "VERSION_ID" --output json`. Apple omits `downloadable` for versions that never carried the setting, so an absent key means Apple did not report the attribute.
+Read the current value with `asc versions list --app "APP_ID" --paginate --output json` or `asc versions view --version-id "VERSION_ID" --output json`. `--paginate` matters here because the oldest versions, the ones this setting usually targets, fall past the first page. Apple omits `downloadable` for versions that never carried the setting, so an absent key means Apple did not report the attribute.
 
 **Response:**
 

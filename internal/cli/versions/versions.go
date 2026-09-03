@@ -643,9 +643,11 @@ availability. Setting it to false makes a previously released version
 unavailable for download on older operating systems and devices, which is not
 reversible from every state, so that direction requires --confirm.
 
-Read the current value with asc versions list --app APP_ID --output json or
-asc versions view --version-id VERSION_ID --output json; Apple omits the
-attribute for versions that never carried the setting.
+Read the current value with asc versions list --app APP_ID --paginate --output
+json or asc versions view --version-id VERSION_ID --output json; Apple omits
+the attribute for versions that never carried the setting. --paginate matters
+here because the oldest versions, the ones this setting usually targets, fall
+past the first page.
 
 Examples:
   asc versions update --version-id "VERSION_ID" --copyright "2026 My Company"
@@ -676,9 +678,13 @@ Examples:
 				return shared.MissingRequiredUsageError("")
 			}
 
-			if downloadable.IsSet() && !downloadable.Value() && !*confirm {
+			downloadableFalse := downloadable.IsSet() && !downloadable.Value()
+			if downloadableFalse && !*confirm {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --downloadable false because making a released version unavailable for download is not reversible from every state. No request was sent.")
 				return shared.MissingRequiredUsageError("--confirm")
+			}
+			if *confirm && !downloadableFalse {
+				return shared.UsageError("--confirm applies only to --downloadable false; remove it or pass --downloadable false")
 			}
 
 			client, err := shared.GetASCClient()

@@ -29,8 +29,18 @@ that direction requires `--confirm`:
 Error: --confirm is required with --downloadable false because making a released version unavailable for download is not reversible from every state. No request was sent.
 ```
 
+`--confirm` is rejected in any other combination rather than silently ignored:
+
+```text
+Error: --confirm applies only to --downloadable false; remove it or pass --downloadable false
+```
+
 `asc versions update --output json` now also echoes `downloadable` in its
 receipt when Apple returns the attribute, matching `asc versions view`.
+
+Use `--paginate` on the list read. The versions this setting usually targets are
+the oldest ones, which fall past the first page for apps with a long release
+history.
 
 The short-lived web-session read `asc web apps last-compatible-version view` is
 removed. It shipped after `4.11.0` and was never part of a tagged release, so it

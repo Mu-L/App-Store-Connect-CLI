@@ -136,6 +136,42 @@ func TestVersionsUpdateDownloadableFalseRequiresConfirm(t *testing.T) {
 	}
 }
 
+// --confirm only means anything alongside --downloadable false. Accepting it
+// anywhere else would silently ignore a flag the caller passed deliberately.
+func TestVersionsUpdateRejectsConfirmWithoutDownloadableFalse(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "downloadable true", args: []string{"--downloadable", "true", "--confirm"}},
+		{name: "unrelated update", args: []string{"--copyright", "2026 Example", "--confirm"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			setupAuth(t)
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+			stubTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatalf("must fail before HTTP: %s %s", req.Method, req.URL.String())
+				return nil, errors.New("unexpected request")
+			}))
+
+			args := append([]string{"versions", "update", "--version-id", "version-1"}, test.args...)
+			stdout, stderr, runErr := runCommand(t, args)
+			if runErr == nil {
+				t.Fatal("run error = nil, want usage error")
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if !strings.Contains(stderr, "--confirm applies only to --downloadable false") {
+				t.Fatalf("stderr = %q, want the --confirm misuse error", stderr)
+			}
+		})
+	}
+}
+
 // --downloadable alone satisfies the "at least one field" guard; it must not be
 // reported as a no-op update.
 func TestVersionsUpdateAcceptsDownloadableAsTheOnlyField(t *testing.T) {
