@@ -1261,7 +1261,8 @@ func sameFileIdentitySnapshot(first, second os.FileInfo) bool {
 	if first == nil || second == nil || !os.SameFile(first, second) {
 		return false
 	}
-	return first.Size() == second.Size() && first.Mode() == second.Mode() && first.ModTime().Equal(second.ModTime())
+	return first.Size() == second.Size() && first.Mode() == second.Mode() &&
+		first.ModTime().Equal(second.ModTime()) && sameFileOwnership(first, second)
 }
 
 // CheckFileIdentity verifies that name still refers to the descriptor-backed
@@ -2429,6 +2430,12 @@ func (r Root) openExpectedIdentityRootedFile(parent *os.Root, name string, expec
 	}
 	if !info.ModTime().Equal(expected.info.ModTime()) {
 		return nil, nil, fmt.Errorf("%w: file modification time changed", ErrFileIdentityChanged)
+	}
+	// A chown changes neither the permission bits nor the modification time,
+	// and preserveMetadata later copies the observed ownership onto the
+	// replacement, so ownership must be compared explicitly.
+	if !sameFileOwnership(expected.info, info) {
+		return nil, nil, fmt.Errorf("%w: file ownership changed", ErrFileIdentityChanged)
 	}
 	currentMultipleLinks, err := hasMultipleHardLinks(file, info)
 	if err != nil {

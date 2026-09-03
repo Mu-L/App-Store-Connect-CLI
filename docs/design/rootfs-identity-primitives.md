@@ -59,7 +59,11 @@ choose a smaller bound and refuses oversize files with
 before mutation. Capture and verification use repeated bounded reads plus
 descriptor and rooted-entry observations so an overlapping in-place write,
 path replacement, permission change, or late transition to or from a multiply
-linked file fails closed.
+linked file fails closed. Verification also compares the owning user and group,
+because a `chown` changes neither the permission bits nor the modification time
+and `preserveMetadata` would otherwise carry the drifted ownership onto the
+replacement. Access-control lists and extended attributes are copied from the
+identity-retained descriptor but are not yet part of the compared snapshot.
 
 The historical `os.FileInfo` methods remain compatibility adapters and do not
 inherit the strict 8 MiB input-snapshot limit. The existing `WithInfo` forms
