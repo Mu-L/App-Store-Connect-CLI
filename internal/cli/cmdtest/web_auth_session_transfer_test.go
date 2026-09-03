@@ -219,6 +219,51 @@ func TestWebAuthExportRefusesExistingFileWithoutOverwrite(t *testing.T) {
 	}
 }
 
+func TestWebAuthExportPreservesWhitespaceInOutputPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("trailing whitespace in file names is not portable on Windows")
+	}
+	isolateWebSessionCache(t)
+	workDir := t.TempDir()
+	bundlePath := writeWebSessionBundleFixture(t, workDir, "session.json", webSessionBundleFixture)
+
+	var code int
+	_, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("import exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
+	}
+
+	trimmedPath := filepath.Join(workDir, "exported.json")
+	if err := os.WriteFile(trimmedPath, []byte("keep me\n"), 0o600); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+	outPath := trimmedPath + " "
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "export", "--output-path", outPath, "--overwrite", "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("export exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
+	}
+
+	if body, err := os.ReadFile(outPath); err != nil || len(body) == 0 {
+		t.Fatalf("selected path %q content err=%v; want the exported bundle", outPath, err)
+	}
+	if body, err := os.ReadFile(trimmedPath); err != nil || string(body) != "keep me\n" {
+		t.Fatalf("trimmed path %q content = %q, err = %v; must not be replaced", trimmedPath, body, err)
+	}
+	var exported struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &exported); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; stdout=%q", err, stdout)
+	}
+	if exported.Path != outPath {
+		t.Fatalf("receipt path = %q, want the selected path %q unchanged", exported.Path, outPath)
+	}
+}
+
 func TestWebAuthExportWithoutCachedSessionFails(t *testing.T) {
 	isolateWebSessionCache(t)
 	exportPath := filepath.Join(t.TempDir(), "exported.json")

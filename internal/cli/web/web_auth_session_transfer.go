@@ -87,8 +87,8 @@ Examples:
 				return shared.UsageError("web auth export does not accept positional arguments")
 			}
 
-			trimmedOutputPath := strings.TrimSpace(*outputPath)
-			if trimmedOutputPath == "" {
+			outputPathValue := *outputPath
+			if strings.TrimSpace(outputPathValue) == "" {
 				return shared.UsageError("--output-path is required")
 			}
 			trimmedAppleID := strings.TrimSpace(*appleID)
@@ -110,18 +110,18 @@ Examples:
 			}
 			payload = append(payload, '\n')
 
-			overwritten, err := writeWebSessionBundle(trimmedOutputPath, payload, *overwrite)
+			overwritten, err := writeWebSessionBundle(outputPathValue, payload, *overwrite)
 			if err != nil {
 				return fmt.Errorf("web auth export failed: %w", err)
 			}
 
 			sessionTransferWarning(
 				"Wrote Apple web-session credentials to %s. Treat this file as a secret and remove it once it is stored.\n",
-				trimmedOutputPath,
+				outputPathValue,
 			)
 
 			return shared.PrintOutput(&asc.WebSessionExportResult{
-				Path:        trimmedOutputPath,
+				Path:        outputPathValue,
 				AppleID:     bundle.AppleID,
 				CookieCount: len(bundle.Cookies),
 				ExportedAt:  formatSessionBundleTime(bundle.ExportedAt),
@@ -210,12 +210,12 @@ Examples:
 				return shared.UsageError("web auth import does not accept positional arguments")
 			}
 
-			trimmedFilePath := strings.TrimSpace(*filePath)
-			if trimmedFilePath == "" {
+			filePathValue := *filePath
+			if strings.TrimSpace(filePathValue) == "" {
 				return shared.UsageError("--file is required")
 			}
 
-			payload, err := readWebSessionBundleFile(trimmedFilePath)
+			payload, err := readWebSessionBundleFile(filePathValue)
 			if err != nil {
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
@@ -246,7 +246,7 @@ Examples:
 			)
 
 			return shared.PrintOutput(&asc.WebSessionImportResult{
-				Path:                  trimmedFilePath,
+				Path:                  filePathValue,
 				AppleID:               summary.AppleID,
 				CookieCount:           summary.CookieCount,
 				SkippedExpiredCookies: summary.SkippedExpired,

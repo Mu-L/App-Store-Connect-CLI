@@ -114,6 +114,10 @@ Pass `--overwrite` to replace a cached session that already exists for that
 account. Importing does not contact Apple, so run `asc web auth status`
 afterwards to confirm the session is still accepted.
 
+Isolate tests and automation with `ASC_WEB_SESSION_CACHE_DIR` and
+`ASC_WEB_SESSION_CACHE_BACKEND=file`. An unset or `auto` backend still falls
+back to the keychain when the file cache is empty.
+
 ### `asc web agreements`
 
 Check, download, and accept Apple Developer Program agreements through Apple

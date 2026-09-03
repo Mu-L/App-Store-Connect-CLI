@@ -177,8 +177,10 @@ asc web auth status
 
 Pass `--overwrite` to replace an existing destination file on export, or an
 existing cached session for that Apple Account on import. Isolate tests and
-automation with `ASC_WEB_SESSION_CACHE_DIR` so they cannot read or replace the
-operator's real session cache.
+automation with `ASC_WEB_SESSION_CACHE_DIR` and
+`ASC_WEB_SESSION_CACHE_BACKEND=file` so they cannot read or replace the
+operator's real session cache. An unset or `auto` backend still falls back to
+the keychain when the file cache is empty.
 
 ## Manage multiple profiles
 

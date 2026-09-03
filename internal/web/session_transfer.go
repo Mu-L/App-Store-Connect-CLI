@@ -143,6 +143,24 @@ func cookieStorableForOrigin(origin string, cookie SessionBundleCookie) bool {
 	return false
 }
 
+// cookieDomainMatchesOrigin requires an empty Domain (host-only) or a Domain
+// equal to the origin host. Broader values such as apple.com or the public
+// suffix com would otherwise be accepted by cookiejar.New(nil) and sent to
+// other hosts the web client later contacts.
+func cookieDomainMatchesOrigin(origin, domain string) bool {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed == nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), ".")
+	domain = strings.TrimPrefix(strings.ToLower(domain), ".")
+	return domain != "" && domain == host
+}
+
 func cookieExpiry(expires *time.Time) time.Time {
 	if expires == nil {
 		return time.Time{}
@@ -302,6 +320,15 @@ func (b *SessionBundle) Validate() error {
 				strings.Join(SupportedSessionBundleOrigins(), ", "),
 			)
 		}
+		if !cookieDomainMatchesOrigin(canonical, cookie.Domain) {
+			return fmt.Errorf(
+				"%w: cookie %q has domain %q that is not host-only for %q",
+				ErrSessionCookieNotStorable,
+				cookie.Name,
+				cookie.Domain,
+				canonical,
+			)
+		}
 		if !cookieStorableForOrigin(canonical, cookie) {
 			return fmt.Errorf(
 				"%w: cookie %q has domain %q that the session jar cannot store for %q",
@@ -350,6 +377,26 @@ func absoluteCookieDeadline(expires time.Time, maxAge int, now time.Time) (time.
 	return expires.UTC(), maxAge
 }
 
+// importedCookieDeadline converts positive MaxAge to an absolute expiry and
+// treats an explicit zero timestamp as already expired so it cannot be stored
+// as a session cookie.
+func importedCookieDeadline(expires *time.Time, maxAge int, now time.Time) (time.Time, int, bool) {
+	if maxAge > 0 {
+		return now.Add(time.Duration(maxAge) * time.Second).UTC(), 0, false
+	}
+	if maxAge < 0 {
+		return time.Time{}, maxAge, true
+	}
+	if expires == nil {
+		return time.Time{}, 0, false
+	}
+	utc := expires.UTC()
+	if utc.IsZero() || utc.Before(now) {
+		return utc, 0, true
+	}
+	return utc, 0, false
+}
+
 // normalize converts a validated bundle into the cache representation, leaving
 // out cookies that already expired.
 func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImportSummary, error) {
@@ -371,7 +418,7 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 		if !ok {
 			continue
 		}
-		expires, maxAge := absoluteCookieDeadline(cookieExpiry(cookie.Expires), cookie.MaxAge, now)
+		expires, maxAge, expired := importedCookieDeadline(cookie.Expires, cookie.MaxAge, now)
 		persisted := pCookie{
 			Name:     cookie.Name,
 			Value:    cookie.Value,
@@ -383,7 +430,7 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 			HttpOnly: cookie.HTTPOnly,
 			SameSite: cookie.SameSite,
 		}
-		if isExpiredCookie(persisted, now) {
+		if expired || isExpiredCookie(persisted, now) {
 			summary.SkippedExpired++
 			continue
 		}

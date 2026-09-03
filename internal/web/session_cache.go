@@ -38,6 +38,7 @@ const (
 var (
 	ErrCachedSessionExpired          = errors.New("cached web session expired")
 	ErrCachedSessionValidationFailed = errors.New("cached web session could not be validated")
+	errMalformedSessionStore         = errors.New("web session store is malformed")
 )
 
 type sessionBackend int
@@ -444,7 +445,7 @@ func readSessionStoreFromKeyring(kr keyring.Keyring) (persistedSessionStore, boo
 	}
 	var store persistedSessionStore
 	if err := json.Unmarshal(item.Data, &store); err != nil {
-		return persistedSessionStore{}, false, fmt.Errorf("failed to decode keychain session store: %w", err)
+		return persistedSessionStore{}, false, fmt.Errorf("%w: %w", errMalformedSessionStore, err)
 	}
 	if store.Version != webSessionCacheVersion {
 		return persistedSessionStore{}, false, nil
@@ -500,7 +501,11 @@ func writeSessionToKeychain(key string, sess persistedSession) error {
 	}
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
-		return err
+		if !errors.Is(err, errMalformedSessionStore) {
+			return err
+		}
+		store = newPersistedSessionStore()
+		ok = true
 	}
 	if !ok {
 		store = newPersistedSessionStore()
@@ -554,15 +559,19 @@ func writeSessionToFile(key string, sess persistedSession) error {
 
 	lastPath, err := webSessionLastFilePath()
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to resolve last session pointer: %w", err)
 	}
 	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to marshal last session pointer: %w", err)
 	}
 	tmpLastPath := lastPath + ".tmp"
-	if err := os.WriteFile(tmpLastPath, lastRaw, 0o600); err == nil {
-		_ = os.Rename(tmpLastPath, lastPath)
+	if err := os.WriteFile(tmpLastPath, lastRaw, 0o600); err != nil {
+		return fmt.Errorf("failed to write last session pointer: %w", err)
+	}
+	if err := os.Rename(tmpLastPath, lastPath); err != nil {
+		_ = os.Remove(tmpLastPath)
+		return fmt.Errorf("failed to finalize last session pointer: %w", err)
 	}
 	return nil
 }

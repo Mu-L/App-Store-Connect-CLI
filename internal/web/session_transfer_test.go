@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/99designs/keyring"
 )
 
 func withFileSessionCache(t *testing.T) {
@@ -317,6 +320,94 @@ func TestImportSessionBundleRejectsCookieDomainTheJarCannotStore(t *testing.T) {
 	}
 	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || ok {
 		t.Fatalf("LoadCachedSession() = (%v, %v), want no cached session after a refused import", ok, err)
+	}
+}
+
+func TestImportSessionBundleRejectsPublicSuffixCookieDomain(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Domain = "com"
+
+	if err := bundle.Validate(); !errors.Is(err, ErrSessionCookieNotStorable) {
+		t.Fatalf("Validate() error = %v, want ErrSessionCookieNotStorable", err)
+	}
+	if _, err := ImportSessionBundle(bundle); !errors.Is(err, ErrSessionCookieNotStorable) {
+		t.Fatalf("ImportSessionBundle() error = %v, want ErrSessionCookieNotStorable", err)
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || ok {
+		t.Fatalf("LoadCachedSession() = (%v, %v), want no cached session after a refused import", ok, err)
+	}
+}
+
+func TestImportSessionBundleRejectsCookieDomainBroaderThanOrigin(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Domain = "apple.com"
+
+	if err := bundle.Validate(); !errors.Is(err, ErrSessionCookieNotStorable) {
+		t.Fatalf("Validate() error = %v, want ErrSessionCookieNotStorable", err)
+	}
+}
+
+func TestImportSessionBundleAcceptsOriginHostCookieDomain(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Domain = "appstoreconnect.apple.com"
+
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil for the origin host", err)
+	}
+	if _, err := ImportSessionBundle(bundle); err != nil {
+		t.Fatalf("ImportSessionBundle() error = %v", err)
+	}
+}
+
+func TestImportSessionBundleTreatsExplicitZeroExpiryAsExpired(t *testing.T) {
+	withFileSessionCache(t)
+	zero := time.Time{}
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Expires = &zero
+
+	if _, err := ImportSessionBundle(bundle); !errors.Is(err, ErrSessionBundleUnusable) {
+		t.Fatalf("ImportSessionBundle() error = %v, want ErrSessionBundleUnusable", err)
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || ok {
+		t.Fatalf("LoadCachedSession() = (%v, %v), want no cached session after a refused import", ok, err)
+	}
+}
+
+func TestImportSessionBundleFailsWhenLastSessionPointerCannotBeUpdated(t *testing.T) {
+	withFileSessionCache(t)
+	lastPath, err := webSessionLastFilePath()
+	if err != nil {
+		t.Fatalf("webSessionLastFilePath() error = %v", err)
+	}
+	if err := os.MkdirAll(lastPath, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", lastPath, err)
+	}
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	if _, err := ImportSessionBundle(bundle); err == nil {
+		t.Fatal("ImportSessionBundle() error = nil, want a last-session pointer failure")
+	}
+}
+
+func TestImportSessionBundleOverwritesMalformedKeychainStore(t *testing.T) {
+	kr := withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "unused-file-cache"))
+	if err := kr.Set(keyring.Item{Key: webSessionStoreItem, Data: []byte("{")}); err != nil {
+		t.Fatalf("seed malformed keychain store: %v", err)
+	}
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	if _, err := ImportSessionBundle(bundle); err != nil {
+		t.Fatalf("ImportSessionBundle() error = %v, want overwrite of a malformed keychain store", err)
+	}
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok || loaded == nil {
+		t.Fatalf("LoadCachedSession() = (%v, %v, %v), want the imported session", loaded, ok, err)
 	}
 }
 
