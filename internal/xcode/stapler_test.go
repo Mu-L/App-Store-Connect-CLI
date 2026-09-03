@@ -1231,6 +1231,40 @@ func TestStaplerPreservesSignaledResolutionWhenContextCancelsAfterLookup(t *test
 	}
 }
 
+func TestStaplerPreservesResolutionStartFailureWhenContextCancelsAfterLookup(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	missingTool := filepath.Join(t.TempDir(), "missing-stapler-resolver")
+	commandContextFn = func(commandCtx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(commandCtx, missingTool)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousHook := afterStaplerResolutionFn
+	afterStaplerResolutionFn = cancel
+	t.Cleanup(func() { afterStaplerResolutionFn = previousHook })
+
+	_, err := Staple(ctx, target, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want context cancellation", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("Staple() error = %T %v, want preserved resolver command error", err, err)
+	}
+	if commandErr.Operation != string(StaplerOperationResolve) || commandErr.ExitCode != -1 {
+		t.Fatalf("Staple() command error = %#v, want resolve/-1", commandErr)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Staple() error = %T %v, want preserved resolver launch cause", err, err)
+	}
+}
+
 func TestStaplerPropagatesCancellationWithoutSuccess(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

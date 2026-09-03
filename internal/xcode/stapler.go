@@ -381,6 +381,15 @@ func ensureStaplerAvailable(ctx context.Context) error {
 				// visible in the same late-result window.
 				return errors.Join(ctxErr, commandErr)
 			}
+			if !errors.Is(err, ctxErr) {
+				// The resolver failed to launch or wait with a concrete operational
+				// cause, such as a descriptor limit, and cancellation only became
+				// visible afterwards. Keep the resolution classification alongside
+				// the late cancellation instead of reporting cancellation alone. A
+				// command that was already canceled before the child started stays
+				// an ordinary context failure.
+				return errors.Join(ctxErr, commandErr)
+			}
 			return ctxErr
 		}
 		return commandErr
