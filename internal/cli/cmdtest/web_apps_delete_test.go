@@ -195,12 +195,28 @@ func TestWebAppsDeleteRunRejectsOmittedTerritoryLinkageWithoutPatch(t *testing.T
 						"data": {
 							"id": "avail-1",
 							"type": "appAvailabilities",
-							"attributes": {"availableInNewTerritories": false}
+							"attributes": {"availableInNewTerritories": false},
+							"relationships": {
+								"territoryAvailabilities": {
+									"links": {
+										"related": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/avail-1/territoryAvailabilities"
+									}
+								}
+							}
 						}
+					}`), nil
+				case req.Method == http.MethodGet && req.URL.Path == "/iris/v2/appAvailabilities/avail-1/territoryAvailabilities":
+					return webAppsDeleteJSONResponse(`{
+						"data": [{
+							"type": "territoryAvailabilities",
+							"id": "ta-usa",
+							"attributes": {},
+							"relationships": {"territory": {"data": {"type": "territories", "id": "USA"}}}
+						}]
 					}`), nil
 				case req.Method == http.MethodPatch && req.URL.Path == "/iris/v1/apps/1234567890":
 					patchCalls++
-					t.Fatal("did not expect PATCH when availableTerritories was not loaded")
+					t.Fatal("did not expect PATCH when territoryAvailabilities could not be read")
 					return nil, nil
 				default:
 					t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
@@ -226,8 +242,8 @@ func TestWebAppsDeleteRunRejectsOmittedTerritoryLinkageWithoutPatch(t *testing.T
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "could not confirm") || !strings.Contains(stderr, "availableTerritories") {
-		t.Fatalf("expected stderr to name missing territory linkage, got %q", stderr)
+	if !strings.Contains(stderr, "could not read availability") || !strings.Contains(stderr, "territoryAvailabilities") {
+		t.Fatalf("expected stderr to name unreadable territoryAvailabilities, got %q", stderr)
 	}
 	if patchCalls != 0 {
 		t.Fatalf("expected no PATCH, got %d", patchCalls)

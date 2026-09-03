@@ -36,6 +36,9 @@ type AppStoreVersionUpdateAttributes struct {
 	ReleaseType         *string `json:"releaseType,omitempty"`
 	EarliestReleaseDate *string `json:"earliestReleaseDate,omitempty"`
 	VersionString       *string `json:"versionString,omitempty"`
+	// Downloadable is nullable on AppStoreVersionUpdateRequest. A pointer keeps
+	// an unset flag out of the request body instead of sending false.
+	Downloadable *bool `json:"downloadable,omitempty"`
 }
 
 // AppStoreVersionUpdateData is the data portion of an app store version update request.

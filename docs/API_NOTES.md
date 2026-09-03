@@ -78,6 +78,12 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
 - Revoke and `--individual` create still need a live web-session endpoint capture.
 
+## Web app availability (iris)
+
+- `GET /iris/v1/apps/{id}/appAvailabilityV2` returns `availableInNewTerritories` and a links-only `relationships.territoryAvailabilities`. It does not include `availableTerritories.data`. Adding `?include=availableTerritories&limit[availableTerritories]=200` returns 400 `PARAMETER_ERROR.INVALID`.
+- The readable source is the iris v2 related collection: `GET /iris/v2/appAvailabilities/{id}/territoryAvailabilities?include=territory&limit=200`. Follow `links.next`. `filter[available]=true` is rejected with 400 `PARAMETER_ERROR.ILLEGAL`; filter client-side on `attributes.available`.
+- `asc web apps delete` uses this collection for the "removed from sale in all territories" preflight. The public API counterpart is `/v2/appAvailabilities/{id}/territoryAvailabilities`.
+
 ## Web-session Resolution Center
 
 - Resolution Center has no official App Store Connect API surface; the OpenAPI snapshot contains no `resolutionCenter*` or `reviewRejection*` path. Every reader below is a web-session (`/iris/v1`) call and needs Apple ID auth, not an API key.
@@ -95,13 +101,14 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - Writes are not shipped. The observed write contract pairs `distributionType` with `educationDiscountType` in a single app PATCH, and public/private transitions carry Apple-side eligibility restrictions that are not observable from the read payload, so the CLI fails closed and leaves the change to the App Store Connect web UI.
 - Unlisted App Store distribution is a request form reviewed by Apple, not an attribute value on this resource. There is no captured endpoint for it, so no flag is offered.
 
-## Web-session last-compatible version settings
+## Last-compatible version settings (`downloadable`)
 
-- App Store Connect's Last-Compatible Version Settings screen has no dedicated resource and no `lastCompatibleVersion` attribute. The feature is carried by the boolean `downloadable` attribute on the existing `appStoreVersions` resource; `lastCompatibleVersion` is only a client-side label App Store Connect puts on the `appStoreVersions` collection it reads back. The public OpenAPI snapshot documents `downloadable` on `AppStoreVersion` and `AppStoreVersionUpdateRequest`. `asc versions list/view --output json` preserves the attribute when Apple returns it; the default versions table does not include it.
-- `asc web apps last-compatible-version view --app APP_ID` reuses App Store Connect's own read: `GET /iris/v1/apps/{id}?include=appStoreVersions&fields[appStoreVersions]=appStoreState,appVersionState,platform,versionString,downloadable,createdDate,distributions,reviewType&limit[appStoreVersions]=2000`. The sparse fieldset and limit are kept identical to Apple's request rather than trimmed, because the response interceptor on that screen keys off the echoed `downloadable` field in `links.self`. The web-session command remains useful for that screen's relationship order and fieldset; public versions JSON is the API-key read.
-- Versions are reported in the order Apple lists them in the app's `appStoreVersions` relationship, not in `included` order. Apple omits `downloadable` on versions that never carried the setting; the command reports `unknown` rather than defaulting it to `true`.
-- `appStoreState` and `appVersionState` are both printed verbatim. App Store Connect's web client populates `appStoreState` from `appVersionState` and applies legacy remapping (`READY_FOR_DISTRIBUTION` to `READY_FOR_SALE`) purely client-side, so raw responses can carry either field or both. The CLI does not reproduce that remapping.
-- The write is not shipped. The PATCH target is `PATCH /iris/v1/appStoreVersions/{id}`, but the serialized request body is assembled in an authenticated micro-frontend that is not observable without a live session capture, so the attribute-level write contract is unverified.
+- App Store Connect's Last-Compatible Version Settings screen has no dedicated resource and no `lastCompatibleVersion` attribute. The feature is carried by the boolean `downloadable` attribute on the existing `appStoreVersions` resource; `lastCompatibleVersion` is only a client-side label App Store Connect puts on the `appStoreVersions` collection it reads back.
+- The public API covers both directions. `docs/openapi/latest.json` documents `downloadable` on `AppStoreVersion` and as a nullable attribute on `AppStoreVersionUpdateRequest`. `asc versions list/view --output json` preserves the attribute when Apple returns it, and `asc versions update --downloadable true|false` writes it. The default versions table does not include the field.
+- `--downloadable` is tri-state: unset sends no `downloadable` attribute at all, so an unrelated `asc versions update` never changes download availability. `--downloadable false` makes a previously released version unavailable for download on older operating systems and devices, is not reversible from every state, and therefore requires `--confirm`.
+- Apple omits `downloadable` on versions that never carried the setting. Reads report the attribute as absent rather than defaulting it to `true`, so a missing key means "Apple did not say", not "downloadable".
+- `appStoreState` and `appVersionState` are both returned inconsistently across versions. App Store Connect's web client populates `appStoreState` from `appVersionState` and applies legacy remapping (`READY_FOR_DISTRIBUTION` to `READY_FOR_SALE`) purely client-side. The CLI does not reproduce that remapping.
+- A web-session read (`asc web apps last-compatible-version view`) briefly existed for this screen and was retired before it reached a release. It mirrored App Store Connect's own iris request (`GET /iris/v1/apps/{id}?include=appStoreVersions&fields[appStoreVersions]=...,downloadable,...&limit[appStoreVersions]=2000`), which required a web session and offered no write. The public API path supersedes it in both directions, so no web-session command is needed here.
 
 ## Web-session app status history
 
