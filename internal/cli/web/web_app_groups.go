@@ -252,7 +252,7 @@ Example:
 			}
 			result, err := assignDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupAssignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups assign")
+				return developerAppGroupMutationError(session, err, "web app-groups assign")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups assign failed: missing assign result")
@@ -323,7 +323,7 @@ Example:
 			}
 			result, err := unassignDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupUnassignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups unassign")
+				return developerAppGroupMutationError(session, err, "web app-groups unassign")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups unassign failed: missing unassign result")
@@ -390,7 +390,7 @@ Example:
 			}
 			result, err := setDeveloperAppGroupsFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupSetRequest{BundleID: resolvedBundleID, GroupIDs: []string(groupIDs)})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups set")
+				return developerAppGroupMutationError(session, err, "web app-groups set")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups set failed: missing set result")
@@ -452,7 +452,7 @@ Example:
 			}
 			result, err := deleteDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupDeleteRequest{GroupID: resolvedGroupID})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups delete")
+				return developerAppGroupMutationError(session, err, "web app-groups delete")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups delete failed: missing delete result")
@@ -467,9 +467,12 @@ Example:
 // developerAppGroupMutationError keeps the auth hint behavior of every other
 // web command, and additionally warns when the portal accepted a write that
 // could not be verified, because the App ID may already have changed.
-func developerAppGroupMutationError(err error, command string) error {
+func developerAppGroupMutationError(session *webcore.AuthSession, err error, command string) error {
 	var unverified *webcore.DeveloperAppGroupUnverifiedError
 	if errors.As(err, &unverified) {
+		// Persist before returning so a later command without --developer-team
+		// still targets the team that accepted the write.
+		persistDeveloperPortalSession(session)
 		_, _ = fmt.Fprintln(os.Stderr, "Warning: the Developer Portal accepted the change but it could not be verified; assume it was applied.")
 		warnDeveloperAppGroupProfileInvalidation(true)
 	}

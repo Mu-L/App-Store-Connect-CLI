@@ -486,6 +486,11 @@ func TestWebAppGroupsMutationsWarnWhenAcceptedWriteCannotBeVerified(t *testing.T
 			defer cleanup()
 			defer restore()
 			test.stub()
+			persistCalls := 0
+			persistWebSessionFn = func(*webcore.AuthSession) error {
+				persistCalls++
+				return nil
+			}
 			command := test.build()
 			if err := command.FlagSet.Parse(test.args); err != nil {
 				t.Fatalf("parse error: %v", err)
@@ -500,10 +505,41 @@ func TestWebAppGroupsMutationsWarnWhenAcceptedWriteCannotBeVerified(t *testing.T
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
+			if persistCalls != 1 {
+				t.Fatalf("persist calls = %d, want 1 so a later command without --developer-team still targets the team that accepted the write", persistCalls)
+			}
 			if !strings.Contains(stderr, "invalidates existing provisioning profiles") {
 				t.Fatalf("stderr %q is missing the provisioning profile warning after an accepted but unverified write", stderr)
 			}
 		})
+	}
+}
+
+func TestWebAppGroupsMutationsDoNotPersistOnRejectedWrites(t *testing.T) {
+	restore, cleanup := stubWebAppGroupsDependencies(t)
+	defer cleanup()
+	defer restore()
+	assignDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupAssignRequest) (*webcore.DeveloperAppGroupAssignResult, error) {
+		return nil, errors.New("portal rejected assign")
+	}
+	persistCalls := 0
+	persistWebSessionFn = func(*webcore.AuthSession) error {
+		persistCalls++
+		return nil
+	}
+	command := WebAppGroupsAssignCommand()
+	if err := command.FlagSet.Parse([]string{"--group", "GROUP1", "--bundle-id", "bundle-1", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, _ = captureWebCommandOutput(t, func() {
+		runErr = command.Exec(context.Background(), nil)
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "portal rejected assign") {
+		t.Fatalf("expected the rejected write to propagate, got %v", runErr)
+	}
+	if persistCalls != 0 {
+		t.Fatalf("persist calls = %d, want 0 when the portal did not accept the write", persistCalls)
 	}
 }
 
