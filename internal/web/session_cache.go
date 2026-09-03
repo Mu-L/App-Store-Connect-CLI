@@ -1365,6 +1365,9 @@ func DeleteSession(username string) error {
 	}
 	key := webSessionCacheKey(username)
 	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendOff {
+		return deleteSessionEntryLocked(selection, key)
+	}
 	return withSessionEntryLock(key, func() error {
 		return deleteSessionEntryLocked(selection, key)
 	})

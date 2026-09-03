@@ -2011,17 +2011,28 @@ func TestDeleteAllSessionsJoinsLegacyCleanupError(t *testing.T) {
 }
 
 func TestDeleteSessionSkipsLegacyCleanupWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	cacheDir := filepath.Join(root, "web-cache")
+	sharedRoot := filepath.Join(root, "shared-lock-root")
+	withStubbedSessionSharedLockRoot(t, sharedRoot)
+
 	legacyCachePath := filepath.Join(t.TempDir(), "legacy-cache-file")
 	if err := os.WriteFile(legacyCachePath, []byte("not-a-directory"), 0o600); err != nil {
 		t.Fatalf("write legacy cache file: %v", err)
 	}
 
 	t.Setenv(webSessionBackendEnv, "off")
+	t.Setenv(webSessionCacheDirEnv, cacheDir)
 	t.Setenv(legacyIrisSessionCacheEnabledEnv, "0")
 	t.Setenv(legacyIrisSessionCacheDirEnv, legacyCachePath)
 
 	if err := DeleteSession("user@example.com"); err != nil {
 		t.Fatalf("expected disabled legacy cleanup to be skipped, got %v", err)
+	}
+	for _, path := range []string{cacheDir, sharedRoot} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected disabled session caching not to create %q, stat error: %v", path, err)
+		}
 	}
 }
 

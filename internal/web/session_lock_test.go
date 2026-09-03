@@ -76,15 +76,16 @@ func TestSessionEntryLockSharesAnAnchorAcrossCacheDirs(t *testing.T) {
 	}
 }
 
-func TestSessionEntryLockSharedAnchorIgnoresTempDir(t *testing.T) {
+func TestSessionEntryLockSharedAnchorIgnoresEnvironmentOverrides(t *testing.T) {
 	key := webSessionCacheKey("user@example.com")
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "cache-a"))
 	first := sessionEntryLockPaths(key)[1]
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "different"))
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "different-home"))
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "cache-b"))
 	second := sessionEntryLockPaths(key)[1]
 	if first != second {
-		t.Fatalf("shared anchor changed with TMPDIR: %q -> %q", first, second)
+		t.Fatalf("shared anchor changed with environment overrides: %q -> %q", first, second)
 	}
 }
 

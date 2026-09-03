@@ -3,11 +3,27 @@
 package web
 
 import (
-	"os"
-	"strconv"
+	"os/user"
+	"path/filepath"
+	"strings"
 )
 
-func platformSessionLockRoot() string { return "/tmp" }
-func platformSessionLockDirName() string {
-	return "asc-web-session-locks-" + strconv.Itoa(os.Getuid())
+func platformSessionLockRoot() string {
+	// Use the account database instead of HOME or TMPDIR so processes that
+	// reach the same per-user keychain cannot select different lock anchors.
+	current, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	home := strings.TrimSpace(current.HomeDir)
+	if home == "" || !filepath.IsAbs(home) {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return ""
+	}
+	return resolved
 }
+
+func platformSessionLockDirName() string { return ".asc-web-session-locks" }

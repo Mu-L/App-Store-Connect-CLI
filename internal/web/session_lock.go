@@ -53,9 +53,14 @@ func acquireSessionEntryLock(key string) func() {
 		return func() {}
 	}
 	paths := sessionEntryLockPaths(key)
+	sharedPath := sessionSharedEntryLockPath(key)
 	releases := make([]func(), 0, len(paths))
 	for _, path := range paths {
-		if release, ok := acquireLockFile(path); ok {
+		acquire := acquireLockFile
+		if path == sharedPath {
+			acquire = acquireSharedSessionLockFile
+		}
+		if release, ok := acquire(path); ok {
 			releases = append(releases, release)
 		}
 	}
@@ -74,10 +79,18 @@ func sessionEntryLockPaths(key string) []string {
 	if dir, err := webSessionCacheDir(); err == nil && strings.TrimSpace(dir) != "" {
 		paths = append(paths, filepath.Join(dir, name))
 	}
-	if dir := strings.TrimSpace(sessionSharedLockRoot()); dir != "" {
-		paths = append(paths, filepath.Join(dir, sessionSharedLockDirName(), name))
+	if path := sessionSharedEntryLockPath(key); path != "" {
+		paths = append(paths, path)
 	}
 	return paths
+}
+
+func sessionSharedEntryLockPath(key string) string {
+	dir := strings.TrimSpace(sessionSharedLockRoot())
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, sessionSharedLockDirName(), "session-"+key+".lock")
 }
 
 // sessionSharedLockDirName keeps the persistent shared anchor per OS user. Its
@@ -89,9 +102,15 @@ func acquireLockFile(path string) (func(), bool) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, false
 	}
+	return acquirePreparedLockFile(path, func(path string) (*os.File, error) {
+		return os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	})
+}
+
+func acquirePreparedLockFile(path string, openFile func(string) (*os.File, error)) (func(), bool) {
 	deadline := time.Now().Add(sessionLockWaitTimeout)
 	for {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		file, err := openFile(path)
 		if err == nil {
 			if err := lockSessionFile(file); err == nil {
 				return func() {
