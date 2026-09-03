@@ -115,7 +115,10 @@ project/configuration files, and commits with rooted atomic no-follow writes.
 It rejects stale or redirected plans before writing. A later write failure
 restores earlier writes only while their current identity and bytes still match
 this transaction, and reports rollback failure separately if recovery is not
-complete. Receipt removal uses the same rooted no-follow and digest checks;
+complete. Apply revalidates every source both before and after receipt
+publication and verifies the created receipt through its retained identity
+before reporting success. Receipt removal uses the same rooted no-follow and
+digest checks;
 because the portable rootfs API has no compare-and-unlink primitive, a final
 path replacement after the last identity check is still a residual concurrency
 window. In that case the current file is preserved and the apply reports
@@ -127,9 +130,12 @@ profiles, imports keychain material, signs binaries, or executes a shell.
 ## Compatibility and verification
 
 Existing Xcode and signing commands and their JSON contracts remain unchanged.
-Project/xcconfig planning and applying should remain cross-platform because no
-Xcode process is required; macOS live validation uses `xcodebuild -list`,
-`xcodebuild -showBuildSettings`, and a no-signing archive syntax check.
+Project/xcconfig planning remains cross-platform because it requires no Xcode
+process. Apply additionally requires native identity-coupled replace and
+remove support; it fails closed on Windows before mutation until the rooted
+filesystem layer has handle-backed primitives there. macOS live validation
+uses `xcodebuild -list`, `xcodebuild -showBuildSettings`, and a no-signing
+archive syntax check.
 
 Tests begin at the command boundary, cover strict input and output contracts,
 then exercise direct/project/xcconfig precedence, shared-file safety, stale
