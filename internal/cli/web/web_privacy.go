@@ -400,12 +400,8 @@ func declarationFromRemoteDataUsages(usages []webcore.AppDataUsage) privacyDecla
 }
 
 func isUnrepresentableDataProtection(protection string) bool {
-	switch normalizeToken(protection) {
-	case dataProtectionLinked, dataProtectionNotLinked, dataProtectionTracking:
-		return false
-	default:
-		return true
-	}
+	_, known := knownDataProtections[normalizeToken(protection)]
+	return !known
 }
 
 func countUnrepresentableRemoteUsages(usages []webcore.AppDataUsage) int {
