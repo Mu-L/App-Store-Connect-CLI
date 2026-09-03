@@ -325,7 +325,7 @@ func collectXCConfigFiles(root string) ([]string, error) {
 // into one traversal key.
 func collectStableXCConfigFiles(root string) ([]string, error) {
 	var identify func(string) (os.FileInfo, error)
-	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+	if xcconfigUsesIdentityTraversal() {
 		identify = os.Stat
 	}
 	return collectXCConfigFilesWithHooksAndIdentity(root, os.ReadFile, nil, nil, nil, identify)
@@ -563,11 +563,11 @@ func resolveXCConfigSetting(root, setting string) (xcconfigResolvedValue, error)
 
 func resolveXCConfigSettingWithBase(root, setting string, base xcconfigResolvedValue) (xcconfigResolvedValue, error) {
 	var identify func(string) (os.FileInfo, error)
-	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
-		// Stable version commands intentionally retain ordinary filesystem
-		// behavior, including selected symlinks. os.Stat supplies the identity
-		// needed only to disambiguate case-variant paths on filesystems whose
-		// directory semantics are not uniform.
+	if xcconfigUsesIdentityTraversal() {
+		// Identity-aware traversal coalesces case-variant aliases on
+		// case-insensitive volumes, including Linux vfat/exfat/ntfs mounts.
+		// os.Stat supplies the identity; case-semantics checks keep genuinely
+		// distinct files separate.
 		identify = os.Stat
 	}
 	return resolveXCConfigSettingWithBaseReaderAndIdentity(root, setting, base, os.ReadFile, os.Stat, identify)

@@ -1863,7 +1863,7 @@ func (resolver *signingSettingResolver) resolveXCConfigSettingStateWithContext(
 		return resolver.readXCConfigFor(configuration, includePath)
 	}
 	var identify func(string) (os.FileInfo, error)
-	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+	if xcconfigUsesIdentityTraversal() {
 		identify = func(includePath string) (os.FileInfo, error) {
 			return resolver.identifyXCConfigFor(configuration, includePath)
 		}
@@ -2795,6 +2795,10 @@ func signingProjectInputPaths(
 					inputBlockers = append(inputBlockers, fmt.Sprintf("target %q configuration %q has an unresolved CODE_SIGN_ENTITLEMENTS input: %v", configuration.target, configuration.name, err))
 				}
 			}
+		}
+		_, targetDefinesUnconditional := configuration.buildSettings["CODE_SIGN_ENTITLEMENTS"].(string)
+		if targetDefinesUnconditional {
+			continue
 		}
 		for _, projectCfg := range project.configurations {
 			if !projectCfg.projectLevel || projectCfg.name != configuration.name {

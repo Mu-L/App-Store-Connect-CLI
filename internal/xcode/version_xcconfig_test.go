@@ -655,6 +655,55 @@ func TestIdentityAwareDarwinCollectorDeduplicatesCaseVariantSameFile(t *testing.
 	_ = caseVariantPath
 }
 
+func TestIdentityAwareLinuxCollectorDeduplicatesCaseVariantSameFile(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousCaseSemantics := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "linux"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousCaseSemantics
+	})
+
+	root := t.TempDir()
+	rootPath := filepath.Join(root, "Config.xcconfig")
+	identityPath := filepath.Join(root, "identity")
+	if err := os.WriteFile(identityPath, []byte("identity"), 0o600); err != nil {
+		t.Fatalf("WriteFile(identity) error = %v", err)
+	}
+	identity, err := os.Stat(identityPath)
+	if err != nil {
+		t.Fatalf("Stat(identity) error = %v", err)
+	}
+	readCalls := 0
+	files, err := collectXCConfigFilesWithHooksAndIdentity(
+		rootPath,
+		func(path string) ([]byte, error) {
+			readCalls++
+			if filepath.Clean(path) == rootPath {
+				return []byte("#include \"config.xcconfig\"\n"), nil
+			}
+			return []byte("CODE_SIGN_STYLE = Manual\nCODE_SIGN_STYLE += Extra\n"), nil
+		},
+		nil,
+		nil,
+		nil,
+		func(string) (os.FileInfo, error) { return identity, nil },
+	)
+	if err != nil {
+		t.Fatalf("collectXCConfigFilesWithHooksAndIdentity() error = %v", err)
+	}
+	if len(files) != 1 || files[0] != rootPath {
+		t.Fatalf("files = %#v, want one identity-equivalent path on Linux", files)
+	}
+	if readCalls != 1 {
+		t.Fatalf("read calls = %d, want one after Linux identity deduplication", readCalls)
+	}
+	if !xcconfigUsesIdentityTraversal() {
+		t.Fatal("linux should enable identity-aware xcconfig traversal")
+	}
+}
+
 func TestIdentityAwareWindowsCollectorKeepsCaseDistinctFilesOnCaseSensitiveDirectory(t *testing.T) {
 	previousOS := runtimeGOOS
 	previousCaseSemantics := signingCaseInsensitiveVolumeFn

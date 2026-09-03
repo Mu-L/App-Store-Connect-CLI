@@ -1393,7 +1393,7 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 		var collectionErrorExternal bool
 		observedPaths := make([]string, 0)
 		var identify func(string) (os.FileInfo, error)
-		if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+		if xcconfigUsesIdentityTraversal() {
 			identify = signingXCConfigIdentityFn
 		}
 		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(

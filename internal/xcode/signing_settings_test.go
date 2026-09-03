@@ -4853,6 +4853,39 @@ func TestSigningPlanProtectsProjectConditionalInheritedEntitlementComposition(t 
 	}
 }
 
+func TestSigningPlanSkipsShadowedProjectEntitlementExpressions(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = "$(MISSING).entitlements";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = Widget.entitlements;`)
+	projectRoot := filepath.Dir(project)
+	for _, name := range []string{"App.entitlements", "Widget.entitlements"} {
+		if err := os.WriteFile(filepath.Join(projectRoot, name), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want shadowed project entitlement expression ignored", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("shadowed project entitlement expression blocked planning: %#v", plan.Blockers)
+	}
+}
+
 func TestSigningPlanResolvesProjectEntitlementsInTargetContext(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
