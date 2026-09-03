@@ -76,6 +76,16 @@ func TestSessionEntryLockSharesAnAnchorAcrossCacheDirs(t *testing.T) {
 	}
 }
 
+func TestSessionEntryLockSharedAnchorIgnoresTempDir(t *testing.T) {
+	key := webSessionCacheKey("user@example.com")
+	first := sessionEntryLockPaths(key)[1]
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "different"))
+	second := sessionEntryLockPaths(key)[1]
+	if first != second {
+		t.Fatalf("shared anchor changed with TMPDIR: %q -> %q", first, second)
+	}
+}
+
 // The shared anchor has to actually exclude: a holder configured with one cache
 // directory must block a second one configured with another.
 func TestSessionEntryLockExcludesHoldersWithDifferentCacheDirs(t *testing.T) {

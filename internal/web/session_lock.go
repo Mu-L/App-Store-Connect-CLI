@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -35,7 +34,7 @@ var (
 	errSessionLockHeld      = errors.New("session lock is held")
 	sessionLockPollInterval = 2 * time.Millisecond
 	sessionLockWaitTimeout  = 2 * time.Second
-	sessionLockTempDir      = os.TempDir
+	sessionLockTempDir      = platformSessionLockRoot
 )
 
 // withSessionEntryLock runs fn while holding the advisory lock for one cached
@@ -84,9 +83,7 @@ func sessionEntryLockPaths(key string) []string {
 // sessionSharedLockDirName keeps the shared anchor per user: a lock file in a
 // world-writable temporary directory can only be removed by its owner, so
 // mixing users there would make every stale lock permanent for everyone else.
-func sessionSharedLockDirName() string {
-	return "asc-web-session-locks-" + strconv.Itoa(os.Getuid())
-}
+func sessionSharedLockDirName() string { return platformSessionLockDirName() }
 
 func acquireLockFile(path string) (func(), bool) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
