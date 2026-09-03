@@ -2427,9 +2427,26 @@ func validateSigningArtifactAliasesWithAuthorizedProtectedPaths(planPath, receip
 		if !protectedPathIsAuthorized(protectedPath, authorizedProtectedPaths) {
 			continue
 		}
+		// The rooted inspector never follows a final symlink, so an aliased
+		// protected input surfaces as rootfs.ErrSymlink rather than symlink
+		// FileInfo. Both mean the same thing here: the prospective-path
+		// comparison below cannot see through the link, so accepting the path
+		// would let an artifact write land on the link target. Any other
+		// inspection failure leaves the alias set unknown and fails closed as
+		// an ordinary I/O error instead of a spurious alias claim.
 		info, infoErr := signingArtifactPathInfoFn(protectedPath)
-		if infoErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		switch {
+		case infoErr == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("protected project input %s is a symlink and cannot be aliased by an artifact", protectedPath)))
+			}
+		case errors.Is(infoErr, rootfs.ErrSymlink):
 			return newSigningInputError(newSigningArtifactAliasError(fmt.Errorf("protected project input %s is a symlink and cannot be aliased by an artifact", protectedPath)))
+		case errors.Is(infoErr, os.ErrNotExist):
+			// A protected input that does not exist yet is still covered by the
+			// prospective-path comparison below.
+		default:
+			return fmt.Errorf("inspect protected project input %s: %w", protectedPath, infoErr)
 		}
 		physical, err := signingResolveProspectivePathFn(protectedPath)
 		if err != nil {
