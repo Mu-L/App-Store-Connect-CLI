@@ -1372,7 +1372,10 @@ func (r Root) writeFileIfSame(
 		return nil, err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, parent.Close())
+		closeErr := parent.Close()
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
 	}()
 
 	quarantineName, quarantine, quarantineInfo, err := r.quarantineExpectedFile(parent, base, expected, expectedData)

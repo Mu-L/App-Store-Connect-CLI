@@ -4713,6 +4713,48 @@ func TestSigningPlanRejectsUnselectedUnknownConditionalEntitlementBeforeArtifact
 	}
 }
 
+func TestSigningPlanResolvesProjectEntitlementsInTargetContext(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = "$(PRODUCT_NAME).entitlements";`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`PRODUCT_NAME = App;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`PRODUCT_NAME = Widget;`)
+	for _, name := range []string{"App.entitlements", "Widget.entitlements"} {
+		entitlementsPath := filepath.Join(filepath.Dir(project), name)
+		if err := os.WriteFile(entitlementsPath, []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want project entitlement resolved in the target context", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("project entitlement in target context blocked plan: %#v", plan.Blockers)
+	}
+
+	protected := filepath.Join(filepath.Dir(project), "App.entitlements")
+	_, err = BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: protected, StateDir: filepath.Join(t.TempDir(), "state"),
+	})
+	if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+		t.Fatalf("BuildSigningPlan() error = %v, want target-resolved entitlement path protected as an artifact alias", err)
+	}
+}
+
 func TestSigningPlanRejectsUninventoriableConditionalPBXEntitlements(t *testing.T) {
 	tests := []struct {
 		name       string

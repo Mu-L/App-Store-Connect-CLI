@@ -2700,6 +2700,12 @@ func signingProjectInputPaths(
 			}
 		}
 		authorized := signingConfigurationSourcesAuthorized(project, configuration, configFiles)
+		if configuration.projectLevel {
+			// Inventory inherited project entitlements through each target
+			// consumer. Resolving here cannot see target-supplied settings
+			// such as PRODUCT_NAME and would reject a valid selected plan.
+			continue
+		}
 		if authorized {
 			value, _, err := resolver.resolveSetting(configuration, "CODE_SIGN_ENTITLEMENTS")
 			if err == nil {
