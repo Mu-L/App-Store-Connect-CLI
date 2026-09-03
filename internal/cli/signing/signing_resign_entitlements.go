@@ -179,8 +179,9 @@ func buildSigningResignEntitlements(existing, profile map[string]any) (map[strin
 // buildSigningResignEntitlementsForProfile applies the replacement profile's
 // class-controlled values while retaining the existing claim-preservation
 // rules for capabilities. The profile is the authority for values such as
-// aps-environment when the source signature and replacement profile belong to
-// different signing classes.
+// aps-environment, beta-reports-active, and the iCloud container environment
+// when the source signature and replacement profile belong to different
+// signing classes.
 func buildSigningResignEntitlementsForProfile(existing map[string]any, profile signingResignProfile) (map[string]any, error) {
 	return buildSigningResignEntitlementsWithClass(existing, profile.Entitlements, profile.Class)
 }
@@ -237,9 +238,12 @@ func buildSigningResignEntitlementsWithClass(existing, profile map[string]any, p
 		}
 		profileValue, permitted := profile[key]
 		if profileClass != "" {
-			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, profileValue, permitted); handled {
+			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, true, profileValue, permitted); handled {
 				if err != nil {
 					return nil, err
+				}
+				if resolved == nil {
+					continue
 				}
 				result[key] = resolved
 				continue
@@ -261,6 +265,18 @@ func buildSigningResignEntitlementsWithClass(existing, profile map[string]any, p
 		value, exists := profile[key]
 		if !exists {
 			continue
+		}
+		if profileClass != "" && key == "beta-reports-active" {
+			resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, nil, false, value, true)
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				if resolved != nil {
+					result[key] = resolved
+				}
+				continue
+			}
 		}
 		if _, isBool := value.(bool); !isBool {
 			return nil, fmt.Errorf("replacement profile entitlement %s is not a concrete boolean value", key)
@@ -292,37 +308,93 @@ func buildSigningResignEntitlementsWithClass(existing, profile map[string]any, p
 
 // resolveSigningResignProfileClassEntitlement identifies claims whose value
 // is controlled by the replacement profile class rather than preserved as an
-// arbitrary subset of the old signed document. A profile is still required to
-// carry the concrete value; this helper only permits the class value Apple
-// authorizes and never grants a claim that was absent from the old signature.
-func resolveSigningResignProfileClassEntitlement(key, profileClass string, existingValue, profileValue any, present bool) (value any, handled bool, err error) {
-	if key != "aps-environment" {
-		return nil, false, nil
-	}
-	if !present {
-		return nil, false, nil
-	}
-	existingText, ok := existingValue.(string)
-	if !ok || strings.TrimSpace(existingText) != existingText || existingText != "development" && existingText != "production" {
-		return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
-	}
-	text, ok := profileValue.(string)
-	if !ok || strings.TrimSpace(text) != text {
-		return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
-	}
-	expected := ""
-	switch profileClass {
-	case signingResignProfileClassDevelopment:
-		expected = "development"
-	case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
-		expected = "production"
+// arbitrary subset of the old signed document. It only returns a class value
+// that the replacement profile authorizes and never grants an optional claim
+// that was absent from the old signature.
+func resolveSigningResignProfileClassEntitlement(key, profileClass string, existingValue any, existingPresent bool, profileValue any, present bool) (value any, handled bool, err error) {
+	switch key {
+	case "aps-environment":
+		if !present {
+			return nil, false, nil
+		}
+		existingText, ok := existingValue.(string)
+		if !ok || strings.TrimSpace(existingText) != existingText || existingText != "development" && existingText != "production" {
+			return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+		}
+		text, ok := profileValue.(string)
+		if !ok || strings.TrimSpace(text) != text {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+		}
+		expected := ""
+		switch profileClass {
+		case signingResignProfileClassDevelopment:
+			expected = "development"
+		case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+			expected = "production"
+		default:
+			return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		}
+		if text != expected {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
+		}
+		return text, true, nil
+	case "beta-reports-active":
+		if existingPresent {
+			if _, ok := existingValue.(bool); !ok {
+				return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+			}
+		}
+		if present {
+			active, ok := profileValue.(bool)
+			if !ok {
+				return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+			}
+			switch profileClass {
+			case signingResignProfileClassDevelopment, signingResignProfileClassAdHoc:
+				if active {
+					return nil, true, fmt.Errorf("replacement profile entitlement %s is not authorized for this profile class", key)
+				}
+				return nil, true, nil
+			case signingResignProfileClassAppStore:
+				return active, true, nil
+			default:
+				return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+			}
+		}
+		switch profileClass {
+		case signingResignProfileClassDevelopment, signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+			return nil, true, nil
+		default:
+			return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		}
+	case "com.apple.developer.icloud-container-environment":
+		if !existingPresent || !present {
+			return nil, false, nil
+		}
+		existingText, ok := existingValue.(string)
+		if !ok || strings.TrimSpace(existingText) != existingText || existingText != "Development" && existingText != "Production" {
+			return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+		}
+		text, ok := profileValue.(string)
+		if !ok || strings.TrimSpace(text) != text || text != "Development" && text != "Production" {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+		}
+		expected := ""
+		switch profileClass {
+		case signingResignProfileClassDevelopment:
+			expected = "Development"
+		case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+			expected = "Production"
+		default:
+			return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		}
+		if text != expected {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
+		}
+		return text, true, nil
 	default:
-		return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		return nil, false, nil
 	}
-	if text != expected {
-		return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
-	}
-	return text, true, nil
 }
 
 // signingResignOptionalIdentityEntitlementKey reports whether an identity

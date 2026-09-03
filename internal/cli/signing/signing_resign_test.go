@@ -623,6 +623,207 @@ func TestBuildSigningResignEntitlementsDerivesPushEnvironmentFromProfileClass(t 
 	}
 }
 
+func TestBuildSigningResignEntitlementsRebindsBetaReportsByProfileClass(t *testing.T) {
+	baseProfile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	tests := []struct {
+		name            string
+		class           string
+		existingBeta    any
+		existingPresent bool
+		profileBeta     any
+		profilePresent  bool
+		wantBeta        any
+		wantPresent     bool
+		wantErr         bool
+	}{
+		{
+			name:            "app store keeps authorized claim",
+			class:           signingResignProfileClassAppStore,
+			existingBeta:    true,
+			existingPresent: true,
+			profileBeta:     true,
+			profilePresent:  true,
+			wantBeta:        true,
+			wantPresent:     true,
+		},
+		{
+			name:            "app store rebinds false source",
+			class:           signingResignProfileClassAppStore,
+			existingBeta:    false,
+			existingPresent: true,
+			profileBeta:     true,
+			profilePresent:  true,
+			wantBeta:        true,
+			wantPresent:     true,
+		},
+		{
+			name:            "development removes store claim",
+			class:           signingResignProfileClassDevelopment,
+			existingBeta:    true,
+			existingPresent: true,
+			wantPresent:     false,
+		},
+		{
+			name:            "ad hoc removes store claim",
+			class:           signingResignProfileClassAdHoc,
+			existingBeta:    true,
+			existingPresent: true,
+			profileBeta:     false,
+			profilePresent:  true,
+			wantPresent:     false,
+		},
+		{
+			name:           "development profile cannot authorize store claim",
+			class:          signingResignProfileClassDevelopment,
+			profileBeta:    true,
+			profilePresent: true,
+			wantErr:        true,
+		},
+		{
+			name:           "invalid app store profile value",
+			class:          signingResignProfileClassAppStore,
+			profileBeta:    "yes",
+			profilePresent: true,
+			wantErr:        true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			existing := map[string]any{
+				"application-identifier":              "OLDTEAM.com.example.app",
+				"com.apple.developer.team-identifier": "OLDTEAM",
+				"get-task-allow":                      false,
+			}
+			if test.existingPresent {
+				existing["beta-reports-active"] = test.existingBeta
+			}
+			profile := make(map[string]any, len(baseProfile)+1)
+			for key, value := range baseProfile {
+				profile[key] = value
+			}
+			if test.profilePresent {
+				profile["beta-reports-active"] = test.profileBeta
+			}
+			got, err := buildSigningResignEntitlementsForProfile(existing, signingResignProfile{
+				Class:        test.class,
+				Entitlements: profile,
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			gotBeta, gotPresent := got["beta-reports-active"]
+			if gotPresent != test.wantPresent || (gotPresent && gotBeta != test.wantBeta) {
+				t.Fatalf("beta-reports-active = %#v (present %v), want %#v (present %v); entitlements = %#v", gotBeta, gotPresent, test.wantBeta, test.wantPresent, got)
+			}
+		})
+	}
+}
+
+func TestBuildSigningResignEntitlementsRebindsICloudEnvironmentByProfileClass(t *testing.T) {
+	baseProfile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	tests := []struct {
+		name            string
+		class           string
+		existingEnv     any
+		existingPresent bool
+		profileEnv      any
+		profilePresent  bool
+		wantEnv         any
+		wantPresent     bool
+		wantErr         bool
+	}{
+		{
+			name:            "development to distribution",
+			class:           signingResignProfileClassAdHoc,
+			existingEnv:     "Development",
+			existingPresent: true,
+			profileEnv:      "Production",
+			profilePresent:  true,
+			wantEnv:         "Production",
+			wantPresent:     true,
+		},
+		{
+			name:            "distribution to development",
+			class:           signingResignProfileClassDevelopment,
+			existingEnv:     "Production",
+			existingPresent: true,
+			profileEnv:      "Development",
+			profilePresent:  true,
+			wantEnv:         "Development",
+			wantPresent:     true,
+		},
+		{
+			name:           "absent capability is not granted",
+			class:          signingResignProfileClassAppStore,
+			profileEnv:     "Production",
+			profilePresent: true,
+			wantPresent:    false,
+		},
+		{
+			name:            "missing replacement authorization remains blocked",
+			class:           signingResignProfileClassAppStore,
+			existingEnv:     "Development",
+			existingPresent: true,
+			wantErr:         true,
+		},
+		{
+			name:            "profile value must match class",
+			class:           signingResignProfileClassDevelopment,
+			existingEnv:     "Development",
+			existingPresent: true,
+			profileEnv:      "Production",
+			profilePresent:  true,
+			wantErr:         true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			existing := map[string]any{
+				"application-identifier":              "OLDTEAM.com.example.app",
+				"com.apple.developer.team-identifier": "OLDTEAM",
+				"get-task-allow":                      false,
+			}
+			if test.existingPresent {
+				existing["com.apple.developer.icloud-container-environment"] = test.existingEnv
+			}
+			profile := make(map[string]any, len(baseProfile)+1)
+			for key, value := range baseProfile {
+				profile[key] = value
+			}
+			if test.profilePresent {
+				profile["com.apple.developer.icloud-container-environment"] = test.profileEnv
+			}
+			got, err := buildSigningResignEntitlementsForProfile(existing, signingResignProfile{
+				Class:        test.class,
+				Entitlements: profile,
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			gotEnv, gotPresent := got["com.apple.developer.icloud-container-environment"]
+			if gotPresent != test.wantPresent || (gotPresent && gotEnv != test.wantEnv) {
+				t.Fatalf("iCloud environment = %#v (present %v), want %#v (present %v); entitlements = %#v", gotEnv, gotPresent, test.wantEnv, test.wantPresent, got)
+			}
+		})
+	}
+}
+
 func TestBuildSigningResignEntitlementsKeepsConcreteValuesForWildcardProfileClaims(t *testing.T) {
 	existing := map[string]any{
 		"application-identifier":                             "OLDTEAM.com.example.app",
@@ -2361,6 +2562,87 @@ func TestInspectSigningResignTargetRequiresOwnerExecutableBinary(t *testing.T) {
 	}
 	if _, err := inspectSigningResignTarget(context.Background(), tree, "Payload/App.app", "application"); err != nil {
 		t.Fatalf("inspectSigningResignTarget() error = %v, want executable target accepted", err)
+	}
+}
+
+func TestPrepareSigningResignTreeRequiresOwnerExecutableNestedCode(t *testing.T) {
+	treePath := t.TempDir()
+	appPath := filepath.Join(treePath, "Payload", "App.app")
+	nestedPath := filepath.Join(appPath, "PlugIns", "Service.xpc", "Service")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	machoData := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	if err := os.WriteFile(filepath.Join(appPath, "App"), machoData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nestedPath, machoData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stagePath := t.TempDir()
+	stageRoot, err := rootfs.New(stagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stageRoot.Close()
+	treeRoot, err := rootfs.New(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer treeRoot.Close()
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{}, nil
+	}
+	profile := signingResignProfile{
+		Data: []byte("profile"),
+		Entitlements: map[string]any{
+			"application-identifier":              "TEAM.com.example.app",
+			"com.apple.application-identifier":    "TEAM.com.example.app",
+			"com.apple.developer.team-identifier": "TEAM",
+			"get-task-allow":                      false,
+		},
+	}
+	_, err = prepareSigningResignTree(context.Background(), stageRoot, treeRoot, signingResignArchive{
+		MainPath: "Payload/App.app",
+		Targets: []signingResignTarget{{
+			Kind: "application", RelativePath: "Payload/App.app", BundleID: "com.example.app", Executable: "App",
+		}},
+	}, map[string]signingResignProfile{"com.example.app": profile})
+	if err == nil || !strings.Contains(err.Error(), "owner-execute") {
+		t.Fatalf("prepareSigningResignTree() error = %v, want nested owner-execute rejection", err)
+	}
+}
+
+func TestSigningResignArchiveMemberModeUsesNonExecutableDOSDefault(t *testing.T) {
+	machoData := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	data := buildSigningResignZip(t, []signingResignZipEntry{{
+		name: "Payload/App.app/PlugIns/Service.xpc/Service", data: machoData,
+	}})
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.File) != 1 || reader.File[0].CreatorVersion>>8 != 0 {
+		t.Fatalf("test ZIP unexpectedly carries Unix mode metadata: %#v", reader.File)
+	}
+	mode, err := signingResignArchiveMemberMode(reader.File[0])
+	if err != nil {
+		t.Fatalf("signingResignArchiveMemberMode() error = %v", err)
+	}
+	if mode != 0o644 {
+		t.Fatalf("DOS-created nested executable default mode = %#o, want %#o", mode, 0o644)
 	}
 }
 

@@ -84,9 +84,14 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    manual remediation; claims are never rewritten automatically. The refusal
    contains only entitlement keys, entitlement values, and remediation text,
    so it is reported verbatim through the CLI instead of being reduced to a
-   closed stage/code message. Profile-class-required distribution claims
-   (currently `beta-reports-active`) are derived from the replacement
-   profile when the existing signature has no claim. Before
+   closed stage/code message. Profile-class-controlled claims
+   (`aps-environment`, `beta-reports-active`, and
+   `com.apple.developer.icloud-container-environment`) take the replacement
+   profile's class-authorized value when the existing signature already
+   claimed them. `beta-reports-active` is omitted for development and ad-hoc
+   replacements, and an App Store profile may derive it when the existing
+   signature has no claim. A class-controlled environment claim is never
+   granted if the existing signature did not already include it. Before
    writing the private entitlement documents, require existing concrete
    application-identifier claims to agree with one another and end in the
    exact target bundle identifier; the alternate
@@ -105,7 +110,11 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    IPA, validate the generated archive, and publish with no-replace atomic
    rooted output. The input is never rewritten. Preserve each validated
    regular-file permission mode (defaulting only when the ZIP omitted mode
-   metadata); unsafe group/world write modes are rejected. Preserve
+   metadata); unsafe group/world write modes are rejected. App-like target
+   executables and nested Mach-O scheduled for signing, including `.xpc` and
+   `.bundle` executables, must already have the owner-execute bit. DOS-created
+   archive members default to `0644` and are rejected rather than silently
+   gaining execute permission. Preserve
    the exact `SwiftSupport/iphoneos/*.dylib` layout byte-for-byte without
    treating those distribution-side runtime libraries as app code to re-sign.
    The `SwiftSupport` root may contain only the `iphoneos` directory, whose

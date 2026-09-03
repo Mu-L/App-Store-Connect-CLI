@@ -441,6 +441,9 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		if !ok {
 			return signingResignPreparedTree{}, fmt.Errorf("Mach-O code is not contained by an app-like target")
 		}
+		if err := validateSigningResignNestedExecutableMode(ctx, treeRoot, codePath); err != nil {
+			return signingResignPreparedTree{}, err
+		}
 		entitlements, err := readSigningResignEntitlements(ctx, codePath)
 		if err != nil {
 			return signingResignPreparedTree{}, fmt.Errorf("read nested code entitlements failed")
@@ -464,6 +467,35 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		prepared.CodePlans = append(prepared.CodePlans, signingResignCodePlan{Path: codePath, EntitlementsPath: entitlementsPath})
 	}
 	return prepared, nil
+}
+
+func validateSigningResignNestedExecutableMode(ctx context.Context, tree rootfs.Root, codePath string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(tree.Path(), codePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("nested executable is outside the staging tree")
+	}
+	file, err := tree.OpenFile(relative)
+	if err != nil {
+		return fmt.Errorf("inspect nested executable mode: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect nested executable mode: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("nested executable is not a regular file")
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		return fmt.Errorf("nested executable file mode is missing the owner-execute permission")
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 func isSigningResignPreservedExternalCodePath(treeRoot, codePath string) bool {
