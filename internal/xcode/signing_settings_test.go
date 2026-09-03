@@ -1187,6 +1187,44 @@ func TestSigningXCConfigOperationKeyPreservesHardLinkPathIntent(t *testing.T) {
 	}
 }
 
+func TestSigningXCConfigOperationKeyCoalescesParentSymlinkDirectoryEntry(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "Configs")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("Mkdir(Configs) error = %v", err)
+	}
+	canonicalPath := filepath.Join(realDir, "Shared.xcconfig")
+	if err := os.WriteFile(canonicalPath, []byte("CODE_SIGN_STYLE = Automatic\n"), 0o640); err != nil {
+		t.Fatalf("WriteFile(Shared.xcconfig) error = %v", err)
+	}
+	aliasDir := filepath.Join(root, "AliasDir")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	aliasPath := filepath.Join(aliasDir, "Shared.xcconfig")
+	canonicalInfo, err := os.Stat(canonicalPath)
+	if err != nil {
+		t.Fatalf("Stat(canonical) error = %v", err)
+	}
+	aliasInfo, err := os.Stat(aliasPath)
+	if err != nil {
+		t.Fatalf("Stat(alias) error = %v", err)
+	}
+	if !os.SameFile(canonicalInfo, aliasInfo) {
+		t.Fatal("parent-symlink alias did not resolve to the same file")
+	}
+	identities := map[string]string{
+		normalizeSigningLexicalPath(canonicalPath): "shared-identity",
+		normalizeSigningLexicalPath(aliasPath):     "shared-identity",
+	}
+	if signingXCConfigOperationKey(canonicalPath, identities) != signingXCConfigOperationKey(aliasPath, identities) {
+		t.Fatal("parent-symlink aliases of one directory entry must share an operation key")
+	}
+	if signingXCConfigPhysicalKey(canonicalPath, identities) != signingXCConfigPhysicalKey(aliasPath, identities) {
+		t.Fatal("parent-symlink aliases must retain one physical identity")
+	}
+}
+
 func TestResolveSigningSharedCandidatesKeepsProvenWindowsCaseDistinctFilesSeparate(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
@@ -1447,6 +1485,40 @@ func TestSigningPlanProtectsUnconditionalEntitlementWhenConditionalResolutionDiv
 	}
 }
 
+func TestSigningPlanProtectsComposedEntitlementAppendPath(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	composedPath := filepath.Join(projectRoot, "Base Suffix")
+	const existingEntitlements = "existing entitlement bytes\n"
+	if err := os.WriteFile(composedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(composed entitlements) error = %v", err)
+	}
+	attachSigningWidgetXCConfig(
+		t, project,
+		"CODE_SIGN_ENTITLEMENTS = Base\n"+
+			"CODE_SIGN_ENTITLEMENTS += Suffix\n"+
+			"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = Widget.entitlements\n",
+	)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: composedPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "aliases project input") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want composed entitlement append path rejected as an artifact alias", plan, err)
+	}
+	if got := mustReadVersionTestFile(t, composedPath); got != existingEntitlements {
+		t.Fatalf("composed entitlement input was overwritten during planning: %q", got)
+	}
+}
+
 func TestSigningPlanSkipsShadowedConditionalAfterProjectEntitlementBase(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	projectRoot := filepath.Dir(project)
@@ -1519,7 +1591,7 @@ func TestSigningXCConfigEntitlementCandidatesOmitProvenShadowedAssignments(t *te
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1543,7 +1615,7 @@ func TestSigningXCConfigEntitlementCandidatesSkipConditionalDefaultAfterDivergen
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1567,7 +1639,7 @@ func TestSigningXCConfigEntitlementCandidatesKeepConditionalValueBeforeSameSelec
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1591,7 +1663,7 @@ func TestSigningXCConfigEntitlementCandidatesKeepSameSelectorInheritedAssignment
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1640,7 +1712,7 @@ func TestSigningXCConfigEntitlementCandidatesUseInheritedBaseState(t *testing.T)
 	if !base.found {
 		t.Fatalf("inherited base = %#v, want a found project-level value", base)
 	}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(targetConfiguration, []string{path}, resolver, base)
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(targetConfiguration, []string{path}, resolver, base)
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1671,7 +1743,7 @@ func TestSigningXCConfigEntitlementCandidatesReplayRepeatedIncludesInOrder(t *te
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {rootPath, childPath}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{rootPath, childPath}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{rootPath, childPath}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1696,7 +1768,7 @@ func TestSigningXCConfigEntitlementCandidatesKeepOnlyFinalRepeatedSelectorAssign
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1720,7 +1792,7 @@ func TestSigningXCConfigEntitlementCandidatesRespectSelectorSpecificity(t *testi
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1741,7 +1813,7 @@ func TestSigningXCConfigEntitlementCandidatesNormalizeReorderedSelectors(t *test
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {path}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{path}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1796,7 +1868,7 @@ func TestSigningXCConfigEntitlementCandidatesKeepCaseDistinctPaths(t *testing.T)
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {upperPath, lowerPath}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{upperPath, lowerPath}, resolver, xcconfigResolvedValue{})
+	candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{upperPath, lowerPath}, resolver, xcconfigResolvedValue{})
 	if err != nil {
 		t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v", err)
 	}
@@ -1849,7 +1921,7 @@ func TestSigningXCConfigEntitlementCandidatesCoalesceCaseVariantSelfInclude(t *t
 			project := &structuredVersionProject{rootDir: root}
 			resolver := newSigningSettingResolver(project, map[string][]string{"widget": {rootPath}}, false, nil)
 			configuration := &versionConfiguration{id: "widget"}
-			candidates, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{rootPath}, resolver, xcconfigResolvedValue{})
+			candidates, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{rootPath}, resolver, xcconfigResolvedValue{})
 			if err != nil {
 				t.Fatalf("signingXCConfigEntitlementAssignmentCandidates() error = %v, want case-variant self-include to coalesce", err)
 			}
@@ -1906,7 +1978,7 @@ func TestSigningXCConfigEntitlementCandidatesRejectUncollectedPathBeforeProbes(t
 	project := &structuredVersionProject{rootDir: root}
 	resolver := newSigningSettingResolver(project, map[string][]string{"widget": {authorizedPath}}, false, nil)
 	configuration := &versionConfiguration{id: "widget"}
-	_, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{uncollectedPath}, resolver, xcconfigResolvedValue{})
+	_, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{uncollectedPath}, resolver, xcconfigResolvedValue{})
 	if err == nil {
 		t.Fatal("uncollected case-equivalent xcconfig unexpectedly accepted")
 	}
@@ -1965,7 +2037,7 @@ func TestSigningXCConfigEntitlementCandidatesDoNotReadIncludeCollectedForAnother
 		"other": {otherPath},
 	}, false, nil)
 	configuration := &versionConfiguration{id: "app"}
-	_, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{appPath}, resolver, xcconfigResolvedValue{})
+	_, _, err := signingXCConfigEntitlementAssignmentCandidates(configuration, []string{appPath}, resolver, xcconfigResolvedValue{})
 	if err == nil {
 		t.Fatal("cross-configuration include unexpectedly resolved")
 	}

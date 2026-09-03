@@ -332,3 +332,48 @@ func TestSetVersionRefusesXcodeprojParentSwapAfterValidation(t *testing.T) {
 		t.Fatalf("original project.pbxproj changed after parent swap: %q", after)
 	}
 }
+
+func TestSetVersionCoalescesInProjectParentSymlinkXCConfigAliases(t *testing.T) {
+	projectPath := writeStructuredVersionProject(t, true)
+	projectRoot := filepath.Dir(projectPath)
+	configsDir := filepath.Join(projectRoot, "Configs")
+	aliasDir := filepath.Join(projectRoot, "AliasDir")
+	if err := os.Symlink(configsDir, aliasDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	pbxprojPath := filepath.Join(projectPath, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	const aliasReference = "DDDDDDDDDDDDDDDDDDDDDDDD"
+	fileReference := "\t\t" + aliasReference + " /* Alias Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = AliasDir/Shared.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+marker, 1)
+	widgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	updatedWidgetConfiguration := "999999999999999999999995 /* Widget Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = " + aliasReference + "; buildSettings = {}; name = Debug; };"
+	if !strings.Contains(contents, widgetConfiguration) {
+		t.Fatal("project fixture is missing Widget Debug configuration")
+	}
+	contents = strings.Replace(contents, widgetConfiguration, updatedWidgetConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+
+	result, err := SetVersion(context.Background(), SetVersionOptions{
+		ProjectDir:  projectPath,
+		Version:     "2.0.0",
+		BuildNumber: "99",
+	})
+	if err != nil {
+		t.Fatalf("SetVersion() error = %v, want in-project parent-symlink aliases coalesced into one write", err)
+	}
+	if len(result.ChangedFiles) == 0 {
+		t.Fatalf("SetVersion() result = %#v, want changed files", result)
+	}
+	shared := mustReadVersionTestFile(t, filepath.Join(configsDir, "Shared.xcconfig"))
+	if !strings.Contains(shared, "MARKETING_VERSION = 2.0.0") || !strings.Contains(shared, "CURRENT_PROJECT_VERSION = 99") {
+		t.Fatalf("shared xcconfig = %q, want coalesced version update", shared)
+	}
+}

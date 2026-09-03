@@ -2010,16 +2010,31 @@ func signingXCConfigPhysicalKey(path string, fileIdentities map[string]string) s
 
 // signingXCConfigOperationKey is the path-preserving key used for plan files,
 // prepared writes, and receipts. A physical identity alone is insufficient:
-// hard-linked paths are distinct project operations and an atomic rename of
-// one must not silently satisfy or discard the other. Keep the normalized
-// lexical path alongside the identity so only the same requested path
-// coalesces; missing paths still retain their platform lexical key.
+// hard-linked paths are distinct directory entries, and an atomic rename of
+// one must not silently satisfy or discard the other. Parent-symlink aliases
+// such as Configs/Shared.xcconfig and AliasDir/Shared.xcconfig resolve to the
+// same directory entry; those must coalesce or the first rename changes the
+// inode and the second write fails with "source changed before commit".
 func signingXCConfigOperationKey(path string, fileIdentities map[string]string) string {
-	pathKey := signingXCConfigPathIntentKey(path)
+	entryKey := signingXCConfigDirectoryEntryKey(path)
 	if identity, ok := signingFileIdentity(path, fileIdentities); ok && identity != "" {
-		return "identity:" + identity + "\x00path:" + pathKey
+		return "identity:" + identity + "\x00entry:" + entryKey
 	}
-	return "path:" + pathKey
+	return "path:" + entryKey
+}
+
+// signingXCConfigDirectoryEntryKey identifies the directory entry that a
+// requested xcconfig path names. Intermediate directory symlinks are resolved
+// so in-project aliases of one parent share a key, while the final component
+// stays lexical so two hard links in the same directory remain distinct.
+func signingXCConfigDirectoryEntryKey(path string) string {
+	normalized := normalizeSigningLexicalPath(path)
+	parent := filepath.Dir(normalized)
+	base := filepath.Base(normalized)
+	if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+		parent = resolved
+	}
+	return signingXCConfigPathIntentKey(filepath.Join(parent, base))
 }
 
 func signingXCConfigPathIntentKey(path string) string {
@@ -2726,11 +2741,19 @@ func signingProjectInputPaths(
 				base = resolvedBase
 			}
 		}
-		candidates, err := signingXCConfigEntitlementAssignmentCandidates(configurationsByID[configurationID], files, resolver, base)
+		candidates, composed, err := signingXCConfigEntitlementAssignmentCandidates(configurationsByID[configurationID], files, resolver, base)
 		if err != nil {
 			return nil, externalEntitlementPaths, inputBlockers, err
 		}
 		entitlementCandidatesByConfiguration[configurationID] = candidates
+		configuration := configurationsByID[configurationID]
+		for _, value := range composed {
+			if err := appendResolvedEntitlements(configuration, value); err != nil {
+				if lexicalErr := appendLexicalEntitlementCandidate(value); lexicalErr != nil {
+					return nil, externalEntitlementPaths, inputBlockers, lexicalErr
+				}
+			}
+		}
 	}
 	knownConfigurationIDs := make(map[string]bool, len(project.configurations))
 	for _, configuration := range project.configurations {
@@ -2866,7 +2889,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 	files []string,
 	resolver *signingSettingResolver,
 	base xcconfigResolvedValue,
-) (map[string]map[int]bool, error) {
+) (map[string]map[int]bool, []string, error) {
 	type assignmentReference struct {
 		path        string
 		assignment  xcconfigAssignment
@@ -2879,7 +2902,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 	// an empty state so every target assignment remains protected.
 	hasExactValue := base.found
 	if len(files) == 0 {
-		return map[string]map[int]bool{}, nil
+		return map[string]map[int]bool{}, nil, nil
 	}
 	var observerErr error
 	observe := func(path string, assignment xcconfigAssignment) {
@@ -2951,7 +2974,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 		}
 		active = append(active, candidate)
 	}
-	_, _, err := resolver.resolveXCConfigSettingStateWithContext(
+	resolved, _, err := resolver.resolveXCConfigSettingStateWithContext(
 		configuration,
 		files[0],
 		"CODE_SIGN_ENTITLEMENTS",
@@ -2959,10 +2982,10 @@ func signingXCConfigEntitlementAssignmentCandidates(
 		base,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if observerErr != nil {
-		return nil, observerErr
+		return nil, nil, observerErr
 	}
 	candidates := make(map[string]map[int]bool)
 	for _, candidate := range active {
@@ -2972,7 +2995,46 @@ func signingXCConfigEntitlementAssignmentCandidates(
 		}
 		candidates[path][candidate.assignment.lineIndex] = true
 	}
-	return candidates, nil
+	composed := make([]string, 0)
+	if strings.TrimSpace(resolved.value) != "" {
+		composed = append(composed, resolved.value)
+	}
+	accumulated := map[string]string{}
+	if strings.TrimSpace(base.value) != "" {
+		accumulated["CODE_SIGN_ENTITLEMENTS"] = strings.TrimSpace(base.value)
+	}
+	for _, candidate := range active {
+		selector := candidate.selectorKey
+		value := strings.TrimSpace(candidate.assignment.value)
+		switch candidate.assignment.operator {
+		case "+=":
+			previous := accumulated[selector]
+			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
+				value = strings.ReplaceAll(value, "$(inherited)", previous)
+				value = strings.ReplaceAll(value, "${inherited}", previous)
+				accumulated[selector] = strings.TrimSpace(value)
+				break
+			}
+			accumulated[selector] = strings.TrimSpace(strings.TrimSpace(previous) + " " + value)
+		case "?=":
+			if _, ok := accumulated[selector]; !ok {
+				accumulated[selector] = value
+			}
+		default:
+			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
+				previous := accumulated[selector]
+				value = strings.ReplaceAll(value, "$(inherited)", previous)
+				value = strings.ReplaceAll(value, "${inherited}", previous)
+			}
+			accumulated[selector] = strings.TrimSpace(value)
+		}
+	}
+	for _, value := range accumulated {
+		if strings.TrimSpace(value) != "" {
+			composed = append(composed, value)
+		}
+	}
+	return candidates, composed, nil
 }
 
 func validateSigningXCConfigPath(project *structuredVersionProject, path string, allowExternal bool) error {
