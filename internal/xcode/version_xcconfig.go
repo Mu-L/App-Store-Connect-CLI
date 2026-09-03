@@ -62,7 +62,8 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 	document := xcconfigDocument{lines: lines}
 	inBlockComment := false
 
-	for index, line := range lines {
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
 		body := strings.TrimSuffix(line, "\n")
 		body = strings.TrimSuffix(body, "\r")
 		masked, nextInBlock := maskXCConfigComments(body, inBlockComment)
@@ -84,7 +85,18 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		key := masked[indices[4]:indices[5]]
 		operatorStart, operatorEnd := indices[8], indices[9]
 		valueStart, valueEnd := indices[12], indices[13]
-		value, quote, err := parseXCConfigValue(masked[valueStart:valueEnd])
+		joined := masked[valueStart:valueEnd]
+		endIndex := index
+		value, quote, err := parseXCConfigValue(joined)
+		for err != nil && xcconfigValueHasLineContinuation(joined) && endIndex+1 < len(lines) {
+			endIndex++
+			nextBody := strings.TrimSuffix(lines[endIndex], "\n")
+			nextBody = strings.TrimSuffix(nextBody, "\r")
+			nextMasked, nextBlock := maskXCConfigComments(nextBody, inBlockComment)
+			inBlockComment = nextBlock
+			joined = trimXCConfigLineContinuation(joined) + nextMasked
+			value, quote, err = parseXCConfigValue(joined)
+		}
 		if err != nil {
 			return xcconfigDocument{}, fmt.Errorf("xcconfig line %d: %w", index+1, err)
 		}
@@ -99,8 +111,9 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 			operatorEnd:   operatorEnd,
 			valueStart:    valueStart,
 			valueEnd:      valueEnd,
-			continued:     xcconfigValueHasLineContinuation(masked[valueStart:valueEnd]),
+			continued:     endIndex > index || xcconfigValueHasLineContinuation(masked[valueStart:valueEnd]),
 		})
+		index = endIndex
 	}
 
 	if inBlockComment {
@@ -116,6 +129,14 @@ func xcconfigValueHasLineContinuation(value string) bool {
 		backslashes++
 	}
 	return backslashes%2 == 1
+}
+
+func trimXCConfigLineContinuation(value string) string {
+	trimmed := strings.TrimRight(value, " \t")
+	if !xcconfigValueHasLineContinuation(trimmed) {
+		return value
+	}
+	return strings.TrimSuffix(trimmed, "\\")
 }
 
 func parseXCConfigValue(raw string) (string, string, error) {

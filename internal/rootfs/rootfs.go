@@ -1396,8 +1396,14 @@ func (r Root) writeFileIfSame(
 	// If a replacement appeared, leave it untouched and discard only the
 	// transaction's quarantined copy.
 	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
+		var closeErr error
+		if !quarantineClosed {
+			closeErr = quarantine.Close()
+			quarantineClosed = true
+		}
 		return nil, errors.Join(
 			fmt.Errorf("destination changed while preparing replacement"),
+			closeErr,
 			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -1455,16 +1461,23 @@ func (r Root) writeFileIfSame(
 	if !temporaryInfo.Mode().IsRegular() {
 		return nil, errors.Join(fmt.Errorf("staging file is not regular"), r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
-	// Keep the staged descriptor through publication and the immediate identity
-	// recheck where the platform permits it. Windows requires closing before
-	// rename, but the reopened destination descriptor still pins the installed
-	// inode before the directory entry is checked again.
-	if runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
-		if err := temporary.Close(); err != nil {
+	// Ordinary non-identity writes do not return a publication identity, so
+	// close the staging descriptor before publication. If that close fails,
+	// the quarantine can still be restored. The identity-returning path keeps
+	// the descriptor through publication on Unix; Windows still requires a
+	// pre-publication close for rename compatibility.
+	if !retainPublishedIdentity || runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+		if r.closeStagingFileForTest != nil {
+			temporaryClosed = true
+			if err := r.closeStagingFileForTest(temporary); err != nil {
+				return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+			}
+		} else if err := temporary.Close(); err != nil {
 			temporaryClosed = true
 			return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		} else {
+			temporaryClosed = true
 		}
-		temporaryClosed = true
 	}
 	if r.beforeConditionalPublishForTest != nil {
 		r.beforeConditionalPublishForTest(parent, base)
@@ -1739,9 +1752,7 @@ func (r Root) syncConditionalParentDirectory(parent *os.Root) error {
 		_ = directory.Close()
 		return fmt.Errorf("sync parent directory after conditional write: %w", err)
 	}
-	if err := directory.Close(); err != nil {
-		return fmt.Errorf("close parent directory after conditional write: %w", err)
-	}
+	_ = directory.Close()
 	return nil
 }
 
@@ -2228,9 +2239,7 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		_ = directory.Close()
 		return written, publishedInfo, fmt.Errorf("sync parent directory after publish: %w", err)
 	}
-	if err := directory.Close(); err != nil {
-		return written, publishedInfo, fmt.Errorf("close parent directory after durability sync: %w", err)
-	}
+	_ = directory.Close()
 	if err := closeStaging(); err != nil {
 		return written, publishedInfo, fmt.Errorf("close staged file after publication: %w", err)
 	}

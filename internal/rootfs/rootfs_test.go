@@ -1358,6 +1358,42 @@ func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t 
 	}
 }
 
+func TestWriteFileIfSameClosesStagingBeforePublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeErr := errors.New("injected staging close failure")
+	var closeCalls int
+	root.closeStagingFileForTest = func(file *os.File) error {
+		closeCalls++
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("destination during staging close: err = %v, want absent so quarantine can still restore", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close staging file in test seam: %v", err)
+		}
+		return closeErr
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("new"), 0o640, expected, []byte("old"), true)
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("WriteFileIfSame() error = %v, want staging close failure", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("staging close calls = %d, want 1", closeCalls)
+	}
+	if got := mustRead(t, path); got != "old" {
+		t.Fatalf("destination after staging close failure = %q, want restored original", got)
+	}
+}
+
 func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
@@ -1383,6 +1419,15 @@ func TestWriteFileIfSamePreservesReplacementAfterQuarantine(t *testing.T) {
 	}
 	if got := mustRead(t, filepath.Join(dir, "settings.xcconfig")); got != "replacement" {
 		t.Fatalf("replacement content = %q, want preserved replacement", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".asc-tmp-rollback-") {
+			t.Fatalf("quarantine leftover %q remained after discarding an open rollback handle", entry.Name())
+		}
 	}
 }
 

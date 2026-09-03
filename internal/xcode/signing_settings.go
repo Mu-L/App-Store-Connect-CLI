@@ -1709,7 +1709,7 @@ func (resolver *signingSettingResolver) expandDirectSettingWithContext(
 	stack map[string]bool,
 ) (string, string, error) {
 	if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
-		inherited, _, err := resolver.resolveLowerSettingWithContext(configuration, expansionConfiguration, setting)
+		inherited, err := resolver.resolveInheritedSettingValue(configuration, expansionConfiguration, setting, value, stack)
 		if err != nil {
 			return "", "", fmt.Errorf("resolve inherited %s: %w", setting, err)
 		}
@@ -1717,6 +1717,25 @@ func (resolver *signingSettingResolver) expandDirectSettingWithContext(
 		value = strings.ReplaceAll(value, "${inherited}", inherited)
 	}
 	return resolver.expandSettingReferences(expansionConfiguration, value, stack)
+}
+
+func (resolver *signingSettingResolver) resolveInheritedSettingValue(
+	configuration, expansionConfiguration *versionConfiguration,
+	setting, currentValue string,
+	stack map[string]bool,
+) (string, error) {
+	// Conditional PBX assignments such as CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]
+	// = $(inherited)Suffix must compose with the same object's unconditional
+	// value before falling through to xcconfig or project layers.
+	if raw, ok := configuration.buildSettings[setting].(string); ok && strings.TrimSpace(raw) != strings.TrimSpace(currentValue) {
+		expanded, _, err := resolver.expandDirectSettingWithContext(configuration, expansionConfiguration, setting, raw, stack)
+		if err != nil {
+			return "", err
+		}
+		return expanded, nil
+	}
+	inherited, _, err := resolver.resolveLowerSettingWithContext(configuration, expansionConfiguration, setting)
+	return inherited, err
 }
 
 func (resolver *signingSettingResolver) resolveLowerSettingWithContext(
@@ -2786,7 +2805,17 @@ func signingProjectInputPaths(
 				if !ok || (!strings.Contains(value, "$(") && !strings.Contains(value, "${")) {
 					continue
 				}
-				if err := appendResolvedEntitlements(configuration, value); err != nil {
+				expanded, _, err := resolver.expandDirectSettingWithContext(
+					projectCfg,
+					configuration,
+					"CODE_SIGN_ENTITLEMENTS",
+					value,
+					map[string]bool{"CODE_SIGN_ENTITLEMENTS": true},
+				)
+				if err == nil {
+					err = appendEntitlements(expanded)
+				}
+				if err != nil {
 					if lexicalErr := appendLexicalEntitlementCandidate(value); lexicalErr != nil {
 						return nil, externalEntitlementPaths, inputBlockers, lexicalErr
 					}
