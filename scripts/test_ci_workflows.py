@@ -278,6 +278,9 @@ def assert_optimized_workflow_text(path: Path, workflow: str, test_job: str) -> 
     for runner in ("macos-latest", "ubuntu-latest", "windows-latest"):
         assert f"runner: {runner}" in build_platforms, f"{path}: missing native build runner {runner}"
     assert "go test -short ./internal/screenshots" in build_platforms, f"{path}: missing Darwin-only tests"
+    assert "ASC_BYPASS_KEYCHAIN=1 go test -count=1 ./internal/screenshots" in build_platforms, (
+        f"{path}: missing Windows screenshot runtime tests"
+    )
     for runner in ("macos-latest", "windows-latest"):
         command = matrix_command_for_runner(build_platforms, runner)
         assert "ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs" in command, (

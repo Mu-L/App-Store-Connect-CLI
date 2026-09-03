@@ -83,6 +83,7 @@ func WebBundleIDCapabilitiesEnableCommand() *ffcli.Command {
 	capability := fs.String("capability", "", "Developer Portal capability ID (supported: PRIVATE_CLOUD_COMPUTE)")
 	confirm := fs.Bool("confirm", false, "Confirm enabling this Bundle ID capability")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -132,13 +133,16 @@ Authentication:
 			case resolvedCapability != "PRIVATE_CLOUD_COMPUTE":
 				return shared.UsageErrorf("unsupported Developer Portal capability %q (supported: PRIVATE_CLOUD_COMPUTE)", resolvedCapability)
 			}
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var result *webcore.DeveloperBundleIDCapabilityEnableResult
 			err = withWebSpinner("Enabling Developer Portal Bundle ID capability", func() error {
@@ -149,15 +153,16 @@ Authentication:
 				})
 				return enableErr
 			})
+			// Persist after the PATCH attempt so a later retry without
+			// --developer-team still targets the team that may have enabled
+			// the capability even when Apple's response body is unreadable.
+			persistDeveloperPortalSession(session)
 			if err != nil {
 				return withWebAuthHint(err, "web bundle-ids capabilities enable")
 			}
 			if result == nil {
 				return fmt.Errorf("web bundle-ids capabilities enable failed: missing enable result")
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
 
 			return shared.PrintOutputWithRenderers(
 				result,

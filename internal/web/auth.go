@@ -101,6 +101,7 @@ type AuthSession struct {
 	ProviderName     string
 	TeamID           string
 	UserEmail        string
+	DeveloperTeamID  string
 
 	// Continuation state needed after a 409 SRP completion response.
 	ServiceKey       string
@@ -162,12 +163,14 @@ type Client struct {
 	baseURL            string
 	developerPortalURL string
 
-	developerSessionMu sync.Mutex
-	developerCSRF      string
-	developerCSRFTS    string
-	developerTeamID    string
-	publicProviderID   string
-	providerName       string
+	developerSessionMu    sync.Mutex
+	developerCSRF         string
+	developerCSRFTS       string
+	developerTeamID       string
+	developerTeamSelector string
+	publicProviderID      string
+	providerName          string
+	session               *AuthSession
 
 	// Requests are intentionally throttled to reduce pressure on fragile, unofficial
 	// web-session endpoints and avoid bursty behavior against user accounts.
@@ -216,6 +219,11 @@ func (e *TwoFactorFinalizationError) Error() string {
 		return "session bootstrap after 2fa failed"
 	}
 	if e.Status > 0 {
+		if e.Err != nil {
+			// Name the failing stage: trust and session-info both bootstrap the
+			// session after an accepted code, and only the cause tells them apart.
+			return fmt.Sprintf("session bootstrap returned status %d: %v", e.Status, e.Err)
+		}
 		return fmt.Sprintf("session bootstrap returned status %d", e.Status)
 	}
 	if e.Err != nil {
@@ -487,13 +495,16 @@ func parseSigninInitResponse(data []byte) (*signinInitResponse, error) {
 
 // NewClient creates an internal web API client from an authenticated session.
 func NewClient(session *AuthSession) *Client {
-	return &Client{
+	client := &Client{
 		httpClient:         session.Client,
 		baseURL:            irisV1BaseURL,
 		publicProviderID:   strings.TrimSpace(session.PublicProviderID),
 		providerName:       strings.TrimSpace(session.ProviderName),
+		developerTeamID:    strings.TrimSpace(session.DeveloperTeamID),
+		session:            session,
 		minRequestInterval: resolveWebMinRequestInterval(),
 	}
+	return client
 }
 
 // Login performs Apple ID SRP authentication and returns a web session.
@@ -1454,7 +1465,15 @@ func finalizeTwoFactor(ctx context.Context, session *AuthSession) error {
 	}
 	logWebAuthHTTP("finalize_2fa_trust", req, resp, body, nil)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("2fa trust failed with status %d", resp.StatusCode)
+		// Apple consumed the submitted code before this request ran, so a
+		// failure here is a session bootstrap failure, not a verification
+		// failure. Carry the HTTP status the same way the session-info path
+		// does so a stale reused cookie jar is recognized and retried fresh
+		// instead of being reported as a wrong code.
+		return &TwoFactorFinalizationError{
+			Status: resp.StatusCode,
+			Err:    fmt.Errorf("2fa trust failed with status %d", resp.StatusCode),
+		}
 	}
 	_ = body
 

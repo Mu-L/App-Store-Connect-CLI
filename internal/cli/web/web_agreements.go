@@ -74,6 +74,7 @@ func WebAgreementsStatusCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web agreements status", flag.ExitOnError)
 
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlagsExperimental(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -103,12 +104,15 @@ Example:
 				return shared.UsageError("web agreements status does not accept positional arguments")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var result *asc.WebAgreementsStatusResult
 			err = withWebSpinner("Fetching Apple Developer Program agreement status", func() error {
@@ -122,9 +126,7 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web agreements status failed: missing status result")
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
+			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
@@ -139,6 +141,7 @@ func WebAgreementsDownloadCommand() *ffcli.Command {
 	out := fs.String("out", "", "[experimental] Destination file path for the agreement content")
 	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing file at --out")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlagsExperimental(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -196,12 +199,15 @@ Examples:
 				return fmt.Errorf("web agreements download failed: %w", err)
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var download *webcore.AgreementDownload
 			err = withWebSpinner("Downloading Apple Developer Program agreement", func() error {
@@ -215,13 +221,13 @@ Examples:
 			if download == nil {
 				return fmt.Errorf("web agreements download failed: missing download result")
 			}
+			// Persist before the local save so a later retry without
+			// --developer-team still targets the team that produced this download.
+			persistDeveloperPortalSession(session)
 
 			if err := destination.write(download.Body, *overwrite); err != nil {
 				return fmt.Errorf("web agreements download failed: agreement %q was downloaded but saving %q failed: %w", resolvedAgreementID, outPath, err)
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
 
 			return shared.PrintOutput(&asc.WebAgreementDownloadResult{
 				AgreementID:  download.AgreementID,
@@ -307,6 +313,7 @@ func WebAgreementsAcceptCommand() *ffcli.Command {
 	fs.Var(&agreementIDs, "agreement-id", "[experimental] Developer Portal agreement ID to accept (from `asc web agreements status`; repeatable)")
 	confirm := fs.Bool("confirm", false, "[experimental] Confirm accepting the agreements on behalf of the Account Holder")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlagsExperimental(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -351,12 +358,15 @@ Examples:
 				return shared.UsageError("--confirm is required")
 			}
 
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var accepted *asc.WebAgreementsAcceptResult
 			err = withWebSpinner("Accepting Apple Developer Program agreements", func() error {
@@ -366,6 +376,10 @@ Examples:
 				})
 				return acceptErr
 			})
+			// Persist after the accept attempt so a later status/retry without
+			// --developer-team still inspects the team that may have accepted,
+			// including malformed 2xx bodies that never produce a receipt.
+			persistDeveloperPortalSession(session)
 			if err != nil {
 				return withWebAuthHint(err, "web agreements accept")
 			}
@@ -396,9 +410,6 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("web agreements accept failed: %w", err)
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
 
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
