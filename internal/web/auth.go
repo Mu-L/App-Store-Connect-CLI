@@ -107,6 +107,12 @@ type AuthSession struct {
 	AppleIDSessionID string
 	SCNT             string
 
+	// cachedUpdatedAt is the UpdatedAt stamp of the cached entry this session was
+	// loaded from, zero for a freshly logged-in session. It lets a caller that
+	// proves the loaded jar unusable delete only that entry, leaving a
+	// replacement another process persisted in the meantime intact.
+	cachedUpdatedAt time.Time
+
 	// Prepared 2FA delivery state so callers can request code delivery before prompting.
 	twoFactorMethod        string
 	twoFactorPhoneID       int

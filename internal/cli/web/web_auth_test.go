@@ -2372,6 +2372,7 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 	origWebLoginWithClient := webLoginWithClientFn
 	origPersistWebSession := persistWebSessionFn
 	origDeleteWebSession := deleteWebSessionFn
+	origDeleteStaleWebSession := deleteStaleWebSessionFn
 	origExpiredWriter := sessionExpiredWriter
 	origStatusWriter := twoFactorStatusWriter
 	t.Cleanup(func() {
@@ -2388,6 +2389,7 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 		webLoginWithClientFn = origWebLoginWithClient
 		persistWebSessionFn = origPersistWebSession
 		deleteWebSessionFn = origDeleteWebSession
+		deleteStaleWebSessionFn = origDeleteStaleWebSession
 		sessionExpiredWriter = origExpiredWriter
 		twoFactorStatusWriter = origStatusWriter
 	})
@@ -2407,9 +2409,9 @@ func TestResolveSessionRetriesFreshLoginAfterStaleSessionBootstrap401(t *testing
 	persisted := 0
 	var deletedAppleIDs []string
 
-	deleteWebSessionFn = func(appleID string) error {
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
 		deletedAppleIDs = append(deletedAppleIDs, appleID)
-		return nil
+		return true, nil
 	}
 
 	tryResumeSessionFn = func(ctx context.Context, username string) (*webcore.AuthSession, bool, error) {
@@ -2636,6 +2638,7 @@ func restoreStaleSessionRetryHooks(t *testing.T) {
 	origWebLoginWithClient := webLoginWithClientFn
 	origPersistWebSession := persistWebSessionFn
 	origDeleteWebSession := deleteWebSessionFn
+	origDeleteStaleWebSession := deleteStaleWebSessionFn
 	origOpenTTY := openTTYFn
 	origIsTerminal := termIsTerminalFn
 	origExpiredWriter := sessionExpiredWriter
@@ -2655,6 +2658,7 @@ func restoreStaleSessionRetryHooks(t *testing.T) {
 		webLoginWithClientFn = origWebLoginWithClient
 		persistWebSessionFn = origPersistWebSession
 		deleteWebSessionFn = origDeleteWebSession
+		deleteStaleWebSessionFn = origDeleteStaleWebSession
 		openTTYFn = origOpenTTY
 		termIsTerminalFn = origIsTerminal
 		sessionExpiredWriter = origExpiredWriter
@@ -2688,9 +2692,13 @@ func restoreStaleSessionRetryHooks(t *testing.T) {
 		return &webcore.TwoFactorChallenge{Method: "trusted-device"}, nil
 	}
 	persistWebSessionFn = func(session *webcore.AuthSession) error { return nil }
-	deleteWebSessionFn = func(appleID string) error {
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
 		t.Fatalf("did not expect the cached session to be deleted for %q", appleID)
-		return nil
+		return true, nil
+	}
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
+		t.Fatalf("did not expect the cached session to be deleted for %q", appleID)
+		return false, nil
 	}
 }
 
@@ -2708,9 +2716,9 @@ func TestResolveSessionObtainsNewTwoFactorCodeForFreshRetryAfterStaleBootstrap(t
 	var deletedAppleIDs []string
 	commandCalls := 0
 
-	deleteWebSessionFn = func(appleID string) error {
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
 		deletedAppleIDs = append(deletedAppleIDs, appleID)
-		return nil
+		return true, nil
 	}
 
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
@@ -2797,7 +2805,7 @@ func TestResolveSessionWaitsForRotatedCommandCodeAfterStaleBootstrap(t *testing.
 	commandCalls := 0
 	var submittedCodes []string
 
-	deleteWebSessionFn = func(appleID string) error { return nil }
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) { return true, nil }
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
 	}
@@ -2868,7 +2876,7 @@ func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *te
 	commandCalls := 0
 	var submittedCodes []string
 
-	deleteWebSessionFn = func(appleID string) error { return nil }
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) { return true, nil }
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
 	}
@@ -2914,6 +2922,59 @@ func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *te
 	}
 	if commandCalls < 2 {
 		t.Fatalf("expected the command to be polled more than once before giving up, got %d", commandCalls)
+	}
+}
+
+// The discard has to be scoped to the jar this resolution actually loaded, so a
+// valid session another process persisted during 2FA survives. A preserved
+// entry is not a failure either, so it must not surface a warning.
+func TestResolveSessionScopesTheStaleDiscardToTheLoadedSession(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+
+	var warnings bytes.Buffer
+	sessionCacheWarningWriter = &warnings
+
+	cachedClient := &http.Client{}
+	cachedSession := &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	var discardedFor []*webcore.AuthSession
+	discardCalls := 0
+
+	deleteStaleWebSessionFn = func(appleID string, loaded *webcore.AuthSession) (bool, error) {
+		discardCalls++
+		discardedFor = append(discardedFor, loaded)
+		// Stand in for a concurrent process having replaced the entry.
+		return false, nil
+	}
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return cachedSession, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) { return "654321", nil }
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+
+	if _, _, err := resolveSession(context.Background(), "user@example.com", "", ""); err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if discardCalls != 1 {
+		t.Fatalf("expected exactly one scoped discard, got %d", discardCalls)
+	}
+	if discardedFor[0] != cachedSession {
+		t.Fatal("expected the discard to be scoped to the cached session this resolution loaded")
+	}
+	if got := warnings.String(); got != "" {
+		t.Fatalf("did not expect a warning when a newer cached session was preserved, got %q", got)
 	}
 }
 
@@ -3013,7 +3074,7 @@ func TestResolveSessionExplainsConsumedCodeBeforeThePromptedRetry(t *testing.T) 
 	promptCalls := 0
 	var submittedCodes []string
 
-	deleteWebSessionFn = func(appleID string) error { return nil }
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) { return true, nil }
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
 	}
@@ -3078,7 +3139,7 @@ func TestResolveSessionOmitsConsumedCodeNoticeWhenCommandSuppliesTheReplacement(
 	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
 	commandCalls := 0
 
-	deleteWebSessionFn = func(appleID string) error { return nil }
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) { return true, nil }
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
 	}
@@ -3129,7 +3190,7 @@ func TestResolveSessionBoundsBlockingCommandByRotationDeadlineAfterStaleBootstra
 	commandCalls := 0
 	var commandDeadlines []bool
 
-	deleteWebSessionFn = func(appleID string) error { return nil }
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) { return true, nil }
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
 		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
 	}
@@ -3205,9 +3266,9 @@ func TestResolveSessionDiscardsStaleSessionWhenFreshRetryFails(t *testing.T) {
 	freshAttempts := 0
 	var deletedAppleIDs []string
 
-	deleteWebSessionFn = func(appleID string) error {
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
 		deletedAppleIDs = append(deletedAppleIDs, appleID)
-		return nil
+		return true, nil
 	}
 
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
@@ -3265,9 +3326,9 @@ func TestResolveSessionFailsWhenConsumedTwoFactorCodeCannotBeReplaced(t *testing
 			staleSession := &webcore.AuthSession{}
 			var deletedAppleIDs []string
 
-			deleteWebSessionFn = func(appleID string) error {
+			deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
 				deletedAppleIDs = append(deletedAppleIDs, appleID)
-				return nil
+				return true, nil
 			}
 
 			if tt.ttyAvailable {
@@ -3340,9 +3401,9 @@ func TestResolveSessionRetriesFreshLoginAfterRequestDeadlineExpired(t *testing.T
 	freshAttempts := 0
 	deletedAppleIDs := 0
 
-	deleteWebSessionFn = func(appleID string) error {
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) {
 		deletedAppleIDs++
-		return nil
+		return true, nil
 	}
 
 	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {

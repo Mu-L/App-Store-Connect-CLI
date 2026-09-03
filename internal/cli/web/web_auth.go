@@ -63,6 +63,7 @@ var (
 	deleteStoredWebPasswordFn                = webcore.DeletePassword
 	deleteAllStoredWebPasswordsFn            = webcore.DeleteAllPasswords
 	deleteWebSessionFn                       = webcore.DeleteSession
+	deleteStaleWebSessionFn                  = webcore.DeleteSessionIfMatches
 	deleteAllWebSessionsFn                   = webcore.DeleteAllSessions
 	selectWebProviderFn                      = webcore.SelectProvider
 	resolveSessionFn               any       = resolveSession
@@ -810,12 +811,15 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	// on disk for the next invocation to reload, consume another code against,
 	// and fail identically. The result is memoized so one resolution deletes the
 	// cached entry at most once and every caller reports the same outcome.
+	// Deleting by Apple ID alone would take out a valid session that a
+	// concurrent process persisted while this one worked through 2FA, so the
+	// discard is scoped to the entry this resolution actually loaded.
 	discardProvenStaleSession := func(targetAppleID string) error {
 		if staleSessionDiscarded {
 			return staleSessionDiscardErr
 		}
 		staleSessionDiscarded = true
-		staleSessionDiscardErr = deleteWebSessionFn(strings.TrimSpace(targetAppleID))
+		_, staleSessionDiscardErr = deleteStaleWebSessionFn(strings.TrimSpace(targetAppleID), expiredCachedSession)
 		return staleSessionDiscardErr
 	}
 	consumedTwoFactorCodeError := func(loginErr, discardErr error) error {
