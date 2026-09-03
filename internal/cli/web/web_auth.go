@@ -773,6 +773,15 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 	// the failed attempt burned before the retry asks for a replacement.
 	markTwoFactorCodeConsumed := func() {
 		twoFactorCodeConsumed = true
+		// The retry raises a brand-new Apple challenge, so a replacement code has
+		// just been delivered. Only a prompted operator has to be told which one
+		// to type: the burned digits are still on screen from the first prompt,
+		// and retyping them earns nothing but an opaque rejection. A configured
+		// command fetches its own replacement and needs no notice. This is
+		// reached only once a replacement is known to be obtainable.
+		if command == "" && twoFactorStatusWriter != nil {
+			_, _ = fmt.Fprintln(twoFactorStatusWriter, "The previous verification code was consumed by the expired session. Enter the new code Apple just sent, not the previous one.")
+		}
 		if consumedTwoFactorCode != "" {
 			return
 		}

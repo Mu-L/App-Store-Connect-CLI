@@ -2917,6 +2917,125 @@ func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *te
 	}
 }
 
+// The fresh retry raises a brand-new Apple challenge, so the code the failed
+// attempt consumed is dead and a replacement has just been delivered. Recovery
+// through the existing prompt is the point of the retry for an interactive
+// operator, but they have to be told which code to type: the consumed digits
+// are still on screen from the first prompt, and retyping them only earns an
+// opaque rejection.
+func TestResolveSessionExplainsConsumedCodeBeforeThePromptedRetry(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+
+	var status bytes.Buffer
+	twoFactorStatusWriter = &status
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	promptCalls := 0
+	var submittedCodes []string
+
+	deleteWebSessionFn = func(appleID string) error { return nil }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		t.Fatal("did not expect a 2fa code command when none is configured")
+		return "", nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		promptCalls++
+		if promptCalls == 1 {
+			return "111111", nil
+		}
+		return "222222", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		submittedCodes = append(submittedCodes, code)
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+
+	session, source, err := resolveSession(context.Background(), "user@example.com", "", "")
+	if err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if session != freshSession || source != "fresh" {
+		t.Fatalf("expected the interactive retry to recover, got source %q", source)
+	}
+	if promptCalls != 2 {
+		t.Fatalf("expected the retry to collect the replacement code Apple just sent, got %d prompts", promptCalls)
+	}
+	if len(submittedCodes) != 2 || submittedCodes[1] != "222222" {
+		t.Fatalf("expected the replacement code on the fresh retry, got %v", submittedCodes)
+	}
+	notice := status.String()
+	if !strings.Contains(notice, "consumed") {
+		t.Fatalf("expected the operator to be told the previous code was consumed, got %q", notice)
+	}
+	if !strings.Contains(notice, "new code") {
+		t.Fatalf("expected the operator to be pointed at the new code, got %q", notice)
+	}
+}
+
+// The notice is for the operator at the prompt. A configured code command
+// fetches the replacement itself, so it must not be told to type anything.
+func TestResolveSessionOmitsConsumedCodeNoticeWhenCommandSuppliesTheReplacement(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+	t.Setenv(webTwoFactorCodeCommandEnv, "print-code")
+
+	var status bytes.Buffer
+	twoFactorStatusWriter = &status
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	commandCalls := 0
+
+	deleteWebSessionFn = func(appleID string) error { return nil }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt when a code command is configured")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		commandCalls++
+		if commandCalls == 1 {
+			return "111111", nil
+		}
+		return "222222", nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+
+	if _, _, err := resolveSession(context.Background(), "user@example.com", "", ""); err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if notice := status.String(); strings.Contains(notice, "consumed") {
+		t.Fatalf("did not expect a type-the-new-code notice for a command-sourced retry, got %q", notice)
+	}
+}
+
 // The rotation budget has to reach the command itself. A 2FA code command runs
 // with its own generous timeout (60s by default, more under an ASC_TIMEOUT
 // override), so a slow or blocking one would otherwise stretch the retry far
