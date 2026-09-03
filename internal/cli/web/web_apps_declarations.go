@@ -85,10 +85,8 @@ func WebAppsDeclarationsListCommand() *ffcli.Command {
 				return shared.UsageError("--app is required (or set ASC_APP_ID)")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			accountID, client, requestCtx, cancel, err := resolveWebComplianceClient(ctx, authFlags, "web apps declarations list")
 			defer cancel()
-
-			accountID, client, err := resolveWebComplianceClient(requestCtx, authFlags, "web apps declarations list")
 			if err != nil {
 				return err
 			}
@@ -147,10 +145,8 @@ Examples:
 				return shared.UsageError("--app is required (or set ASC_APP_ID)")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			accountID, client, requestCtx, cancel, err := resolveWebComplianceClient(ctx, authFlags, "web apps medical-device view")
 			defer cancel()
-
-			accountID, client, err := resolveWebComplianceClient(requestCtx, authFlags, "web apps medical-device view")
 			if err != nil {
 				return err
 			}
@@ -207,16 +203,17 @@ func webMedicalDeviceDeclarationStateOutput(state *webcore.MedicalDeviceDeclarat
 }
 
 // resolveWebComplianceClient resolves the web session and account id shared by
-// the compliance-form commands.
-func resolveWebComplianceClient(ctx context.Context, authFlags webSessionFlags, command string) (string, *webcore.Client, error) {
-	session, err := resolveWebSessionForCommand(ctx, authFlags)
+// the compliance-form commands. Authentication uses the parent context; the
+// returned request context starts only after login finishes.
+func resolveWebComplianceClient(ctx context.Context, authFlags webSessionFlags, command string) (string, *webcore.Client, context.Context, context.CancelFunc, error) {
+	session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 	if err != nil {
-		return "", nil, err
+		return "", nil, requestCtx, cancel, err
 	}
 
 	accountID := strings.TrimSpace(session.PublicProviderID)
 	if accountID == "" {
-		return "", nil, fmt.Errorf("%s failed: web session is missing public provider/account id (run 'asc web auth login')", command)
+		return "", nil, requestCtx, cancel, fmt.Errorf("%s failed: web session is missing public provider/account id (run 'asc web auth login')", command)
 	}
-	return accountID, newWebClientFn(session), nil
+	return accountID, newWebClientFn(session), requestCtx, cancel, nil
 }

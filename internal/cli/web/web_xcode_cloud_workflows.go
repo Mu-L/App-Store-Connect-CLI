@@ -143,10 +143,8 @@ Examples:
 				return shared.MissingRequiredUsageError("--product-id")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, sessionFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, sessionFlags)
 			if err != nil {
 				return err
 			}
@@ -228,10 +226,8 @@ Examples:
 				return shared.MissingRequiredUsageError("--workflow-id")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, sessionFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, sessionFlags)
 			if err != nil {
 				return err
 			}
@@ -321,10 +317,8 @@ Examples:
 				wfID = newUUID()
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, sessionFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, sessionFlags)
 			if err != nil {
 				return err
 			}
@@ -429,10 +423,8 @@ Examples:
 				return fmt.Errorf("xcode-cloud workflows edit: %w", err)
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, sessionFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, sessionFlags)
 			if err != nil {
 				return err
 			}
@@ -601,10 +593,8 @@ func executeWorkflowToggle(
 	disabled bool,
 	errorPrefix string,
 ) (*CIWorkflowToggleResult, error) {
-	requestCtx, cancel := shared.ContextWithTimeout(ctx)
+	session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, sessionFlags)
 	defer cancel()
-
-	session, err := resolveWebSessionForCommand(requestCtx, sessionFlags)
 	if err != nil {
 		return nil, err
 	}

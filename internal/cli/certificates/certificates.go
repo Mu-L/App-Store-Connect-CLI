@@ -32,6 +32,7 @@ Examples:
   asc certificates list
   asc certificates list --certificate-type IOS_DISTRIBUTION
   asc certificates view --id "CERT_ID" --include passTypeId
+  asc certificates export --certificate "./push/push.cer" --private-key "./push/push.key" --password-file "./secrets/push.p12.password" --p12-out "./push/push.p12"
   asc certificates create --certificate-type IOS_DISTRIBUTION --csr "./cert.csr"
   asc certificates create --certificate-type PASS_TYPE_ID --pass-type-id "PASS_TYPE_ID" --csr "./pass.csr"
   asc certificates update --id "CERT_ID" --activated true
@@ -44,6 +45,7 @@ Examples:
 			CertificatesListCommand(),
 			CertificatesGetCommand(),
 			CertificatesCSRCommand(),
+			CertificatesExportCommand(),
 			CertificatesCreateCommand(),
 			CertificatesUpdateCommand(),
 			CertificatesRevokeCommand(),
