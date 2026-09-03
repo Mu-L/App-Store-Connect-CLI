@@ -1312,6 +1312,50 @@ func TestRemoveFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.
 	}
 }
 
+func TestRemoveFileIfSameRejectsQuarantineContentChangeBeforeRemoval(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	const content = "receipt"
+	const mutated = "mutated-by-concurrent-writer"
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var quarantinePath string
+	root.beforeConditionalQuarantineRemovalForTest = func(parent *os.Root, quarantineName string) {
+		quarantinePath = filepath.Join(dir, quarantineName)
+		file, openErr := parent.OpenFile(quarantineName, os.O_WRONLY|os.O_TRUNC, 0)
+		if openErr != nil {
+			t.Fatalf("mutate quarantined entry in race hook: %v", openErr)
+		}
+		if _, writeErr := file.Write([]byte(mutated)); writeErr != nil {
+			_ = file.Close()
+			t.Fatalf("write mutated quarantine contents: %v", writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatalf("close mutated quarantine: %v", closeErr)
+		}
+	}
+
+	err = root.RemoveFileIfSame("receipt.json", expected, []byte(content))
+	if err == nil || !strings.Contains(err.Error(), "contents changed") {
+		t.Fatalf("RemoveFileIfSame() error = %v, want contents-changed uncertainty", err)
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("destination after content race = %v, want absent", statErr)
+	}
+	if quarantinePath == "" {
+		t.Fatal("race hook did not capture quarantine path")
+	}
+	if got := mustRead(t, quarantinePath); got != mutated {
+		t.Fatalf("quarantine leftover = %q, want mutated contents preserved", got)
+	}
+}
+
 func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

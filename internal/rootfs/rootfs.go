@@ -1756,6 +1756,21 @@ func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, e
 		_ = file.Close()
 		return fmt.Errorf("quarantined file identity changed before removal")
 	}
+	if live != nil {
+		if _, err := live.Seek(0, io.SeekStart); err != nil {
+			_ = live.Close()
+			return fmt.Errorf("rewind live quarantined file before removal: %w", err)
+		}
+		contents, err := io.ReadAll(io.LimitReader(live, int64(len(expectedData))+1))
+		if err != nil {
+			_ = live.Close()
+			return fmt.Errorf("re-read live quarantined file before removal: %w", err)
+		}
+		if !bytes.Equal(contents, expectedData) {
+			_ = live.Close()
+			return fmt.Errorf("live quarantined file contents changed before removal")
+		}
+	}
 	if err := file.Close(); err != nil {
 		return err
 	}
