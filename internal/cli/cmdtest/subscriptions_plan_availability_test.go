@@ -688,3 +688,85 @@ func TestSubscriptionsPricingPlanAvailabilityShowWarnsWhenIncludedTerritoriesAre
 		t.Fatalf("expected Apple's unmodified envelope on stdout, got %q", stdout)
 	}
 }
+
+func TestSubscriptionsPricingPlanAvailabilitySetAcceptsTerritoriesAfterSpacedBoolean(t *testing.T) {
+	setupAuth(t)
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Path == "/v1/subscriptions/8000000001/planAvailabilities" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":[{"type":"subscriptionPlanAvailabilities","id":"plan-upfront","attributes":{"planType":"UPFRONT","availableInNewTerritories":false}}]}`)
+		case req.URL.Path == "/v1/subscriptionPlanAvailabilities/plan-upfront/relationships/availableTerritories" && req.Method == http.MethodGet:
+			return jsonResponse(http.StatusOK, `{"data":[{"type":"territories","id":"USA"}],"links":{"next":""}}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "plan-availability", "set",
+			"--subscription-id", "8000000001",
+			"--plan-type", "UPFRONT",
+			"--available-in-new-territories", "false",
+			"--territories", "USA",
+			"--confirm",
+			"--output", "json",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+	if runErr != nil {
+		t.Fatalf("run error: %v; stderr=%q stdout=%q", runErr, stderr, stdout)
+	}
+
+	var got asc.SubscriptionPlanAvailabilitySetResult
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("expected valid JSON receipt, got parse error: %v; stdout=%q", err, stdout)
+	}
+	if got.Changed {
+		t.Fatalf("expected a no-op for the current USA set, got %#v", got)
+	}
+}
+
+func TestSubscriptionsPricingMonthlyCommitmentListTableOmitsTerritoriesColumn(t *testing.T) {
+	setupAuth(t)
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v1/subscriptions/8000000001/planAvailabilities" {
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+			return nil, nil
+		}
+		return jsonResponse(http.StatusOK, `{"data":[{"type":"subscriptionPlanAvailabilities","id":"plan-monthly","attributes":{"planType":"MONTHLY","availableInNewTerritories":false}}]}`)
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "monthly-commitment", "list",
+			"--subscription-id", "8000000001",
+			"--output", "table",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+	if runErr != nil {
+		t.Fatalf("run error: %v; stderr=%q stdout=%q", runErr, stderr, stdout)
+	}
+	if strings.Count(stdout, "Territories") != 1 || !strings.Contains(stdout, "Available In New Territories") {
+		t.Fatalf("monthly-commitment list table should keep the original three columns, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "plan-monthly") {
+		t.Fatalf("expected the plan ID in the table, got %q", stdout)
+	}
+}

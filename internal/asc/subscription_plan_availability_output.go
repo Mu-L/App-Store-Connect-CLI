@@ -7,6 +7,19 @@ import (
 )
 
 func subscriptionPlanAvailabilitiesRows(resp *SubscriptionPlanAvailabilitiesResponse) ([]string, [][]string) {
+	headers := []string{"ID", "Plan Type", "Available In New Territories"}
+	rows := make([][]string, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		rows = append(rows, []string{
+			item.ID,
+			string(item.Attributes.PlanType),
+			formatOptionalSubscriptionBool(item.Attributes.AvailableInNewTerritories),
+		})
+	}
+	return headers, rows
+}
+
+func subscriptionPlanAvailabilityShowRows(resp *SubscriptionPlanAvailabilitiesResponse) ([]string, [][]string) {
 	headers := []string{"ID", "Plan Type", "Available In New Territories", "Territories"}
 	rows := make([][]string, 0, len(resp.Data))
 	for _, item := range resp.Data {
@@ -19,6 +32,18 @@ func subscriptionPlanAvailabilitiesRows(resp *SubscriptionPlanAvailabilitiesResp
 		})
 	}
 	return headers, rows
+}
+
+// PrintSubscriptionPlanAvailabilityShowTable renders plan-availability show as a table.
+func PrintSubscriptionPlanAvailabilityShowTable(resp *SubscriptionPlanAvailabilitiesResponse) error {
+	headers, rows := subscriptionPlanAvailabilityShowRows(resp)
+	return renderTable(headers, rows)
+}
+
+// PrintSubscriptionPlanAvailabilityShowMarkdown renders plan-availability show as Markdown.
+func PrintSubscriptionPlanAvailabilityShowMarkdown(resp *SubscriptionPlanAvailabilitiesResponse) error {
+	headers, rows := subscriptionPlanAvailabilityShowRows(resp)
+	return renderMarkdown(headers, rows)
 }
 
 // SubscriptionPlanAvailabilityIncludedTerritories extracts included available
@@ -48,13 +73,21 @@ func SubscriptionPlanAvailabilityIncludedTerritories(raw json.RawMessage) (ids [
 }
 
 func formatPlanAvailabilityShowTerritoryCell(ids []string, total int, totalKnown bool) string {
-	cell := formatSubscriptionPlanAvailabilityTerritoryCell(ids)
+	displayed := ids
+	omitted := 0
+	if len(displayed) > subscriptionPlanAvailabilityTerritoryCellLimit {
+		omitted = len(displayed) - subscriptionPlanAvailabilityTerritoryCellLimit
+		displayed = displayed[:subscriptionPlanAvailabilityTerritoryCellLimit]
+	}
 	if totalKnown && total > len(ids) {
-		remainder := total - len(ids)
+		omitted += total - len(ids)
+	}
+	cell := strings.Join(displayed, ",")
+	if omitted > 0 {
 		if cell == "" {
-			return fmt.Sprintf("(+%d more)", remainder)
+			return fmt.Sprintf("(+%d more)", omitted)
 		}
-		return fmt.Sprintf("%s (+%d more)", cell, remainder)
+		return fmt.Sprintf("%s (+%d more)", cell, omitted)
 	}
 	return cell
 }

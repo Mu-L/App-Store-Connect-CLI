@@ -2,6 +2,7 @@ package asc
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -78,11 +79,53 @@ func TestSubscriptionPlanAvailabilitiesRowsIncludesTerritories(t *testing.T) {
 		}},
 	}
 
-	headers, rows := subscriptionPlanAvailabilitiesRows(resp)
+	headers, rows := subscriptionPlanAvailabilityShowRows(resp)
 	if len(headers) != 4 || headers[3] != "Territories" {
 		t.Fatalf("expected a Territories column, got %v", headers)
 	}
 	if len(rows) != 1 || !strings.Contains(rows[0][3], "USA") || !strings.Contains(rows[0][3], "+174 more") {
 		t.Fatalf("expected included territories plus the paging remainder, got %v", rows)
+	}
+	if strings.Count(rows[0][3], "more") != 1 {
+		t.Fatalf("expected a single remainder suffix, got %q", rows[0][3])
+	}
+}
+
+func TestSubscriptionPlanAvailabilitiesRowsOmitTerritoriesColumn(t *testing.T) {
+	resp := &SubscriptionPlanAvailabilitiesResponse{
+		Data: []Resource[SubscriptionPlanAvailabilityAttributes]{{
+			ID: "plan-monthly",
+			Attributes: SubscriptionPlanAvailabilityAttributes{
+				PlanType: SubscriptionPlanTypeMonthly,
+			},
+		}},
+	}
+
+	headers, rows := subscriptionPlanAvailabilitiesRows(resp)
+	if len(headers) != 3 {
+		t.Fatalf("expected the shared list renderer to keep three columns, got %v", headers)
+	}
+	for _, header := range headers {
+		if header == "Territories" {
+			t.Fatalf("shared list renderer should not expose Territories, got %v", headers)
+		}
+	}
+	if len(rows) != 1 || rows[0][0] != "plan-monthly" {
+		t.Fatalf("unexpected list rows: %v", rows)
+	}
+}
+
+func TestFormatPlanAvailabilityShowTerritoryCellUsesOneSuffix(t *testing.T) {
+	ids := make([]string, 0, 50)
+	for i := 0; i < 50; i++ {
+		ids = append(ids, fmt.Sprintf("T%02d", i))
+	}
+
+	cell := formatPlanAvailabilityShowTerritoryCell(ids, 175, true)
+	if strings.Count(cell, "more") != 1 {
+		t.Fatalf("expected one remainder suffix, got %q", cell)
+	}
+	if !strings.HasSuffix(cell, "(+155 more)") {
+		t.Fatalf("expected 175-20 omitted territories, got %q", cell)
 	}
 }

@@ -100,7 +100,13 @@ Examples:
 			}
 			warnTruncatedPlanAvailabilityTerritories(resp)
 
-			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
+			return shared.PrintOutputWithRenderers(
+				resp,
+				*output.Output,
+				*output.Pretty,
+				func() error { return asc.PrintSubscriptionPlanAvailabilityShowTable(resp) },
+				func() error { return asc.PrintSubscriptionPlanAvailabilityShowMarkdown(resp) },
+			)
 		},
 	}
 }
@@ -157,7 +163,7 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
-			if !flagWasProvided(fs, "territories") {
+			if !territories.Provided() {
 				return shared.UsageError("--territories is required")
 			}
 			territoryIDs, err := shared.NormalizeASCTerritoryCSV(territories.String())
