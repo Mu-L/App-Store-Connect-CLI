@@ -1651,8 +1651,11 @@ func TestWriteFileIfSameRestoresOriginalWhenUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("restored mode = %o, want 640", got)
+	if got := info.Mode().Perm(); got != expected.Mode().Perm() {
+		t.Fatalf("restored mode = %o, want original %o", got, expected.Mode().Perm())
+	}
+	if runtime.GOOS != "windows" && expected.Mode().Perm() != 0o640 {
+		t.Fatalf("original mode = %o, want 640", expected.Mode().Perm())
 	}
 }
 
