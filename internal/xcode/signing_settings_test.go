@@ -1339,6 +1339,10 @@ func TestSigningPlanRejectsDuplicateProjectConfigurationNames(t *testing.T) {
 }
 
 func TestPrepareSigningOperationsUsesWindowsXCConfigIdentity(t *testing.T) {
+	// The Windows path semantics under test are simulated through runtimeGOOS,
+	// but the commit below publishes through the strict identity path, which
+	// fails closed before publication on a real Windows host.
+	requireStrictSigningPlatform(t)
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
 	t.Cleanup(func() { runtimeGOOS = previousOS })
