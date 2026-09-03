@@ -1072,7 +1072,6 @@ func inspectSigningCandidate(
 		if len(assignmentFiles) > 0 && setting.value != nil {
 			candidate.mode = "xcconfig"
 			candidate.paths = append(candidate.paths, assignmentFiles...)
-			candidate.noOp = true
 		}
 		candidate.noOp = true
 		return candidate, "", ""
