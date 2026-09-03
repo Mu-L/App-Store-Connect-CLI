@@ -57,6 +57,10 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
 - Revoke and `--individual` create still need a live web-session endpoint capture.
 
+## Web-session review submissions (iris)
+
+- `GET /iris/v1/reviewSubmissions/{id}/items` rejects `include=appStoreVersionExperimentV2` with HTTP 400 `PARAMETER_ERROR.INVALID` even though the public OpenAPI snapshot lists that relationship. Verified live 2026-09-03. `asc web review show` omits it from the items include and keeps the iris-accepted names, including `inAppPurchaseVersion`, `subscriptionVersion`, and `subscriptionGroupVersion`.
+
 ## TestFlight Distribution
 
 - `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.

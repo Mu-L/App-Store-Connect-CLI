@@ -106,6 +106,59 @@ func TestListReviewRejectionsRetainsIncludedContext(t *testing.T) {
 	}
 }
 
+func TestListReviewSubmissionItemsOmitsRejectedExperimentV2Include(t *testing.T) {
+	fixture := handlertest.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/reviewSubmissions/sub-1/items" {
+			fixture.Respond(w, "unexpected path: %s", r.URL.Path)
+			return
+		}
+		include := r.URL.Query().Get("include")
+		tokens := map[string]bool{}
+		for _, token := range strings.Split(include, ",") {
+			tokens[strings.TrimSpace(token)] = true
+		}
+		// iris GET /reviewSubmissions/{id}/items rejects this name with
+		// PARAMETER_ERROR.INVALID (verified live 2026-09-03) even though the
+		// public OpenAPI lists it.
+		if tokens["appStoreVersionExperimentV2"] {
+			fixture.Respond(w, "include must not contain appStoreVersionExperimentV2 (iris rejects it): %q", include)
+			return
+		}
+		for _, want := range []string{
+			"appStoreVersion",
+			"appCustomProductPageVersion",
+			"appStoreVersionExperiment",
+			"appEvent",
+			"backgroundAssetVersion",
+			"gameCenterAchievementVersion",
+			"gameCenterActivityVersion",
+			"gameCenterChallengeVersion",
+			"gameCenterLeaderboardSetVersion",
+			"gameCenterLeaderboardVersion",
+			"inAppPurchaseVersion",
+			"subscriptionVersion",
+			"subscriptionGroupVersion",
+		} {
+			if !tokens[want] {
+				fixture.Respond(w, "missing include %s in %q", want, include)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	items, err := testWebClient(server).ListReviewSubmissionItems(context.Background(), "sub-1")
+	if err != nil {
+		t.Fatalf("ListReviewSubmissionItems() error = %v", err)
+	}
+	if items == nil {
+		t.Fatal("expected empty items slice, got nil")
+	}
+}
+
 func TestListReviewSubmissionItemsRetainsIncludedContext(t *testing.T) {
 	fixture := handlertest.New(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +168,6 @@ func TestListReviewSubmissionItemsRetainsIncludedContext(t *testing.T) {
 		}
 		include := r.URL.Query().Get("include")
 		for _, want := range []string{
-			"appStoreVersionExperimentV2",
 			"inAppPurchaseVersion",
 			"subscriptionVersion",
 			"subscriptionGroupVersion",
