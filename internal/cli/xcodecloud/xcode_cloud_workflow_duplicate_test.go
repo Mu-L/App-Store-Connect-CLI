@@ -196,3 +196,20 @@ func TestBuildCiWorkflowDuplicatePayloadRejectsIncompleteSource(t *testing.T) {
 		})
 	}
 }
+
+func TestXcodeCloudWorkflowsDuplicateHelpDisclosesPrivateAPIGaps(t *testing.T) {
+	help := XcodeCloudWorkflowsDuplicateCommand().LongHelp
+	for _, want := range []string{
+		"clean setting",
+		"TestFlight post-actions",
+		"workflow environment variables",
+		"asc web xcode-cloud env-vars",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("LongHelp missing %q:\n%s", want, help)
+		}
+	}
+	if strings.Contains(help, "same start conditions, actions, environment,") {
+		t.Fatalf("LongHelp still claims to copy a generic environment:\n%s", help)
+	}
+}

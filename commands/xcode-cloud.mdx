@@ -139,9 +139,10 @@ asc xcode-cloud workflows delete --id "WORKFLOW_ID" --confirm
 `GET /v1/ciWorkflows/{id}?include=product,repository,xcodeVersion,macOsVersion` and
 creates the copy with `POST /v1/ciWorkflows` in the same product, repository, Xcode
 version, and macOS version. The copy is created disabled and unlocked so it can be
-reviewed and edited before it starts building. TestFlight post-actions are not part of
-the public workflow schema, so they are not copied; configure those with
-`asc web xcode-cloud workflows edit`.
+reviewed and edited before it starts building. TestFlight post-actions and workflow
+environment variables are not part of the public workflow schema, so they are not
+copied; configure those with `asc web xcode-cloud workflows edit` and
+`asc web xcode-cloud env-vars`.
 
 ### xcode-cloud build-runs
 

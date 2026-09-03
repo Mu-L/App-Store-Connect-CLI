@@ -231,12 +231,13 @@ func XcodeCloudWorkflowsDuplicateCommand() *ffcli.Command {
 		LongHelp: `Duplicate a workflow under a new name.
 
 Reads the source workflow, then creates a new workflow in the same product with the
-same start conditions, actions, environment, Xcode version, macOS version, and
+same start conditions, actions, clean setting, Xcode version, macOS version, and
 repository. The copy is created disabled so it cannot start builds before it is
 reviewed, and unlocked so it can be edited; pass --enabled to create it enabled.
 
-TestFlight post-actions are not part of the public workflow schema, so they are not
-copied.
+TestFlight post-actions and workflow environment variables are not part of the public
+workflow schema, so they are not copied. Configure those with
+asc web xcode-cloud workflows edit and asc web xcode-cloud env-vars.
 
 Examples:
   asc xcode-cloud workflows duplicate --id "WORKFLOW_ID" --name "Nightly"

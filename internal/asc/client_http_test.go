@@ -12737,6 +12737,13 @@ func TestCreateCiWorkflowRawPreservesDisabledState(t *testing.T) {
 	if err := json.Unmarshal(got, &decoded); err != nil {
 		t.Fatalf("decode raw create response: %v", err)
 	}
+	var enabled *bool
+	if err := json.Unmarshal(decoded.Data.Attributes["isEnabled"], &enabled); err != nil {
+		t.Fatalf("decode isEnabled: %v", err)
+	}
+	if enabled == nil || *enabled {
+		t.Fatalf("expected isEnabled=false, got %s", decoded.Data.Attributes["isEnabled"])
+	}
 	for _, key := range []string{"isEnabled", "unknownFutureField"} {
 		if _, ok := decoded.Data.Attributes[key]; !ok {
 			t.Fatalf("expected attribute %q to survive the raw create response, got %v", key, decoded.Data.Attributes)
