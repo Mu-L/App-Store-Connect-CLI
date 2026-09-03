@@ -78,6 +78,12 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
 - Revoke and `--individual` create still need a live web-session endpoint capture.
 
+## Web app availability (iris)
+
+- `GET /iris/v1/apps/{id}/appAvailabilityV2` returns `availableInNewTerritories` and a links-only `relationships.territoryAvailabilities`. It does not include `availableTerritories.data`. Adding `?include=availableTerritories&limit[availableTerritories]=200` returns 400 `PARAMETER_ERROR.INVALID`.
+- The readable source is the iris v2 related collection: `GET /iris/v2/appAvailabilities/{id}/territoryAvailabilities?include=territory&limit=200`. Follow `links.next`. `filter[available]=true` is rejected with 400 `PARAMETER_ERROR.ILLEGAL`; filter client-side on `attributes.available`.
+- `asc web apps delete` uses this collection for the "removed from sale in all territories" preflight. The public API counterpart is `/v2/appAvailabilities/{id}/territoryAvailabilities`.
+
 ## Web-session Resolution Center
 
 - Resolution Center has no official App Store Connect API surface; the OpenAPI snapshot contains no `resolutionCenter*` or `reviewRejection*` path. Every reader below is a web-session (`/iris/v1`) call and needs Apple ID auth, not an API key.
