@@ -322,6 +322,17 @@ Examples:
 				return err
 			}
 			certificateValue = canonicalCertificateType
+			// APPLE_PAY, APPLE_PAY_MERCHANT_IDENTITY, APPLE_PAY_PSP_IDENTITY, and
+			// APPLE_PAY_RSA are valid CertificateType values, but Apple requires a
+			// merchantId relationship that this command cannot send. Reject them here,
+			// before --generate-csr writes a private key and CSR for a request App Store
+			// Connect will refuse.
+			if strings.HasPrefix(certificateValue, "APPLE_PAY") {
+				return shared.UsageErrorf(
+					"--certificate-type %s needs a merchant ID relationship that asc certificates create does not support yet; inspect existing Apple Pay certificates with 'asc merchant-ids certificates list --merchant-id MERCHANT_ID' and create new ones in the Apple Developer portal",
+					certificateValue,
+				)
+			}
 			passTypeIDValue := strings.TrimSpace(*passTypeID)
 			isPassTypeCertificate := certificateValue == "PASS_TYPE_ID" || certificateValue == "PASS_TYPE_ID_WITH_NFC"
 			if isPassTypeCertificate && passTypeIDValue == "" {
