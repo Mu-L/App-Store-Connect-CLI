@@ -230,6 +230,41 @@ func TestDeclarationFromRemoteDataUsagesEmptyDefaultsNotCollected(t *testing.T) 
 	}
 }
 
+func TestDeclarationFromRemoteDataUsagesKeepsNotCollectedProtection(t *testing.T) {
+	usages := []webcore.AppDataUsage{
+		{
+			ID:             "u1",
+			DataProtection: dataProtectionNotCollected,
+		},
+	}
+
+	declaration := declarationFromRemoteDataUsages(usages)
+	if declaration.SchemaVersion != privacySchemaVersion {
+		t.Fatalf("expected schemaVersion=%d, got %d", privacySchemaVersion, declaration.SchemaVersion)
+	}
+	if len(declaration.DataUsages) != 1 {
+		t.Fatalf("expected one data usage, got %#v", declaration.DataUsages)
+	}
+	got := declaration.DataUsages[0]
+	if !reflect.DeepEqual(got.DataProtections, []string{dataProtectionNotCollected}) {
+		t.Fatalf("expected DATA_NOT_COLLECTED to remain representable, got %#v", got)
+	}
+	if got.Category != "" || len(got.Purposes) != 0 {
+		t.Fatalf("expected DATA_NOT_COLLECTED declaration with empty category/purposes, got %#v", got)
+	}
+	if count := countUnrepresentableRemoteUsages(usages); count != 0 {
+		t.Fatalf("expected unrepresentableCount=0 for DATA_NOT_COLLECTED, got %d", count)
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal usage: %v", err)
+	}
+	if string(raw) != `{"dataProtections":["DATA_NOT_COLLECTED"]}` {
+		t.Fatalf("expected canonical not-collected JSON without empty category/purposes, got %s", raw)
+	}
+}
+
 func TestDeclarationFromRemoteDataUsagesMalformedOnlyPreservesUnrepresentable(t *testing.T) {
 	declaration := declarationFromRemoteDataUsages([]webcore.AppDataUsage{
 		{
@@ -1444,6 +1479,100 @@ func TestWebPrivacyPullPreservesMalformedUsagesAlongsideValidOnes(t *testing.T) 
 	}
 	if !containsPrivacyProtection(got.DataProtections, dataProtectionLinked) || !containsPrivacyProtection(got.DataProtections, dataProtectionUnknown) {
 		t.Fatalf("expected valid and opaque protections, got %#v", got.DataProtections)
+	}
+}
+
+func TestWebPrivacyPullNotCollectedRoundTripsThroughPlan(t *testing.T) {
+	fixture := handlertest.New(t)
+	outPath := filepath.Join(t.TempDir(), "privacy.json")
+	notCollectedUsages := `{
+		"data": [{
+			"id": "u1",
+			"type": "appDataUsages",
+			"relationships": {
+				"dataProtection": {"data": {"type":"appDataUsageDataProtections","id":"DATA_NOT_COLLECTED"}}
+			}
+		}]
+	}`
+	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
+			return privacyJSONResponse(req, notCollectedUsages), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsagePublishState":
+			return privacyJSONResponse(req, `{
+				"data": {
+					"id": "publish-state-1",
+					"type": "appDataUsagesPublishState",
+					"attributes": {"published": true}
+				}
+			}`), nil
+		default:
+			return fixture.Response("unexpected request: %s %s", req.Method, req.URL.Path), nil
+		}
+	})
+
+	pullCmd := WebPrivacyPullCommand()
+	if err := pullCmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--out", outPath, "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := pullCmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("pull exec error: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, stdout, stderr)
+
+	var payload struct {
+		UnrepresentableCount int `json:"unrepresentableCount"`
+		Declaration          privacyDeclarationFile
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("failed to parse pull stdout JSON: %v\nstdout=%s", err, stdout)
+	}
+	if payload.UnrepresentableCount != 0 {
+		t.Fatalf("expected unrepresentableCount=0 for DATA_NOT_COLLECTED, got %d", payload.UnrepresentableCount)
+	}
+	if len(payload.Declaration.DataUsages) != 1 {
+		t.Fatalf("expected one pulled usage, got %#v", payload.Declaration.DataUsages)
+	}
+	if !reflect.DeepEqual(payload.Declaration.DataUsages[0].DataProtections, []string{dataProtectionNotCollected}) {
+		t.Fatalf("expected pulled DATA_NOT_COLLECTED, got %#v", payload.Declaration.DataUsages[0])
+	}
+
+	fileData, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read --out file: %v", err)
+	}
+	var written privacyDeclarationFile
+	if err := json.Unmarshal(fileData, &written); err != nil {
+		t.Fatalf("parse --out file: %v\n%s", err, fileData)
+	}
+	if _, err := declarationToTupleSet(written); err != nil {
+		t.Fatalf("pulled file failed plan validator: %v\n%s", err, fileData)
+	}
+	if strings.Contains(string(fileData), `"category"`) || strings.Contains(string(fileData), `"purposes"`) {
+		t.Fatalf("expected canonical not-collected file without empty category/purposes keys:\n%s", fileData)
+	}
+
+	planCmd := WebPrivacyPlanCommand()
+	if err := planCmd.FlagSet.Parse([]string{"--app", privacyTestAppID, "--file", outPath, "--output", "json"}); err != nil {
+		t.Fatalf("plan parse error: %v", err)
+	}
+
+	planStdout, planStderr := captureWebCommandOutput(t, func() {
+		if err := planCmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("plan exec error: %v", err)
+		}
+	})
+	assertNoPrivacySecrets(t, planStdout, planStderr)
+
+	var plan privacyPlanOutput
+	if err := json.Unmarshal([]byte(planStdout), &plan); err != nil {
+		t.Fatalf("failed to parse plan stdout JSON: %v\nstdout=%s", err, planStdout)
+	}
+	if len(plan.Adds) != 0 || len(plan.Deletes) != 0 || len(plan.Updates) != 0 {
+		t.Fatalf("expected empty pull->plan diff, got adds=%#v deletes=%#v updates=%#v", plan.Adds, plan.Deletes, plan.Updates)
 	}
 }
 
