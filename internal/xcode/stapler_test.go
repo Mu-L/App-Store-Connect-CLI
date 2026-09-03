@@ -340,6 +340,47 @@ func TestStapleWithVerifierDoesNotMarkStartFailureAsPartialMutation(t *testing.T
 	})
 }
 
+func TestStaplerPreservesStartFailureWhenContextCancelsDuringFormatting(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	previousCommandContext := commandContextFn
+	commandContextFn = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "stapler" {
+			return exec.CommandContext(ctx, filepath.Join(t.TempDir(), "missing-stapler"), args...)
+		}
+		return previousCommandContext(ctx, name, args...)
+	}
+	t.Cleanup(func() { commandContextFn = previousCommandContext })
+
+	// The start failure is followed by a cancellation observed while formatting
+	// that failure.
+	ctx := newStaplerCancelAfterContextChecks(1)
+	result, err := Staple(ctx, target, nil)
+	if result != nil {
+		t.Fatalf("Staple() result = %#v, want nil after child start failure", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Staple() error = %v, want context cancellation", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationStaple) {
+		t.Fatalf("Staple() error = %T %v, want preserved staple start failure", err, err)
+	}
+	if commandErr.ExitCode != -1 {
+		t.Fatalf("Staple() command error = %#v, want no process exit status", commandErr)
+	}
+	if !isStaplerOperationNotStarted(err) {
+		t.Fatalf("Staple() error = %T %v, want not-started marker", err, err)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+	})
+}
+
 func TestStapleWithVerifierMarksCancellationBeforeFollowUpValidation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1814,6 +1855,41 @@ func waitForStaplerCommand(t *testing.T, logPath, prefix string) {
 
 type staplerDeadlineTestContext struct {
 	done chan struct{}
+}
+
+type staplerCancelAfterContextChecks struct {
+	cancelOn int
+	checks   int
+	done     chan struct{}
+	closed   bool
+}
+
+func newStaplerCancelAfterContextChecks(cancelOn int) *staplerCancelAfterContextChecks {
+	return &staplerCancelAfterContextChecks{cancelOn: cancelOn, done: make(chan struct{})}
+}
+
+func (ctx *staplerCancelAfterContextChecks) Deadline() (time.Time, bool) {
+	return time.Time{}, false
+}
+
+func (ctx *staplerCancelAfterContextChecks) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *staplerCancelAfterContextChecks) Err() error {
+	ctx.checks++
+	if ctx.checks >= ctx.cancelOn {
+		if !ctx.closed {
+			close(ctx.done)
+			ctx.closed = true
+		}
+		return context.Canceled
+	}
+	return nil
+}
+
+func (ctx *staplerCancelAfterContextChecks) Value(any) any {
+	return nil
 }
 
 func newStaplerDeadlineTestContext() *staplerDeadlineTestContext {

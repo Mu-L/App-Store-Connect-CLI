@@ -407,6 +407,29 @@ type staplerOperationNotStartedError struct {
 	err error
 }
 
+// staplerOperationStartError retains a concrete failure from cmd.Start. The
+// contextOnly bit distinguishes a pre-canceled command from an operational
+// start failure that raced with cancellation while its diagnostic was being
+// formatted.
+type staplerOperationStartError struct {
+	err         error
+	contextOnly bool
+}
+
+func (e *staplerOperationStartError) Error() string {
+	if e == nil || e.err == nil {
+		return "stapler operation start failed"
+	}
+	return e.err.Error()
+}
+
+func (e *staplerOperationStartError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 func (e *staplerOperationNotStartedError) Error() string {
 	return "stapler operation did not start"
 }
@@ -486,6 +509,12 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if !started {
+			var startErr *staplerOperationStartError
+			if errors.As(err, &startErr) && !startErr.contextOnly {
+				return &staplerOperationNotStartedError{
+					err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
+				}
+			}
 			return ctxErr
 		}
 		if staplerHasProcessExitStatus(err) {
@@ -533,7 +562,21 @@ func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, pat
 	cmd.Stderr = outputWindow
 	cmd.WaitDelay = xcodeCommandPipeWaitDelay
 	if err := cmd.Start(); err != nil {
-		return false, formatCommandOutputError(ctx, err, outputWindow, string(operation), "xcrun stapler", true)
+		// A start failure can race with cancellation before the formatter reads
+		// the context. Preserve the concrete failure when that happens; a
+		// command that was already canceled before Start remains context-only.
+		contextErr := ctx.Err()
+		contextOnly := contextErr != nil && errors.Is(err, contextErr)
+		// Format against a non-canceling view even when the first context check
+		// succeeds. Cancellation can arrive in the next instruction, and the
+		// formatter otherwise replaces the concrete Start error with ctx.Err().
+		formatted := formatCommandOutputError(context.WithoutCancel(ctx), err, outputWindow, string(operation), "xcrun stapler", true)
+		if !contextOnly {
+			if lateContextErr := ctx.Err(); lateContextErr != nil {
+				formatted = errors.Join(formatted, lateContextErr)
+			}
+		}
+		return false, &staplerOperationStartError{err: formatted, contextOnly: contextOnly}
 	}
 	if afterStaplerCommandStartFn != nil {
 		afterStaplerCommandStartFn(cmd)
