@@ -120,8 +120,11 @@ func SubscriptionsPricingPlanAvailabilitySetCommand() *ffcli.Command {
 	appID := addSubscriptionLookupAppFlag(fs)
 	planType := fs.String("plan-type", "", "Billing plan: MONTHLY or UPFRONT")
 	territories := shared.BindOnceCSVFlag(fs, "territories", "Complete desired territory list, comma-separated")
-	availableInNew := fs.Bool("available-in-new-territories", false, "Make the plan available in new territories automatically; UPFRONT only")
-	confirm := fs.Bool("confirm", false, "Confirm replacing the plan's territory availability")
+	lastBool := &lastVisitedBoolFlag{}
+	availableInNewFlag := bindVisitedBoolFlag(fs, lastBool, "available-in-new-territories", "Make the plan available in new territories automatically; UPFRONT only")
+	confirmFlag := bindVisitedBoolFlag(fs, lastBool, "confirm", "Confirm replacing the plan's territory availability")
+	availableInNew := &availableInNewFlag.value
+	confirm := &confirmFlag.value
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -149,7 +152,7 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := rejectAmbiguousTrailingConfirm(fs, args); err != nil {
+			if err := rejectAmbiguousTrailingConfirm(args, lastBool.name); err != nil {
 				return err
 			}
 			if err := shared.RecoverBoolFlagTailArgs(fs, args, availableInNew); err != nil {
@@ -397,8 +400,47 @@ func formatTerritoryList(territoryIDs []string) string {
 	return strings.Join(territoryIDs, ",")
 }
 
-func rejectAmbiguousTrailingConfirm(fs *flag.FlagSet, args []string) error {
-	if len(args) == 0 || !flagWasProvided(fs, "confirm") {
+type lastVisitedBoolFlag struct {
+	name string
+}
+
+type visitedBoolFlag struct {
+	value bool
+	name  string
+	last  *lastVisitedBoolFlag
+}
+
+func (f *visitedBoolFlag) Set(value string) error {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		return err
+	}
+	f.value = parsed
+	if f.last != nil {
+		f.last.name = f.name
+	}
+	return nil
+}
+
+func (f *visitedBoolFlag) String() string {
+	if f == nil {
+		return "false"
+	}
+	return strconv.FormatBool(f.value)
+}
+
+func (f *visitedBoolFlag) IsBoolFlag() bool {
+	return true
+}
+
+func bindVisitedBoolFlag(fs *flag.FlagSet, last *lastVisitedBoolFlag, name, usage string) *visitedBoolFlag {
+	value := &visitedBoolFlag{name: name, last: last}
+	fs.Var(value, name, usage)
+	return value
+}
+
+func rejectAmbiguousTrailingConfirm(args []string, lastBoolName string) error {
+	if len(args) == 0 || lastBoolName != "confirm" {
 		return nil
 	}
 	token := strings.TrimSpace(args[0])
