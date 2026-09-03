@@ -7,9 +7,22 @@ import (
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
 var errBetaTesterNotFound = errors.New("beta tester not found")
+
+// usageErrorFromValidation turns a validation failure raised by a parsing
+// helper into a usage error so the command exits 2, preserving both the
+// diagnostic the helper attached and the command-path rewrites the command
+// tree installed on ctx.
+func usageErrorFromValidation(ctx context.Context, format string, err error) error {
+	usageErr := shared.UsageErrorfCtx(ctx, format, err)
+	if diagnostic, ok := shared.DiagnosticFromError(err); ok {
+		return shared.WithDiagnostic(usageErr, diagnostic.Code, diagnostic.Parameter)
+	}
+	return usageErr
+}
 
 func resolveBetaGroupID(ctx context.Context, client *asc.Client, appID, group string) (string, error) {
 	ids, err := resolveBetaGroupIDs(ctx, client, appID, group)
