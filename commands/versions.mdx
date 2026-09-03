@@ -226,7 +226,7 @@ asc versions update --version-id "VERSION_ID" --downloadable true
 asc versions update --version-id "VERSION_ID" --downloadable false --confirm
 ```
 
-Read the current value with `asc versions list --output json` or `asc versions view --output json`. Apple omits `downloadable` for versions that never carried the setting, so an absent key means Apple did not report the attribute.
+Read the current value with `asc versions list --app "APP_ID" --output json` or `asc versions view --version-id "VERSION_ID" --output json`. Apple omits `downloadable` for versions that never carried the setting, so an absent key means Apple did not report the attribute.
 
 **Response:**
 

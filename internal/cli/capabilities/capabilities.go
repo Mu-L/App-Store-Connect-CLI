@@ -327,7 +327,7 @@ func capabilityRows() []Capability {
 			Status:     statusCLISupported,
 			Commands:   []string{"asc versions list --paginate --output json", "asc versions view --output json", "asc versions update --downloadable"},
 			Notes:      []string{"App Store Connect's Last-Compatible Version Settings screen is the nullable downloadable attribute on appStoreVersions. Public versions JSON preserves it when Apple returns it; the default table omits the field. asc versions update --downloadable writes it, and --downloadable false requires --confirm."},
-			NextAction: "Read with asc versions list/view --output json, and write with asc versions update --downloadable.",
+			NextAction: "Read with asc versions list --app APP_ID --output json or asc versions view --version-id VERSION_ID --output json, and write with asc versions update --version-id VERSION_ID --downloadable true|false.",
 		},
 		{
 			Area:       "app-management",

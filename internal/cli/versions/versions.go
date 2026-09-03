@@ -643,9 +643,9 @@ availability. Setting it to false makes a previously released version
 unavailable for download on older operating systems and devices, which is not
 reversible from every state, so that direction requires --confirm.
 
-Read the current value with asc versions list --output json or
-asc versions view --output json; Apple omits the attribute for versions that
-never carried the setting.
+Read the current value with asc versions list --app APP_ID --output json or
+asc versions view --version-id VERSION_ID --output json; Apple omits the
+attribute for versions that never carried the setting.
 
 Examples:
   asc versions update --version-id "VERSION_ID" --copyright "2026 My Company"
