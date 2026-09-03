@@ -62,7 +62,8 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 	document := xcconfigDocument{lines: lines}
 	inBlockComment := false
 
-	for index, line := range lines {
+	for index := 0; index < len(lines); index++ {
+		line := lines[index]
 		body := strings.TrimSuffix(line, "\n")
 		body = strings.TrimSuffix(body, "\r")
 		masked, nextInBlock := maskXCConfigComments(body, inBlockComment)
@@ -84,7 +85,18 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		key := masked[indices[4]:indices[5]]
 		operatorStart, operatorEnd := indices[8], indices[9]
 		valueStart, valueEnd := indices[12], indices[13]
-		value, quote, err := parseXCConfigValue(body[valueStart:valueEnd])
+		joined := body[valueStart:valueEnd]
+		endIndex := index
+		logical, _ := maskXCConfigComments(joined, false)
+		value, quote, err := parseXCConfigValue(logical)
+		for err != nil && xcconfigValueHasLineContinuation(joined) && endIndex+1 < len(lines) {
+			endIndex++
+			nextBody := strings.TrimSuffix(lines[endIndex], "\n")
+			nextBody = strings.TrimSuffix(nextBody, "\r")
+			joined = trimXCConfigLineContinuation(joined) + nextBody
+			logical, _ = maskXCConfigComments(joined, false)
+			value, quote, err = parseXCConfigValue(logical)
+		}
 		if err != nil {
 			return xcconfigDocument{}, fmt.Errorf("xcconfig line %d: %w", index+1, err)
 		}
@@ -99,8 +111,9 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 			operatorEnd:   operatorEnd,
 			valueStart:    valueStart,
 			valueEnd:      valueEnd,
-			continued:     xcconfigValueHasLineContinuation(masked[valueStart:valueEnd]),
+			continued:     endIndex > index || xcconfigValueHasLineContinuation(masked[valueStart:valueEnd]),
 		})
+		index = endIndex
 	}
 
 	if inBlockComment {
@@ -118,15 +131,59 @@ func xcconfigValueHasLineContinuation(value string) bool {
 	return backslashes%2 == 1
 }
 
+func trimXCConfigLineContinuation(value string) string {
+	trimmed := strings.TrimRight(value, " \t")
+	if !xcconfigValueHasLineContinuation(trimmed) {
+		return value
+	}
+	return strings.TrimSuffix(trimmed, "\\")
+}
+
 func parseXCConfigValue(raw string) (string, string, error) {
 	value := strings.TrimSpace(raw)
 	if err := validateXCConfigValueQuotes(value); err != nil {
 		return "", "", err
 	}
 	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-		return value[1 : len(value)-1], string(value[0]), nil
+		decoded, err := decodeXCConfigQuotedValue(value[1:len(value)-1], value[0])
+		if err != nil {
+			return "", "", err
+		}
+		return decoded, string(value[0]), nil
 	}
 	return value, "", nil
+}
+
+// decodeXCConfigQuotedValue reverses the escaping emitted by
+// quoteXCConfigValue. Backslashes are significant only inside a quoted value:
+// a doubled backslash represents one literal backslash, and a backslash before
+// the matching delimiter represents that delimiter. Unquoted values retain
+// their existing literal backslashes and continuation behavior.
+func decodeXCConfigQuotedValue(value string, quote byte) (string, error) {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); index++ {
+		if value[index] != '\\' {
+			decoded.WriteByte(value[index])
+			continue
+		}
+		if index+1 >= len(value) {
+			return "", fmt.Errorf("dangling escape in quoted xcconfig value")
+		}
+		next := value[index+1]
+		if next != '\\' && next != quote {
+			// Version and signing parsers share this decoder. Preserve
+			// generic escapes such as `\ ` so an unrelated assignment cannot
+			// abort the whole document.
+			decoded.WriteByte('\\')
+			decoded.WriteByte(next)
+			index++
+			continue
+		}
+		decoded.WriteByte(next)
+		index++
+	}
+	return decoded.String(), nil
 }
 
 func validateXCConfigValueQuotes(value string) error {
@@ -268,7 +325,7 @@ func collectXCConfigFiles(root string) ([]string, error) {
 // into one traversal key.
 func collectStableXCConfigFiles(root string) ([]string, error) {
 	var identify func(string) (os.FileInfo, error)
-	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
+	if xcconfigUsesIdentityTraversal() {
 		identify = os.Stat
 	}
 	return collectXCConfigFilesWithHooksAndIdentity(root, os.ReadFile, nil, nil, nil, identify)
@@ -309,6 +366,24 @@ func collectXCConfigFilesWithHooksAndIdentity(
 	onPath func(string),
 	onError func(string, error),
 	identify func(string) (os.FileInfo, error),
+) ([]string, error) {
+	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(root, read, authorize, onPath, onError, identify, nil)
+}
+
+// collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing is the
+// instrumentable collector used by signing plan generation. onOptionalMissing
+// receives each lexically resolved optional include whose target is absent.
+// The callback runs after the authorization check and before the missing target
+// is ignored, so callers can persist an absence assertion without granting
+// access to an untrusted path.
+func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
+	root string,
+	read func(string) ([]byte, error),
+	authorize func(string) error,
+	onPath func(string),
+	onError func(string, error),
+	identify func(string) (os.FileInfo, error),
+	onOptionalMissing func(string),
 ) ([]string, error) {
 	seen := make(map[string]bool)
 	type collectedIdentity struct {
@@ -441,6 +516,9 @@ func collectXCConfigFilesWithHooksAndIdentity(
 			childErr, missingTarget := visit(includePath, nextStack)
 			if childErr != nil {
 				if include.optional && missingTarget {
+					if onOptionalMissing != nil {
+						onOptionalMissing(includePath)
+					}
 					continue
 				}
 				includeErrors = append(includeErrors, childErr)
@@ -485,11 +563,11 @@ func resolveXCConfigSetting(root, setting string) (xcconfigResolvedValue, error)
 
 func resolveXCConfigSettingWithBase(root, setting string, base xcconfigResolvedValue) (xcconfigResolvedValue, error) {
 	var identify func(string) (os.FileInfo, error)
-	if runtimeGOOS == "windows" || runtimeGOOS == "darwin" {
-		// Stable version commands intentionally retain ordinary filesystem
-		// behavior, including selected symlinks. os.Stat supplies the identity
-		// needed only to disambiguate case-variant paths on filesystems whose
-		// directory semantics are not uniform.
+	if xcconfigUsesIdentityTraversal() {
+		// Identity-aware traversal coalesces case-variant aliases on
+		// case-insensitive volumes, including Linux vfat/exfat/ntfs mounts.
+		// os.Stat supplies the identity; case-semantics checks keep genuinely
+		// distinct files separate.
 		identify = os.Stat
 	}
 	return resolveXCConfigSettingWithBaseReaderAndIdentity(root, setting, base, os.ReadFile, os.Stat, identify)
@@ -511,8 +589,8 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, error) {
-	resolved, conditional, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(
-		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify,
+	resolved, conditional, err := resolveXCConfigSettingStateWithReaderAndIdentity(
+		root, setting, base, read, stat, identify, nil,
 	)
 	if err != nil {
 		return xcconfigResolvedValue{}, err
@@ -544,6 +622,30 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	return resolved, nil
 }
 
+// xcconfigAssignmentObserver receives each matching assignment in the same
+// include/event order used by the resolver, including assignments that the
+// resolver later skips because a lower or earlier value wins. Security-
+// sensitive callers use this to retain provenance without implementing a
+// second include walker or authorization path.
+type xcconfigAssignmentObserver func(path string, assignment xcconfigAssignment)
+
+// resolveXCConfigSettingStateWithReaderAndIdentity exposes the raw traversal
+// state to narrow provenance consumers. Unlike the public resolution wrapper,
+// it does not convert conditional-only or divergent assignments into a
+// resolution error; operational read/parse/include failures still propagate.
+func resolveXCConfigSettingStateWithReaderAndIdentity(
+	root, setting string,
+	base xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
+	identify func(string) (os.FileInfo, error),
+	observe xcconfigAssignmentObserver,
+) (xcconfigResolvedValue, bool, error) {
+	return resolveXCConfigSettingRecursiveWithReaderAndIdentity(
+		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify, observe,
+	)
+}
+
 type xcconfigResolutionPath struct {
 	path string
 	info os.FileInfo
@@ -558,6 +660,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 	read func(string) ([]byte, error),
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
+	observe xcconfigAssignmentObserver,
 ) (xcconfigResolvedValue, bool, error) {
 	path = filepath.Clean(path)
 	pathKey := signingLexicalPathKey(path)
@@ -623,7 +726,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify)
+			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify, observe)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
@@ -635,9 +738,23 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		if assignment.baseKey != setting {
 			continue
 		}
+		if observe != nil {
+			observe(path, *assignment)
+		}
 		if assignment.key != setting {
 			if assignment.operator == "?=" && resolved.found {
 				continue
+			}
+			if assignment.operator == "=" {
+				selector := signingXCConfigSelectorIdentity(assignment.key)
+				filtered := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
+				for _, existing := range resolved.conditionals {
+					if signingXCConfigSelectorIdentity(existing.key) == selector {
+						continue
+					}
+					filtered = append(filtered, existing)
+				}
+				resolved.conditionals = filtered
 			}
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
 				key:      assignment.key,

@@ -86,6 +86,10 @@ type Root struct {
 	// statPublishedFileForTest injects a transient descriptor Stat result after
 	// publication without changing production callers.
 	statPublishedFileForTest func(file *os.File) (os.FileInfo, error)
+	// closePublishedFileForTest injects a post-verification close result without
+	// widening the production API. Tests close the descriptor themselves before
+	// returning the injected error so the branch remains leak-free.
+	closePublishedFileForTest func(file *os.File) error
 	// postPublicationLstatForTest replaces the first published-entry Lstat in
 	// tests so transient identity-observation failures can be exercised without
 	// widening the production API.
@@ -109,6 +113,12 @@ type Root struct {
 	// publication and skips Unix descriptor retention, exercising the
 	// pre-identity failure contract without requiring a Windows runner.
 	simulateWindowsCloseForTest bool
+	// closeStagingFileForTest injects a staging-descriptor close result without
+	// widening the production API. It is intentionally unset outside tests.
+	closeStagingFileForTest func(file *os.File) error
+	// copyReplacementMetadataForTest injects a metadata-copy result so tests
+	// can prove quarantine restore runs after the source descriptor is closed.
+	copyReplacementMetadataForTest func(destination, source *os.File, info os.FileInfo) error
 	// requireNativeNoReplace preserves CreateNewFileAtomic's strict contract
 	// while CreateNewFrom may use the atomic hard-link fallback.
 	requireNativeNoReplace bool
@@ -1123,41 +1133,48 @@ func (r Root) writeFromPreservingMetadata(
 // rather than silently changing hard-link semantics. New files use perm subject
 // to the process umask.
 func (r Root) WriteFilePreservingMode(name string, data []byte, perm os.FileMode) error {
+	_, err := r.WriteFromPreservingMode(name, bytes.NewReader(data), perm)
+	return err
+}
+
+// WriteFromPreservingMode atomically creates or replaces a regular file beneath
+// the root while preserving the supported metadata of an existing destination.
+// It is the streaming counterpart to WriteFilePreservingMode for callers that
+// already have a rooted source file and should not buffer its contents.
+func (r Root) WriteFromPreservingMode(name string, reader io.Reader, perm os.FileMode) (int64, error) {
 	resolved, err := r.prepareWrite(name)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	parent, base, err := r.openParentRooted(resolved)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer parent.Close()
 
 	hadExisting, err := checkReplaceableFileInRoot(parent, base, resolved)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !hadExisting {
-		_, err := r.writeFrom(name, bytes.NewReader(data), perm, false)
-		return err
+		return r.writeFrom(name, reader, perm, false)
 	}
 
 	file, err := secureopen.OpenExistingWritableNoFollowInRoot(parent, base)
 	if err != nil {
-		return fmt.Errorf("open existing file %q for replacement: %w", resolved, err)
+		return 0, fmt.Errorf("open existing file %q for replacement: %w", resolved, err)
 	}
 	defer file.Close()
 	openedInfo, err := file.Stat()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if multiple, err := hasMultipleHardLinks(file, openedInfo); err != nil {
-		return fmt.Errorf("inspect existing file %q: %w", resolved, err)
+		return 0, fmt.Errorf("inspect existing file %q: %w", resolved, err)
 	} else if multiple {
-		return fmt.Errorf("refusing to rewrite multiply linked file %q", resolved)
+		return 0, fmt.Errorf("refusing to rewrite multiply linked file %q", resolved)
 	}
-	_, err = r.writeFromPreservingMetadata(name, bytes.NewReader(data), perm, false, file, openedInfo)
-	return err
+	return r.writeFromPreservingMetadata(name, reader, perm, false, file, openedInfo)
 }
 
 // CheckWriteFilePreservingMode performs the non-mutating checks required before
@@ -1212,6 +1229,39 @@ func (r Root) CheckWriteFilePreservingMode(name string) error {
 	return nil
 }
 
+// CheckWriteFile performs the non-mutating checks required before WriteFile
+// creates or replaces a destination by rename: parents must be contained and
+// unsymlinked, and the destination must be absent or a regular, non-symlinked
+// file. Unlike CheckWriteFilePreservingMode it does not require the existing
+// file to be writable or singly linked, because a rename replaces the name
+// without touching the old inode.
+func (r Root) CheckWriteFile(name string) error {
+	resolved, err := r.Resolve(name)
+	if err != nil {
+		return err
+	}
+	if resolved == r.path {
+		return fmt.Errorf("%w: %q is the trusted root itself", ErrEscapesRoot, name)
+	}
+	if err := r.checkParentComponents(resolved); err != nil {
+		return err
+	}
+	info, err := os.Lstat(resolved)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return symlinkError(resolved)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%q is not a regular file", resolved)
+	}
+	return nil
+}
+
 // CheckCreateNewFile performs the non-mutating checks required before
 // CreateNewFile publishes a destination. Missing parents are accepted because
 // the eventual rooted write creates them; existing files and symlinks are not.
@@ -1255,25 +1305,26 @@ func (r Root) RemoveFileIfSame(name string, expected os.FileInfo, expectedData [
 		return err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, parent.Close())
+		closeErr := parent.Close()
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
 	}()
 
 	quarantineName, quarantine, _, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
 	if err != nil {
 		return err
 	}
-	if err := quarantine.Close(); err != nil {
-		return errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
-	}
 	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
 		return errors.Join(
 			fmt.Errorf("destination was replaced while removing the expected file"),
-			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
+			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, quarantine),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = quarantine.Close()
 		return errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
-	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
+	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, quarantine); err != nil {
 		return err
 	}
 	if err := r.syncConditionalParentDirectory(parent); err != nil {
@@ -1333,7 +1384,10 @@ func (r Root) writeFileIfSame(
 		return nil, err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, parent.Close())
+		closeErr := parent.Close()
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
 	}()
 
 	quarantineName, quarantine, quarantineInfo, err := r.quarantineExpectedFile(parent, base, expected, expectedData)
@@ -1351,17 +1405,23 @@ func (r Root) writeFileIfSame(
 	// If a replacement appeared, leave it untouched and discard only the
 	// transaction's quarantined copy.
 	if _, err := r.lstatAfterConditionalQuarantine(parent, base); err == nil {
+		var closeErr error
+		if !quarantineClosed {
+			closeErr = quarantine.Close()
+			quarantineClosed = true
+		}
 		return nil, errors.Join(
 			fmt.Errorf("destination changed while preparing replacement"),
-			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
+			closeErr,
+			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, nil),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
 
 	temporary, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", temporaryFilePattern, perm)
 	if err != nil {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
 	temporaryDone := false
 	temporaryClosed := false
@@ -1378,17 +1438,23 @@ func (r Root) writeFileIfSame(
 	}()
 
 	if preserveMetadata {
-		if err := copyReplacementMetadata(temporary, quarantine, quarantineInfo); err != nil {
-			return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		copyMetadata := copyReplacementMetadata
+		if r.copyReplacementMetadataForTest != nil {
+			copyMetadata = r.copyReplacementMetadataForTest
+		}
+		if err := copyMetadata(temporary, quarantine, quarantineInfo); err != nil {
+			return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 		}
 	} else if err := temporary.Chmod(perm); err != nil {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
-	if err := quarantine.Close(); err != nil {
+	if runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+		if err := quarantine.Close(); err != nil {
+			quarantineClosed = true
+			return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		}
 		quarantineClosed = true
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
-	quarantineClosed = true
 	written, err := io.Copy(temporary, bytes.NewReader(data))
 	if err != nil {
 		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
@@ -1406,16 +1472,23 @@ func (r Root) writeFileIfSame(
 	if !temporaryInfo.Mode().IsRegular() {
 		return nil, errors.Join(fmt.Errorf("staging file is not regular"), r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 	}
-	// Keep the staged descriptor through publication and the immediate identity
-	// recheck where the platform permits it. Windows requires closing before
-	// rename, but the reopened destination descriptor still pins the installed
-	// inode before the directory entry is checked again.
-	if runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
-		if err := temporary.Close(); err != nil {
+	// Ordinary non-identity writes do not return a publication identity, so
+	// close the staging descriptor before publication. If that close fails,
+	// the quarantine can still be restored. The identity-returning path keeps
+	// the descriptor through publication on Unix; Windows still requires a
+	// pre-publication close for rename compatibility.
+	if !retainPublishedIdentity || runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+		if r.closeStagingFileForTest != nil {
+			temporaryClosed = true
+			if err := r.closeStagingFileForTest(temporary); err != nil {
+				return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+			}
+		} else if err := temporary.Close(); err != nil {
 			temporaryClosed = true
 			return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		} else {
+			temporaryClosed = true
 		}
-		temporaryClosed = true
 	}
 	if r.beforeConditionalPublishForTest != nil {
 		r.beforeConditionalPublishForTest(parent, base)
@@ -1504,16 +1577,34 @@ func (r Root) writeFileIfSame(
 		return publishedInfo, quarantineLeftAfterPublication(fmt.Errorf("published file identity changed after publication"))
 	}
 	if !retainPublishedIdentity {
-		if err := publishedFile.Close(); err != nil {
+		closePublished := func() error { return publishedFile.Close() }
+		if r.closePublishedFileForTest != nil {
+			closePublished = func() error { return r.closePublishedFileForTest(publishedFile) }
+		}
+		if err := closePublished(); err != nil {
 			closePublishedFile = false
-			return nil, quarantineLeftAfterPublication(fmt.Errorf("close published file after identity verification: %w", err))
+			live := (*os.File)(nil)
+			if !quarantineClosed {
+				live = quarantine
+				quarantineClosed = true
+			}
+			cleanupErr := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, live)
+			if cleanupErr == nil {
+				cleanupErr = r.syncConditionalParentDirectory(parent)
+			}
+			return publishedInfo, errors.Join(fmt.Errorf("close published file after identity verification: %w", err), cleanupErr)
 		}
 		closePublishedFile = false
 	}
 	// The published destination is complete, so only the transaction's
 	// quarantined inode is removed. A concurrent replacement at base is never
 	// targeted by this cleanup.
-	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData); err != nil {
+	live := (*os.File)(nil)
+	if !quarantineClosed {
+		live = quarantine
+		quarantineClosed = true
+	}
+	if err := r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData, live); err != nil {
 		return publishedInfo, errors.Join(err, publicationCleanupErr)
 	}
 	if err := r.syncConditionalParentDirectory(parent); err != nil {
@@ -1641,23 +1732,54 @@ func (r Root) openExpectedRootedFile(parent *os.Root, name string, expected os.F
 	return openExpectedRootedFile(parent, name, expected, expectedData)
 }
 
-func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, expected os.FileInfo, expectedData []byte) error {
-	file, _, err := r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
-	if err != nil {
-		return fmt.Errorf("verify quarantined file before removal: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return err
+func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, expected os.FileInfo, expectedData []byte, live *os.File) error {
+	var (
+		file *os.File
+		info os.FileInfo
+		err  error
+	)
+	if live != nil {
+		file = live
+		info, err = live.Stat()
+		if err != nil {
+			_ = live.Close()
+			return fmt.Errorf("stat live quarantined file before removal: %w", err)
+		}
+	} else {
+		file, info, err = r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
+		if err != nil {
+			return fmt.Errorf("verify quarantined file before removal: %w", err)
+		}
 	}
 	if r.beforeConditionalQuarantineRemovalForTest != nil {
 		r.beforeConditionalQuarantineRemovalForTest(parent, quarantineName)
 	}
 	latest, err := parent.Lstat(quarantineName)
 	if err != nil {
+		_ = file.Close()
 		return fmt.Errorf("recheck quarantined file before removal: %w", err)
 	}
-	if !os.SameFile(expected, latest) || latest.Mode().Perm() != expected.Mode().Perm() {
+	if !os.SameFile(info, latest) || latest.Mode().Perm() != info.Mode().Perm() {
+		_ = file.Close()
 		return fmt.Errorf("quarantined file identity changed before removal")
+	}
+	if live != nil {
+		if _, err := live.Seek(0, io.SeekStart); err != nil {
+			_ = live.Close()
+			return fmt.Errorf("rewind live quarantined file before removal: %w", err)
+		}
+		contents, err := io.ReadAll(io.LimitReader(live, int64(len(expectedData))+1))
+		if err != nil {
+			_ = live.Close()
+			return fmt.Errorf("re-read live quarantined file before removal: %w", err)
+		}
+		if !bytes.Equal(contents, expectedData) {
+			_ = live.Close()
+			return fmt.Errorf("live quarantined file contents changed before removal")
+		}
+	}
+	if err := file.Close(); err != nil {
+		return err
 	}
 	// There is no portable compare-and-unlink primitive for the final Lstat
 	// and path-based Remove. The unpredictable quarantine name and the
@@ -1689,10 +1811,24 @@ func (r Root) syncConditionalParentDirectory(parent *os.Root) error {
 		_ = directory.Close()
 		return fmt.Errorf("sync parent directory after conditional write: %w", err)
 	}
-	if err := directory.Close(); err != nil {
-		return fmt.Errorf("close parent directory after conditional write: %w", err)
-	}
+	_ = directory.Close()
 	return nil
+}
+
+func (r Root) closeAndRestoreQuarantine(
+	quarantine *os.File,
+	quarantineClosed *bool,
+	parent *os.Root,
+	quarantineName, base string,
+	expected os.FileInfo,
+	expectedData []byte,
+) error {
+	var closeErr error
+	if !*quarantineClosed {
+		closeErr = quarantine.Close()
+		*quarantineClosed = true
+	}
+	return errors.Join(closeErr, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 }
 
 func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base string, expected os.FileInfo, expectedData []byte) error {
@@ -1700,23 +1836,22 @@ func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base st
 	if err != nil {
 		return err
 	}
-	if err := file.Close(); err != nil {
-		return err
-	}
+	closeErr := file.Close()
 	if err := secureopen.RenameNoReplaceInRoot(parent, quarantineName, base); err == nil {
-		return r.syncConditionalParentDirectory(parent)
+		return errors.Join(closeErr, r.syncConditionalParentDirectory(parent))
 	} else if errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
-		return errors.Join(err, fmt.Errorf("quarantined file %q was left in place", quarantineName))
+		return errors.Join(closeErr, err, fmt.Errorf("quarantined file %q was left in place", quarantineName))
 	} else if errors.Is(err, os.ErrExist) {
 		// A replacement already occupies the original name. Keep the
 		// quarantined entry as a recoverable copy rather than deleting either
 		// the replacement or the original transaction state.
 		return errors.Join(
+			closeErr,
 			fmt.Errorf("preserve concurrent replacement: %w", err),
 			fmt.Errorf("quarantined file %q was left in place", quarantineName),
 		)
 	} else {
-		return err
+		return errors.Join(closeErr, err)
 	}
 }
 
@@ -1932,7 +2067,10 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		return 0, nil, err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, parent.Close())
+		closeErr := parent.Close()
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
 	}()
 
 	info, err := parent.Lstat(base)
@@ -1972,6 +2110,9 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 			return nil
 		}
 		stagingClosed = true
+		if r.closeStagingFileForTest != nil {
+			return r.closeStagingFileForTest(file)
+		}
 		return file.Close()
 	}
 	retainStagingIdentity := func() bool {
@@ -2030,12 +2171,13 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 	if !stagedInfo.Mode().IsRegular() {
 		return written, nil, fmt.Errorf("staged file %q is not regular", resolved)
 	}
-	// Keep the staging descriptor open through publication and the identity
-	// check on Unix. If a racing writer unlinks the published name immediately,
-	// the open descriptor keeps the original inode alive so the filesystem
-	// cannot reuse its identity for the replacement before Lstat observes it.
-	// Windows requires the handle to be closed before its rename operation.
-	if runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
+	// Ordinary writes do not return a publication identity, so close the
+	// staging descriptor before publication. If that close fails, no durable
+	// destination has been installed yet. The identity-returning path keeps
+	// the descriptor through publication on Unix so an immediate replacement
+	// cannot reuse its inode before identity verification; Windows and the test
+	// simulation still require a pre-publication close for rename compatibility.
+	if !retainPublishedIdentity || runtime.GOOS == "windows" || r.simulateWindowsCloseForTest {
 		if err := closeStaging(); err != nil {
 			return written, nil, err
 		}
@@ -2155,9 +2297,7 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		_ = directory.Close()
 		return written, publishedInfo, fmt.Errorf("sync parent directory after publish: %w", err)
 	}
-	if err := directory.Close(); err != nil {
-		return written, publishedInfo, fmt.Errorf("close parent directory after durability sync: %w", err)
-	}
+	_ = directory.Close()
 	if err := closeStaging(); err != nil {
 		return written, publishedInfo, fmt.Errorf("close staged file after publication: %w", err)
 	}

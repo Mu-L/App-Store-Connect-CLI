@@ -63,7 +63,7 @@ asc <subcommand> [flags]
 - `versions` - Manage App Store versions.
 - `localizations` - Manage App Store localization metadata.
 - `metadata` - Manage app metadata with deterministic workflows and keyword tooling.
-- `screenshots` - Upload and manage App Store screenshots; local capture/frame workflow is [experimental].
+- `screenshots` - Upload and manage App Store screenshots; local capture/frame/matrix workflow is [experimental].
 - `video-previews` - Manage App Store app preview videos.
 - `background-assets` - Manage background assets.
 - `product-pages` - Manage custom product pages and product page experiments.

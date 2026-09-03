@@ -282,7 +282,7 @@ func TestBuildSigningPlanRejectsUnprotectableTraversalEntitlement(t *testing.T) 
 		ProjectPath: project, SettingsFilePath: settingsPath, PlanPath: planPath,
 		StateDir: filepath.Join(root, "state"),
 	})
-	if err == nil || !strings.Contains(err.Error(), "cannot be protected") {
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely inventoried") {
 		t.Fatalf("BuildSigningPlan() error = %v, want fail-closed traversal protection", err)
 	}
 	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {

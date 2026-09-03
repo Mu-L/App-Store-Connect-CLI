@@ -9,21 +9,22 @@ import (
 // local Xcode signing plan. It is intentionally separate from the plan
 // artifact type so rendering changes cannot alter the artifact hash contract.
 type XcodeSigningPlanOutput struct {
-	SchemaVersion         int                               `json:"schemaVersion"`
-	Command               string                            `json:"command"`
-	GeneratedAt           string                            `json:"generatedAt"`
-	PlanHash              string                            `json:"planHash"`
-	Ready                 bool                              `json:"ready"`
-	ProjectPath           string                            `json:"projectPath"`
-	SettingsFilePath      string                            `json:"settingsFilePath"`
-	PlanPath              string                            `json:"planPath"`
-	ReceiptPath           string                            `json:"receiptPath"`
-	AllowExternalXCConfig bool                              `json:"allowExternalXCConfig"`
-	Desired               []XcodeSigningPlanTargetOutput    `json:"desired"`
-	Files                 []XcodeSigningPlanFileOutput      `json:"files"`
-	Changes               []XcodeSigningSettingChangeOutput `json:"changes"`
-	Blockers              []string                          `json:"blockers"`
-	Warnings              []string                          `json:"warnings"`
+	SchemaVersion           int                               `json:"schemaVersion"`
+	Command                 string                            `json:"command"`
+	GeneratedAt             string                            `json:"generatedAt"`
+	PlanHash                string                            `json:"planHash"`
+	Ready                   bool                              `json:"ready"`
+	ProjectPath             string                            `json:"projectPath"`
+	SettingsFilePath        string                            `json:"settingsFilePath"`
+	PlanPath                string                            `json:"planPath"`
+	ReceiptPath             string                            `json:"receiptPath"`
+	AllowExternalXCConfig   bool                              `json:"allowExternalXCConfig"`
+	Desired                 []XcodeSigningPlanTargetOutput    `json:"desired"`
+	Files                   []XcodeSigningPlanFileOutput      `json:"files"`
+	Changes                 []XcodeSigningSettingChangeOutput `json:"changes"`
+	MissingOptionalIncludes []string                          `json:"missingOptionalIncludes,omitempty"`
+	Blockers                []string                          `json:"blockers"`
+	Warnings                []string                          `json:"warnings"`
 }
 
 // XcodeSigningPlanTargetOutput describes one target in a signing plan.

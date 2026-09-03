@@ -18,21 +18,22 @@ func newXcodeSigningPlanOutput(plan *localxcode.SigningPlan) *asc.XcodeSigningPl
 		return nil
 	}
 	return &asc.XcodeSigningPlanOutput{
-		SchemaVersion:         plan.SchemaVersion,
-		Command:               plan.Command,
-		GeneratedAt:           plan.GeneratedAt,
-		PlanHash:              plan.PlanHash,
-		Ready:                 plan.Ready,
-		ProjectPath:           plan.ProjectPath,
-		SettingsFilePath:      plan.SettingsFilePath,
-		PlanPath:              plan.PlanPath,
-		ReceiptPath:           plan.ReceiptPath,
-		AllowExternalXCConfig: plan.AllowExternalXCConfig,
-		Desired:               cloneXcodeSigningPlanTargets(plan.Desired),
-		Files:                 cloneXcodeSigningPlanFiles(plan.Files),
-		Changes:               cloneXcodeSigningSettingChanges(plan.Changes),
-		Blockers:              cloneSigningStrings(plan.Blockers),
-		Warnings:              cloneSigningStrings(plan.Warnings),
+		SchemaVersion:           plan.SchemaVersion,
+		Command:                 plan.Command,
+		GeneratedAt:             plan.GeneratedAt,
+		PlanHash:                plan.PlanHash,
+		Ready:                   plan.Ready,
+		ProjectPath:             plan.ProjectPath,
+		SettingsFilePath:        plan.SettingsFilePath,
+		PlanPath:                plan.PlanPath,
+		ReceiptPath:             plan.ReceiptPath,
+		AllowExternalXCConfig:   plan.AllowExternalXCConfig,
+		Desired:                 cloneXcodeSigningPlanTargets(plan.Desired),
+		Files:                   cloneXcodeSigningPlanFiles(plan.Files),
+		Changes:                 cloneXcodeSigningSettingChanges(plan.Changes),
+		MissingOptionalIncludes: cloneSigningStrings(plan.MissingOptionalIncludes),
+		Blockers:                cloneSigningStrings(plan.Blockers),
+		Warnings:                cloneSigningStrings(plan.Warnings),
 	}
 }
 
