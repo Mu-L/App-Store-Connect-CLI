@@ -59,8 +59,9 @@ type privacyTuple struct {
 }
 
 type privacyRemoteState struct {
-	Tuple    privacyTuple
-	UsageIDs []string
+	Tuple       privacyTuple
+	UsageIDs    []string
+	IDLessCount int
 }
 
 type privacyPlanChange struct {
@@ -408,6 +409,8 @@ func remoteStateFromDataUsages(usages []webcore.AppDataUsage) map[string]privacy
 		usageID := strings.TrimSpace(usage.ID)
 		if usageID != "" {
 			current.UsageIDs = append(current.UsageIDs, usageID)
+		} else {
+			current.IDLessCount++
 		}
 		state[key] = current
 	}
@@ -620,6 +623,7 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 					UsageID:        usageID,
 				})
 			}
+			skippedDeletes = appendIDLessSkippedDeletes(skippedDeletes, key, state)
 			continue
 		}
 
@@ -635,6 +639,7 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 				})
 			}
 		}
+		skippedDeletes = appendIDLessSkippedDeletes(skippedDeletes, key, state)
 	}
 
 	sort.Slice(adds, func(i, j int) bool {
@@ -683,6 +688,19 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 		SkippedDeletes: skippedDeletes,
 		APICalls:       apiCalls,
 	}
+}
+
+func appendIDLessSkippedDeletes(skipped []privacySkippedDelete, key string, state privacyRemoteState) []privacySkippedDelete {
+	if state.IDLessCount == 0 {
+		return skipped
+	}
+	return append(skipped, privacySkippedDelete{
+		Key:            key,
+		Category:       state.Tuple.Category,
+		Purpose:        state.Tuple.Purpose,
+		DataProtection: state.Tuple.DataProtection,
+		Reason:         "missing_usage_id",
+	})
 }
 
 // loadPrivacyCatalogTokens reads the live category, purpose, and

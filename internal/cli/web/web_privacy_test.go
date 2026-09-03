@@ -390,6 +390,63 @@ func TestPlanFromDesiredAndRemoteSkipsDeletesWithoutUsageID(t *testing.T) {
 	}
 }
 
+func TestPlanFromDesiredAndRemoteSkipsIDLessExtrasAlongsideIdentifiedUsages(t *testing.T) {
+	key := privacyTupleKey(privacyTuple{
+		Category:       "NAME",
+		Purpose:        "APP_FUNCTIONALITY",
+		DataProtection: dataProtectionLinked,
+	})
+	tuple := privacyTuple{
+		Category:       "NAME",
+		Purpose:        "APP_FUNCTIONALITY",
+		DataProtection: dataProtectionLinked,
+	}
+	plan := planFromDesiredAndRemote("123", "./privacy.json", map[string]privacyTuple{key: tuple}, map[string]privacyRemoteState{
+		key: {
+			Tuple:       tuple,
+			UsageIDs:    []string{"usage-1"},
+			IDLessCount: 1,
+		},
+	})
+	if len(plan.Deletes) != 0 {
+		t.Fatalf("the identified usage matches the file, so it is not deleted: %#v", plan.Deletes)
+	}
+	if len(plan.SkippedDeletes) != 1 || plan.SkippedDeletes[0].Reason != "missing_usage_id" {
+		t.Fatalf("the ID-less extra must remain a skipped delete: %#v", plan.SkippedDeletes)
+	}
+	if privacyApplyConverged(plan, privacyApplyResult{}) {
+		t.Fatal("an ID-less extra next to a matching usage is not convergence")
+	}
+}
+
+func TestRemoteStateFromDataUsagesCountsIDLessMembersInMixedGroups(t *testing.T) {
+	state := remoteStateFromDataUsages([]webcore.AppDataUsage{
+		{
+			ID:             "usage-1",
+			Category:       "NAME",
+			Purpose:        "APP_FUNCTIONALITY",
+			DataProtection: dataProtectionLinked,
+		},
+		{
+			Category:       "NAME",
+			Purpose:        "APP_FUNCTIONALITY",
+			DataProtection: dataProtectionLinked,
+		},
+	})
+	key := privacyTupleKey(privacyTuple{
+		Category:       "NAME",
+		Purpose:        "APP_FUNCTIONALITY",
+		DataProtection: dataProtectionLinked,
+	})
+	got := state[key]
+	if !reflect.DeepEqual(got.UsageIDs, []string{"usage-1"}) {
+		t.Fatalf("expected the identified usage to be kept, got %#v", got)
+	}
+	if got.IDLessCount != 1 {
+		t.Fatalf("expected one ID-less sibling, got %#v", got)
+	}
+}
+
 func TestPlanFromDesiredAndRemoteIncludesDeleteForMalformedRemoteUsage(t *testing.T) {
 	desired := map[string]privacyTuple{
 		privacyTupleKey(privacyTuple{
