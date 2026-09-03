@@ -763,11 +763,18 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		staleSessionDiscardErr error
 	)
 
-	// Every code the configured command produces is remembered so the retry can
-	// tell a rotated value from the one the failed attempt already submitted.
-	// Until a code is proven consumed this is a plain pass-through.
+	// Every code the reader hands over is submitted, so each one becomes the
+	// baseline for the next read: the retry, and the phone fallback that follows
+	// a rejected trusted-device code, both have to wait past the value they just
+	// burned rather than only past the one the cached attempt consumed. Before
+	// the command has produced anything the literal --two-factor-code stands in,
+	// and with nothing consumed at all this is a plain pass-through.
 	readCommandTwoFactorCode := func(ctx context.Context, command string) (string, error) {
-		code, err := readRotatedTwoFactorCodeFromCommand(ctx, command, consumedTwoFactorCode)
+		burned := lastCommandTwoFactor
+		if burned == "" {
+			burned = consumedTwoFactorCode
+		}
+		code, err := readRotatedTwoFactorCodeFromCommand(ctx, command, burned)
 		if err != nil {
 			return "", err
 		}

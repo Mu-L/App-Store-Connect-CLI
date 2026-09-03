@@ -2925,6 +2925,81 @@ func TestResolveSessionFailsWhenCommandCodeNeverRotatesAfterStaleBootstrap(t *te
 	}
 }
 
+// Phone fallback asks the command for a second code after the trusted-device
+// one is rejected. That rejected code was consumed too, so the baseline has to
+// advance with every code the command hands over; comparing only against the
+// code the cached attempt burned lets the just-rejected value through and
+// resubmits it.
+func TestResolveSessionWaitsForANewCodeOnPhoneFallbackAfterStaleBootstrap(t *testing.T) {
+	restoreStaleSessionRetryHooks(t)
+	shortenTwoFactorCodeRotationWait(t)
+	t.Setenv(webTwoFactorCodeCommandEnv, "print-code")
+
+	cachedClient := &http.Client{}
+	staleSession := &webcore.AuthSession{}
+	freshSession := &webcore.AuthSession{UserEmail: "user@example.com"}
+	// The generator repeats within each window: the cached code, then the
+	// rotated one that phone fallback rejects, then a genuinely new one.
+	commandCodes := []string{"111111", "111111", "222222", "222222", "333333"}
+	commandCalls := 0
+	var submittedCodes []string
+
+	deleteStaleWebSessionFn = func(appleID string, _ *webcore.AuthSession) (bool, error) { return true, nil }
+	loadCachedSessionFn = func(username string) (*webcore.AuthSession, bool, error) {
+		return &webcore.AuthSession{Client: cachedClient, UserEmail: "user@example.com"}, true, nil
+	}
+	promptTwoFactorCodeFn = func() (string, error) {
+		t.Fatal("did not expect an interactive 2fa prompt when a code command is configured")
+		return "", nil
+	}
+	readTwoFactorCodeFromCommandFn = func(ctx context.Context, command string) (string, error) {
+		if commandCalls >= len(commandCodes) {
+			t.Fatalf("2fa code command ran %d times, more than the %d scripted results", commandCalls+1, len(commandCodes))
+		}
+		code := commandCodes[commandCalls]
+		commandCalls++
+		return code, nil
+	}
+	submitTwoFactorCodeFn = func(ctx context.Context, session *webcore.AuthSession, code string) error {
+		for _, seen := range submittedCodes {
+			if seen == code {
+				return fmt.Errorf("verification code %s has already been used", code)
+			}
+		}
+		submittedCodes = append(submittedCodes, code)
+		if session == staleSession {
+			return &webcore.TwoFactorFinalizationError{Status: http.StatusUnauthorized}
+		}
+		if len(submittedCodes) == 2 {
+			return &appleauth.PhoneCodeRequestedError{Destination: "+1 (•••) •••-••66"}
+		}
+		return nil
+	}
+	webLoginWithClientFn = func(ctx context.Context, client *http.Client, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return staleSession, &webcore.TwoFactorRequiredError{}
+	}
+	webLoginFn = func(ctx context.Context, creds webcore.LoginCredentials) (*webcore.AuthSession, error) {
+		return freshSession, &webcore.TwoFactorRequiredError{}
+	}
+
+	session, source, err := resolveSession(context.Background(), "user@example.com", "", "")
+	if err != nil {
+		t.Fatalf("resolveSession returned error: %v", err)
+	}
+	if session != freshSession || source != "fresh" {
+		t.Fatalf("expected the fresh session, got source %q", source)
+	}
+	if len(submittedCodes) != 3 {
+		t.Fatalf("expected three distinct 2fa submissions, got %v", submittedCodes)
+	}
+	if submittedCodes[2] != "333333" {
+		t.Fatalf("expected a code newer than the one phone fallback rejected, got %q", submittedCodes[2])
+	}
+	if commandCalls != len(commandCodes) {
+		t.Fatalf("expected the command to be polled past each repeated code, got %d calls", commandCalls)
+	}
+}
+
 // The discard has to be scoped to the jar this resolution actually loaded, so a
 // valid session another process persisted during 2FA survives. A preserved
 // entry is not a failure either, so it must not surface a warning.
