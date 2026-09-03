@@ -57,7 +57,7 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - Sandbox territory inputs accept alpha-2, alpha-3, and exact English country names, but the CLI sends canonical 3-letter App Store territory codes (for example, `US`, `USA`, and `United States` all resolve to `USA`)
 - This normalization is limited to verified ASC alpha-3 territory surfaces, including customer-review filters; public storefront and finance region flags keep their existing namespaces
 - List, view, update, and clear-history use the v2 API through `asc sandbox`
-- `asc web sandbox create` currently sends three private web-session requests: `POST /sandbox/v2/account/validateFields` with `firstName`, `lastName`, and `acAccountName`; the same path with `acAccountPassword` added; then `POST /sandbox/v2/account/create` with `firstName`, `lastName`, `acAccountName`, `acAccountPassword`, and `storeFront`. This is the source-backed client request shape; Apple acceptance of extra portal fields has not been live-captured.
+- `asc web sandbox create` currently sends three private web-session requests: `POST /sandbox/v2/account/validateFields` with `firstName`, `lastName`, and `acAccountName`; the same path with `acAccountPassword` added; then `POST /sandbox/v2/account/create` with `firstName`, `lastName`, `acAccountName`, `acAccountPassword`, and `storeFront`. This is the source-backed client request shape; Apple acceptance of extra portal fields has not been live-captured. See issue #2294.
 - Public `asc sandbox` does not expose create or delete, and the current web-session CLI has no delete path. Do not infer a private delete endpoint from the removed v1 surface without a fresh capture.
 
 ## App Store Regulations & Permits declarations
