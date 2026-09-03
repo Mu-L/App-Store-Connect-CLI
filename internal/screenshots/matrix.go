@@ -715,7 +715,7 @@ func relativeMatrixOutputPath(rootPath, path string) (string, error) {
 	return relative, nil
 }
 
-func pinMatrixFrameInputFromRetainedRoot(rawRoot rootfs.Root, inputPath string, destRoot rootfs.Root, destDir string, index int) (string, error) {
+func pinMatrixFrameInputFromRetainedRoot(ctx context.Context, rawRoot rootfs.Root, inputPath string, destRoot rootfs.Root, destDir string, index int) (string, error) {
 	relative, err := relativeMatrixOutputPath(rawRoot.Path(), inputPath)
 	if err != nil {
 		return "", err
@@ -724,20 +724,17 @@ func pinMatrixFrameInputFromRetainedRoot(rawRoot rootfs.Root, inputPath string, 
 	if err != nil {
 		return "", err
 	}
-	data, readErr := io.ReadAll(io.LimitReader(src, maxMatrixArtifactBytes+1))
+	name := fmt.Sprintf(".asc-matrix-frame-input-%d%s", index, filepath.Ext(relative))
+	written, writeErr := destRoot.WriteFromPreservingMode(name, &matrixContextReader{ctx: ctx, reader: io.LimitReader(src, maxMatrixArtifactBytes+1)}, 0o600)
 	closeErr := src.Close()
-	if readErr != nil {
-		return "", readErr
+	if writeErr != nil {
+		return "", writeErr
 	}
 	if closeErr != nil {
 		return "", closeErr
 	}
-	if len(data) > maxMatrixArtifactBytes {
+	if written > maxMatrixArtifactBytes {
 		return "", errors.New("raw screenshot exceeds the artifact size limit")
-	}
-	name := fmt.Sprintf(".asc-matrix-frame-input-%d%s", index, filepath.Ext(relative))
-	if err := destRoot.WriteFile(name, data, 0o600); err != nil {
-		return "", err
 	}
 	return filepath.Join(destDir, name), nil
 }
@@ -1784,7 +1781,7 @@ func validateMatrixReviewDoesNotOverwritePlans(plan *MatrixPlan, baseDir string)
 		path  string
 	}
 	inputs := []matrixPlanInput{{label: "matrix plan", path: filepath.Clean(planPath)}}
-	if reference := strings.TrimSpace(plan.BasePlan); reference != "" && !filepath.IsAbs(reference) {
+	if reference := plan.BasePlan; strings.TrimSpace(reference) != "" && !filepath.IsAbs(strings.TrimSpace(reference)) {
 		inputs = append(inputs, matrixPlanInput{
 			label: "base plan",
 			path:  filepath.Clean(resolveMatrixArtifactPath(planDir, reference)),
@@ -1858,7 +1855,7 @@ func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath
 	if planPath != "" {
 		inputs = append(inputs, matrixPlanInput{label: "matrix plan", path: filepath.Clean(planPath)})
 	}
-	if reference := strings.TrimSpace(plan.BasePlan); reference != "" && !filepath.IsAbs(reference) {
+	if reference := plan.BasePlan; strings.TrimSpace(reference) != "" && !filepath.IsAbs(strings.TrimSpace(reference)) {
 		inputs = append(inputs, matrixPlanInput{
 			label: "base plan",
 			path:  filepath.Clean(resolveMatrixArtifactPath(planDir, reference)),
@@ -2562,6 +2559,17 @@ type matrixAttemptResult struct {
 	Error           string
 }
 
+func matrixPrivateAttemptConstructionResult(stage, message string, err error) (matrixAttemptResult, error) {
+	result := matrixAttemptResult{FailureStage: stage, FailureCode: "temporary_output_failed", Error: message}
+	if errors.Is(err, errMatrixPrivateAttemptCleanupUncertain) {
+		result.CleanupFailed = true
+		result.FailureStage = "cleanup"
+		result.FailureCode = "temporary_output_cleanup_failed"
+		result.Error = "temporary screenshot output cleanup is uncertain"
+	}
+	return result, err
+}
+
 func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, matrixPlan *MatrixPlan, deps MatrixDependencies, outputRoots matrixOutputRoots) (attempt matrixAttemptResult, returnErr error) {
 	rawRelative, err := relativeMatrixOutputPath(outputRoots.rawPath, cell.RawDir)
 	if err != nil {
@@ -2572,7 +2580,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	}
 	attemptRoot, err := createMatrixPrivateAttemptRoot()
 	if err != nil {
-		return matrixAttemptResult{FailureStage: "execution", FailureCode: "temporary_output_failed", Error: "temporary output directory could not be created"}, err
+		return matrixPrivateAttemptConstructionResult("execution", "temporary output directory could not be created", err)
 	}
 	defer func() {
 		cleanupErr := cleanupMatrixPrivateAttemptForExecution(attemptRoot)
@@ -2724,10 +2732,12 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 	}
 	frameAttemptRoot, err := createMatrixPrivateAttemptRoot()
 	if err != nil {
-		attempt.FailureStage = "framing"
-		attempt.FailureCode = "temporary_output_failed"
-		attempt.Error = "temporary frame output directory could not be created"
-		return attempt, err
+		construction, constructionErr := matrixPrivateAttemptConstructionResult("framing", "temporary frame output directory could not be created", err)
+		attempt.CleanupFailed = construction.CleanupFailed
+		attempt.FailureStage = construction.FailureStage
+		attempt.FailureCode = construction.FailureCode
+		attempt.Error = construction.Error
+		return attempt, constructionErr
 	}
 	defer func() {
 		cleanupErr := cleanupMatrixPrivateAttemptForExecution(frameAttemptRoot)
@@ -2792,7 +2802,7 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		tempFrame := filepath.Join(frameSourceRootPath, filepath.Base(cell.FramedPaths[index]))
 		frameInputPath := inputPath
 		if deps.Frame == nil {
-			pinnedInput, pinErr := pinMatrixFrameInputFromRetainedRoot(outputRoots.raw, inputPath, frameSourceRoot, frameSourceRootPath, index)
+			pinnedInput, pinErr := pinMatrixFrameInputFromRetainedRoot(ctx, outputRoots.raw, inputPath, frameSourceRoot, frameSourceRootPath, index)
 			if pinErr != nil {
 				attempt.FailureStage = "framing"
 				attempt.FailureCode = "raw_output_failed"
