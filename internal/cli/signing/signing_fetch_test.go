@@ -855,6 +855,8 @@ func TestResolveSigningCertificateTypesIncludesCompatibleCertificatesForMacProfi
 		{profileType: "MAC_CATALYST_APP_DEVELOPMENT", want: "MAC_APP_DEVELOPMENT,DEVELOPMENT"},
 		{profileType: "MAC_APP_STORE", want: "MAC_APP_DISTRIBUTION,DISTRIBUTION"},
 		{profileType: "MAC_CATALYST_APP_STORE", want: "MAC_APP_DISTRIBUTION,DISTRIBUTION"},
+		{profileType: "MAC_APP_DIRECT", want: "DEVELOPER_ID_APPLICATION,DEVELOPER_ID_APPLICATION_G2"},
+		{profileType: "MAC_CATALYST_APP_DIRECT", want: "DEVELOPER_ID_APPLICATION,DEVELOPER_ID_APPLICATION_G2"},
 	}
 
 	for _, tt := range tests {
@@ -1485,4 +1487,28 @@ func profileCreateCertificateIDs(t *testing.T, body io.Reader) []string {
 		ids = append(ids, certificate.ID)
 	}
 	return ids
+}
+
+func TestResolveSigningCertificateTypesCanonicalizesSeparators(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "hyphenated", raw: "ios-distribution", want: "IOS_DISTRIBUTION"},
+		{name: "spaced", raw: "mac installer distribution", want: "MAC_INSTALLER_DISTRIBUTION"},
+		{name: "mixed list", raw: "development,ios-distribution", want: "DEVELOPMENT,IOS_DISTRIBUTION"},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveSigningCertificateTypes("IOS_APP_STORE", tt.raw)
+			if err != nil {
+				t.Fatalf("resolveSigningCertificateTypes() error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveSigningCertificateTypes() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

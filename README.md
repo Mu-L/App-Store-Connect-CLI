@@ -104,6 +104,16 @@ asc auth login \
   --network
 ```
 
+Individual API keys have no issuer ID. Omit `--issuer-id` and pass `--key-type individual`:
+
+```bash
+asc auth login \
+  --name "MyIndividualKey" \
+  --key-id "ABC123" \
+  --key-type individual \
+  --private-key /path/to/AuthKey.p8
+```
+
 Generate API keys at:
 https://appstoreconnect.apple.com/access/integrations/api
 
@@ -392,10 +402,21 @@ the JSONC schema, isolated output layout, retry behavior, and review contract.
 ### Signing and bundle IDs
 
 ```bash
-asc certificates list
-asc profiles list
-asc bundle-ids list
+asc bundle-ids capabilities list --bundle "BUNDLE_ID"
+asc signing fetch --bundle-id com.example.app --profile-type IOS_APP_STORE --output .asc/signing
+asc signing sync pull --repo git@github.com:team/signing.git --password-file ~/.config/asc/signing-sync-password --output-dir .asc/signing/pulled
 ```
+
+`signing fetch` downloads public certificates and provisioning profiles. A
+usable signing identity also needs the matching private key; `signing sync`
+can verify that local identity and share it through an encrypted Git
+repository. For multi-target release testing, `signing reconcile` plans exact
+device/profile changes. `signing run` provides a temporary macOS keychain only
+for single-target archives. Multi-target exports must import the identity into
+a job-scoped keychain and install every reconciled profile for the job-exclusive
+macOS user. See the
+[signing guide](guides/code-signing.mdx) for setup, CI, rotation, security
+boundaries, and troubleshooting.
 
 ### Workflow automation
 
@@ -495,7 +516,9 @@ For full command families, flags, and discovery patterns, see:
 ## Documentation
 
 - [docs/CI_CD.md](docs/CI_CD.md) - CI/CD integration guides (GitHub Actions, GitLab, Bitrise, CircleCI)
+- [commands/signing.mdx](commands/signing.mdx) - signing identities, encrypted sync, CI, and release-testing profiles
 - [docs/COMMANDS.md](docs/COMMANDS.md) - Command families and reference navigation
+- [docs/PARITY.md](docs/PARITY.md) - Remaining parity areas and intentional non-goals
 - [docs/WORKFLOWS.md](docs/WORKFLOWS.md) - Reusable workflow patterns, including local Xcode to TestFlight
 - [guides/apple-ads-playbooks.mdx](guides/apple-ads-playbooks.mdx) - Apple Ads operator playbooks
 - [docs/architecture/storekit-retention-messaging.md](docs/architecture/storekit-retention-messaging.md) - Retention Messaging setup and sandbox verification
