@@ -99,6 +99,27 @@ func newSigningUnauthorizedExternalXCConfigError(err error) error {
 	return signingUnauthorizedExternalXCConfigError{err: err}
 }
 
+const signingIncompleteInternalXCConfigMessage = "incomplete xcconfig collection cannot be safely inventoried"
+
+// signingIncompleteInternalXCConfigError marks an internal xcconfig that could
+// not be fully read or parsed. Unread assignments may name an artifact path,
+// so even a blocked plan is unsafe to serialize.
+type signingIncompleteInternalXCConfigError struct {
+	err error
+}
+
+func (e signingIncompleteInternalXCConfigError) Error() string {
+	return signingIncompleteInternalXCConfigMessage
+}
+
+func (e signingIncompleteInternalXCConfigError) Unwrap() error {
+	return e.err
+}
+
+func newSigningIncompleteInternalXCConfigError(err error) error {
+	return signingIncompleteInternalXCConfigError{err: err}
+}
+
 // signingConditionalEntitlementError marks a conditional entitlement value
 // whose reference graph could not be inventoried safely. Such a value cannot
 // be represented by a blocked plan because an artifact path may be hidden
@@ -440,6 +461,9 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 	hasUnauthorizedExternal := func(paths []string) bool {
 		return !opts.AllowExternalXCConfig && unauthorizedExternal && len(paths) > 0
 	}
+	hasIncompleteInternalCollection := func(paths []string) bool {
+		return signingHasIncompleteInternalXCConfig(project, paths, opts.AllowExternalXCConfig)
+	}
 	if err != nil {
 		if len(blockedExternalPaths) > 0 {
 			inputPaths, externalEntitlementPaths, inputPathBlockers, inputErr := signingProjectInputPaths(project, settingsPath, configFiles, fileIdentities, requests, opts.AllowExternalXCConfig, lexicalConfigPaths)
@@ -464,6 +488,9 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			// failures above remain the more precise, no-read diagnostic.
 			if hasUnauthorizedExternal(blockedExternalPaths) {
 				return nil, newSigningUnauthorizedExternalXCConfigError(err)
+			}
+			if hasIncompleteInternalCollection(blockedExternalPaths) {
+				return nil, newSigningIncompleteInternalXCConfigError(err)
 			}
 			plan.Blockers = append(plan.Blockers, fmt.Sprintf("selected xcconfig collection failed: %v", err))
 			plan.Blockers = append(plan.Blockers, inputPathBlockers...)
@@ -500,6 +527,9 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		// an unauthorized source, its contents cannot be inventoried and a
 		// blocked plan is unsafe to publish.
 		return nil, newSigningUnauthorizedExternalXCConfigError(nil)
+	}
+	if hasIncompleteInternalCollection(blockedExternalPaths) {
+		return nil, newSigningIncompleteInternalXCConfigError(nil)
 	}
 	inputBlockers = append(inputBlockers, inputPathBlockers...)
 	if len(inputBlockers) > 0 {
@@ -1229,9 +1259,6 @@ func signingValueDependsOnRequestedChange(
 			continue
 		}
 		if name == "inherited" {
-			if depth == 0 {
-				continue
-			}
 			values, err := signingRawInheritedSettingValues(configuration, setting, source, resolver)
 			if err != nil {
 				return true
@@ -2166,10 +2193,10 @@ func signingArtifactLexicalPathEqual(left, right string) bool {
 	if signingLexicalPathEqual(left, right) {
 		return true
 	}
-	if runtimeGOOS != "darwin" || !strings.EqualFold(left, right) {
+	if !strings.EqualFold(left, right) {
 		return false
 	}
-	caseInsensitive, known := signingCaseInsensitiveVolumeFor(left)
+	caseInsensitive, known := signingCaseInsensitiveVolumeFn(left)
 	return !known || caseInsensitive
 }
 
@@ -2219,6 +2246,18 @@ func signingPathCaseFoldedPrefixContained(root, absolute string) bool {
 // without consulting filesystem metadata. A case-folded root prefix remains
 // unresolved until signingPathLexicallyContained can inspect the relevant
 // volume semantics; every other non-contained path is safely external.
+func signingHasIncompleteInternalXCConfig(project *structuredVersionProject, paths []string, allowExternal bool) bool {
+	if allowExternal || len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		if !signingPathDefinitelyExternal(project, path) {
+			return true
+		}
+	}
+	return false
+}
+
 func signingPathDefinitelyExternal(project *structuredVersionProject, path string) bool {
 	root := normalizeSigningLexicalPath(project.rootDir)
 	absolute := normalizeSigningLexicalPath(path)
@@ -3009,6 +3048,9 @@ func signingXCConfigEntitlementAssignmentCandidates(
 		switch candidate.assignment.operator {
 		case "+=":
 			previous := accumulated[selector]
+			if previous == "" && selector != "CODE_SIGN_ENTITLEMENTS" {
+				previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
+			}
 			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
 				value = strings.ReplaceAll(value, "$(inherited)", previous)
 				value = strings.ReplaceAll(value, "${inherited}", previous)

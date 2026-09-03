@@ -112,6 +112,9 @@ type Root struct {
 	// closeStagingFileForTest injects a staging-descriptor close result without
 	// widening the production API. It is intentionally unset outside tests.
 	closeStagingFileForTest func(file *os.File) error
+	// copyReplacementMetadataForTest injects a metadata-copy result so tests
+	// can prove quarantine restore runs after the source descriptor is closed.
+	copyReplacementMetadataForTest func(destination, source *os.File, info os.FileInfo) error
 	// requireNativeNoReplace preserves CreateNewFileAtomic's strict contract
 	// while CreateNewFrom may use the atomic hard-link fallback.
 	requireNativeNoReplace bool
@@ -1414,8 +1417,14 @@ func (r Root) writeFileIfSame(
 	}()
 
 	if preserveMetadata {
-		if err := copyReplacementMetadata(temporary, quarantine, quarantineInfo); err != nil {
-			return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		copyMetadata := copyReplacementMetadata
+		if r.copyReplacementMetadataForTest != nil {
+			copyMetadata = r.copyReplacementMetadataForTest
+		}
+		if err := copyMetadata(temporary, quarantine, quarantineInfo); err != nil {
+			closeErr := quarantine.Close()
+			quarantineClosed = true
+			return nil, errors.Join(err, closeErr, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
 		}
 	} else if err := temporary.Chmod(perm); err != nil {
 		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))

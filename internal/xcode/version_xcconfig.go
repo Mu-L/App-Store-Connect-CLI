@@ -84,7 +84,7 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		key := masked[indices[4]:indices[5]]
 		operatorStart, operatorEnd := indices[8], indices[9]
 		valueStart, valueEnd := indices[12], indices[13]
-		value, quote, err := parseXCConfigValue(body[valueStart:valueEnd])
+		value, quote, err := parseXCConfigValue(masked[valueStart:valueEnd])
 		if err != nil {
 			return xcconfigDocument{}, fmt.Errorf("xcconfig line %d: %w", index+1, err)
 		}

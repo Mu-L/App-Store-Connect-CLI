@@ -1463,6 +1463,37 @@ func TestWriteFileIfSameRestoresQuarantineAfterReopenFailureAndReportsSync(t *te
 	}
 }
 
+func TestWriteFileIfSameClosesQuarantineBeforeRestoreAfterMetadataCopyFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "original"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected metadata copy failure")
+	root.copyReplacementMetadataForTest = func(*os.File, *os.File, os.FileInfo) error {
+		return injected
+	}
+
+	err = root.WriteFileIfSame("settings.xcconfig", []byte("updated"), 0o640, expected, []byte(original), true)
+	if !errors.Is(err, injected) {
+		t.Fatalf("WriteFileIfSame() error = %v, want injected metadata-copy failure", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("destination after metadata-copy failure = %q, want restored original", got)
+	}
+	if matches, globErr := filepath.Glob(filepath.Join(dir, rollbackFilePattern[:len(rollbackFilePattern)-1]+"*")); globErr != nil {
+		t.Fatal(globErr)
+	} else if len(matches) != 0 {
+		t.Fatalf("quarantine files remain after metadata-copy recovery: %v", matches)
+	}
+}
+
 func TestWriteFileIfSameRestoresQuarantineWhenDestinationCheckFails(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

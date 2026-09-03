@@ -253,6 +253,22 @@ func TestXCConfigParserRejectsUnterminatedQuotedValues(t *testing.T) {
 	}
 }
 
+func TestXCConfigParserStripsInlineBlockCommentsFromAssignmentValues(t *testing.T) {
+	document, err := parseXCConfig([]byte("CODE_SIGN_IDENTITY = Apple /* note */ Development\n"))
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v", err)
+	}
+	if len(document.assignments) != 1 {
+		t.Fatalf("parseXCConfig() assignments = %#v, want one identity assignment", document.assignments)
+	}
+	if strings.Contains(document.assignments[0].value, "/*") || strings.Contains(document.assignments[0].value, "note") {
+		t.Fatalf("parseXCConfig() value = %q, want comment stripped from the assignment value", document.assignments[0].value)
+	}
+	if !strings.Contains(document.assignments[0].value, "Apple") || !strings.Contains(document.assignments[0].value, "Development") {
+		t.Fatalf("parseXCConfig() value = %q, want the surrounding identity tokens", document.assignments[0].value)
+	}
+}
+
 func TestXCConfigEditorTreatsApostrophesInUnquotedValuesAsLiterals(t *testing.T) {
 	input := "INFOPLIST_KEY_CFBundleDisplayName = Developer's App // keep this comment\nMARKETING_VERSION = 1.2.3\n"
 	document, err := parseXCConfig([]byte(input))
