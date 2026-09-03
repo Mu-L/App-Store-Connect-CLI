@@ -375,6 +375,21 @@ Available commands:
 * `asc web subscriptions pricing monthly-commitment bootstrap` - create or reuse MONTHLY availability and attach paired UPFRONT/MONTHLY prices
 * `asc web subscriptions pricing adjusted-equalizations view` - inspect Apple's adjusted price matrix for a MONTHLY subscription price point
 
+The adjusted-equalizations commands cover the same Apple concept but expose
+different contracts:
+
+* Use `asc web subscriptions pricing adjusted-equalizations view` when you need
+  the web-session `/iris` MONTHLY price matrix or Apple's normalized
+  `missingTerritories` diagnostic after an equalization failure. This workflow
+  requires a cached web session (`asc web auth login`) and accepts the
+  workflow-specific `--price-point-id` and `--plan-type MONTHLY` inputs. It
+  prints a computed JSON result rather than Apple's public JSON:API envelope.
+* Use `asc subscriptions pricing price-points adjusted-equalizations` for
+  API-key automation, pagination, territory filters, or `proceeds` fields.
+  Its first page requires `--price-point-id`, `--upfront-price-point-id`, and
+  `--plan-type MONTHLY`; public 409 conflicts remain errors rather than being
+  converted into the web command's missing-territory JSON.
+
 Role requirement: removing an approved auto-renewable subscription from sale requires an Account Holder web session. App Store Connect rejects Admin and App Manager users for this action.
 
 For standard monthly-commitment setup, use `asc subscriptions pricing monthly-commitment enable`.
