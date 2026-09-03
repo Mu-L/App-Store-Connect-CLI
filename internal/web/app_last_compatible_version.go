@@ -40,8 +40,10 @@ type AppLastCompatibleVersion struct {
 // GetAppLastCompatibleVersions reads per-version download availability, the
 // setting App Store Connect exposes as Last-Compatible Version Settings.
 //
-// The public App Store Connect API does not expose the appStoreVersions
-// downloadable attribute, so this reads the internal app resource.
+// The public OpenAPI snapshot documents downloadable on appStoreVersions, but
+// this reads App Store Connect's own Last-Compatible Version Settings request
+// on the internal app resource so the sparse fieldset, relationship order, and
+// limit match that screen.
 func (c *Client) GetAppLastCompatibleVersions(ctx context.Context, appID string) (*AppLastCompatibleVersions, error) {
 	appID = strings.TrimSpace(appID)
 	if appID == "" {

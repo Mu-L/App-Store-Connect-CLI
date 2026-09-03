@@ -13,6 +13,11 @@ import (
 // fields the status history view needs.
 const appStatusHistoryVersionFields = "versionString,platform,appStoreState,appVersionState,createdDate"
 
+// appStatusHistoryVersionSummaryFields keeps the identity attributes and the
+// app relationship so --version-id can verify ownership. Apple's sparse
+// fieldset omits relationships that are not listed.
+const appStatusHistoryVersionSummaryFields = appStatusHistoryVersionFields + ",app"
+
 // AppStatusHistory groups App Store version status changes for one app.
 type AppStatusHistory struct {
 	AppID    string                    `json:"appId"`
@@ -42,7 +47,7 @@ type AppStatusChange struct {
 // App Store Connect records status changes per app store version, and exposes
 // no app-level history resource, so this lists the app's versions and then
 // reads each version's state changes. A non-empty versionID skips the version
-// list and reads that single version.
+// list, verifies that version belongs to appID, and reads that single version.
 func (c *Client) GetAppStatusHistory(ctx context.Context, appID, versionID string) (*AppStatusHistory, error) {
 	appID = strings.TrimSpace(appID)
 	if appID == "" {
@@ -71,7 +76,7 @@ func (c *Client) GetAppStatusHistory(ctx context.Context, appID, versionID strin
 
 func (c *Client) appStatusHistoryVersions(ctx context.Context, appID, versionID string) ([]AppStatusHistoryVersion, error) {
 	if versionID != "" {
-		version, err := c.appStoreVersionSummary(ctx, versionID)
+		version, err := c.appStoreVersionSummary(ctx, appID, versionID)
 		if err != nil {
 			return nil, err
 		}
@@ -94,9 +99,10 @@ func (c *Client) appStatusHistoryVersions(ctx context.Context, appID, versionID 
 	return versions, nil
 }
 
-func (c *Client) appStoreVersionSummary(ctx context.Context, versionID string) (AppStatusHistoryVersion, error) {
+func (c *Client) appStoreVersionSummary(ctx context.Context, appID, versionID string) (AppStatusHistoryVersion, error) {
 	query := url.Values{}
-	query.Set("fields[appStoreVersions]", appStatusHistoryVersionFields)
+	query.Set("fields[appStoreVersions]", appStatusHistoryVersionSummaryFields)
+	query.Set("include", "app")
 	path := "/appStoreVersions/" + url.PathEscape(versionID) + "?" + query.Encode()
 
 	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
@@ -111,11 +117,27 @@ func (c *Client) appStoreVersionSummary(ctx context.Context, versionID string) (
 		return AppStatusHistoryVersion{}, fmt.Errorf("failed to parse app store version response: %w", err)
 	}
 
+	if err := verifyAppStoreVersionAppID(payload.Data, appID, versionID); err != nil {
+		return AppStatusHistoryVersion{}, err
+	}
+
 	version := appStatusHistoryVersionFromResource(payload.Data)
 	if version.VersionID == "" {
 		version.VersionID = versionID
 	}
 	return version, nil
+}
+
+func verifyAppStoreVersionAppID(resource jsonAPIResource, appID, versionID string) error {
+	ref := firstRelationshipRef(resource, "app")
+	if ref == nil || strings.TrimSpace(ref.ID) == "" {
+		return fmt.Errorf("app relationship missing for app store version %q", versionID)
+	}
+	relatedAppID := strings.TrimSpace(ref.ID)
+	if !strings.EqualFold(relatedAppID, strings.TrimSpace(appID)) {
+		return fmt.Errorf("version %q belongs to app %q, not %q", versionID, relatedAppID, appID)
+	}
+	return nil
 }
 
 func appStatusHistoryVersionFromResource(resource jsonAPIResource) AppStatusHistoryVersion {

@@ -82,7 +82,7 @@ func TestWebAppsLastCompatibleVersionViewTableRendersRows(t *testing.T) {
 		return &webcore.AppLastCompatibleVersions{
 			AppID: appID,
 			Versions: []webcore.AppLastCompatibleVersion{
-				{ID: "v-2", VersionString: "2.0", Platform: "IOS", Downloadable: boolPtr(true)},
+				{ID: "v-2", VersionString: "2.0", Platform: "IOS", AppStoreState: "READY_FOR_SALE", AppVersionState: "READY_FOR_DISTRIBUTION", Downloadable: boolPtr(true)},
 				{ID: "v-1", VersionString: "1.0", Platform: "IOS"},
 			},
 		}, nil
@@ -102,7 +102,7 @@ func TestWebAppsLastCompatibleVersionViewTableRendersRows(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-	for _, want := range []string{"downloadable", "version", "v-2", "2.0", "true", "unknown"} {
+	for _, want := range []string{"downloadable", "version", "v-2", "2.0", "true", "unknown", "app_store_state", "app_version_state", "READY_FOR_SALE", "READY_FOR_DISTRIBUTION"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout missing %q; stdout=%q", want, stdout)
 		}

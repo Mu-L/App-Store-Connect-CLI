@@ -32,8 +32,11 @@ Read the per-version download availability that App Store Connect exposes as
 Last-Compatible Version Settings, where a previously released version can be
 made unavailable for download on older operating systems and devices.
 
-The public App Store Connect API does not expose the appStoreVersions
-downloadable attribute, so this is only reachable through a web session.
+The public App Store Connect API's OpenAPI snapshot documents downloadable on
+appStoreVersions, but the public CLI versions client does not currently request
+or print it. This command reads App Store Connect's own Last-Compatible Version
+Settings iris request, including its sparse fieldset, relationship order, and
+limit.
 
 This command is read-only. Making a version unavailable for download is not
 reversible from every state, and the write request body is not captured yet, so
@@ -66,9 +69,9 @@ func WebAppsLastCompatibleVersionViewCommand() *ffcli.Command {
 		LongHelp: `WEB SESSION WORKFLOWS
 
 List every app store version with the downloadable flag App Store Connect uses
-for Last-Compatible Version Settings. Versions are listed in the order Apple
-returns them, newest first. Apple omits downloadable for versions that never
-carried the setting; those rows report "unknown" instead of a guessed default.
+for Last-Compatible Version Settings. Versions follow Apple's appStoreVersions
+relationship order. Apple omits downloadable for versions that never carried
+the setting; those rows report "unknown" instead of a guessed default.
 
 Apple returns both appStoreState and appVersionState inconsistently across
 versions. Both are printed exactly as returned; neither is remapped.
@@ -112,7 +115,7 @@ Examples:
 	}
 }
 
-var webAppLastCompatibleVersionHeaders = []string{"version_id", "version", "platform", "app_version_state", "downloadable", "created_date"}
+var webAppLastCompatibleVersionHeaders = []string{"version_id", "version", "platform", "app_store_state", "app_version_state", "downloadable", "created_date"}
 
 func printWebAppLastCompatibleVersions(result *webcore.AppLastCompatibleVersions, output string, pretty bool) error {
 	return shared.PrintOutputWithRenderers(
@@ -136,15 +139,12 @@ func webAppLastCompatibleVersionRows(result *webcore.AppLastCompatibleVersions) 
 	}
 	rows := make([][]string, 0, len(result.Versions))
 	for _, version := range result.Versions {
-		state := version.AppVersionState
-		if strings.TrimSpace(state) == "" {
-			state = version.AppStoreState
-		}
 		rows = append(rows, []string{
 			version.ID,
 			webAppValueOrUnknown(version.VersionString),
 			webAppValueOrUnknown(version.Platform),
-			webAppValueOrUnknown(state),
+			webAppValueOrUnknown(version.AppStoreState),
+			webAppValueOrUnknown(version.AppVersionState),
 			formatWebCompatibilityBool(version.Downloadable),
 			webAppValueOrUnknown(version.CreatedDate),
 		})

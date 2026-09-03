@@ -73,7 +73,20 @@ func TestGetAppStatusHistoryScopesToVersionID(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/appStoreVersions/v-7":
-			_, _ = w.Write([]byte(`{"data": {"type": "appStoreVersions", "id": "v-7", "attributes": {"versionString": "7.0", "platform": "MAC_OS"}}}`))
+			if got := r.URL.Query().Get("include"); got != "app" {
+				t.Errorf("include = %q, want app", got)
+			}
+			foundAppField := false
+			for _, field := range strings.Split(r.URL.Query().Get("fields[appStoreVersions]"), ",") {
+				if field == "app" {
+					foundAppField = true
+					break
+				}
+			}
+			if !foundAppField {
+				t.Errorf("fields[appStoreVersions] = %q, want exact app relationship field", r.URL.Query().Get("fields[appStoreVersions]"))
+			}
+			_, _ = w.Write([]byte(`{"data": {"type": "appStoreVersions", "id": "v-7", "attributes": {"versionString": "7.0", "platform": "MAC_OS"}, "relationships": {"app": {"data": {"type": "apps", "id": "app-123"}}}}}`))
 		case "/appStoreVersions/v-7/appStoreVersionStateChanges":
 			_, _ = w.Write([]byte(`{"data": [{"type": "appStoreVersionStateChanges", "id": "c-7", "attributes": {"appStoreState": "IN_REVIEW", "date": "2025-03-01T00:00:00Z"}}]}`))
 		default:
@@ -97,6 +110,48 @@ func TestGetAppStatusHistoryScopesToVersionID(t *testing.T) {
 	}
 	if got.Versions[0].Platform != "MAC_OS" || len(got.Versions[0].Changes) != 1 {
 		t.Fatalf("unexpected scoped version: %+v", got.Versions[0])
+	}
+}
+
+func TestGetAppStatusHistoryRejectsVersionFromAnotherApp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/appStoreVersions/v-other" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": {"type": "appStoreVersions", "id": "v-other", "attributes": {"versionString": "1.0"}, "relationships": {"app": {"data": {"type": "apps", "id": "app-other"}}}}}`))
+	}))
+	defer server.Close()
+
+	_, err := testWebClient(server).GetAppStatusHistory(context.Background(), "app-123", "v-other")
+	if err == nil {
+		t.Fatal("expected error for version belonging to another app")
+	}
+	if !strings.Contains(err.Error(), `version "v-other" belongs to app "app-other", not "app-123"`) {
+		t.Fatalf("error = %v, want ownership mismatch", err)
+	}
+}
+
+func TestGetAppStatusHistoryRejectsVersionMissingAppRelationship(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/appStoreVersions/v-7" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data": {"type": "appStoreVersions", "id": "v-7", "attributes": {"versionString": "7.0"}}}`))
+	}))
+	defer server.Close()
+
+	_, err := testWebClient(server).GetAppStatusHistory(context.Background(), "app-123", "v-7")
+	if err == nil {
+		t.Fatal("expected error for missing app relationship")
+	}
+	if !strings.Contains(err.Error(), `app relationship missing for app store version "v-7"`) {
+		t.Fatalf("error = %v, want missing app relationship", err)
 	}
 }
 
