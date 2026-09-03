@@ -341,6 +341,27 @@ func (identity *rootIdentity) retainFile(file *os.File) bool {
 	return true
 }
 
+// releaseFile drops a previously retained descriptor and closes it. Capture
+// uses it when a check after retention rejects the identity, so a refused
+// capture does not pin a descriptor that no caller holds a handle to until the
+// whole Root closes. A descriptor already claimed by close is left alone.
+func (identity *rootIdentity) releaseFile(file *os.File) error {
+	if identity == nil || file == nil {
+		return nil
+	}
+	identity.mu.Lock()
+	for index, retained := range identity.retainedFiles {
+		if retained != file {
+			continue
+		}
+		identity.retainedFiles = append(identity.retainedFiles[:index], identity.retainedFiles[index+1:]...)
+		identity.mu.Unlock()
+		return file.Close()
+	}
+	identity.mu.Unlock()
+	return nil
+}
+
 func (identity *rootIdentity) retainIdentity(file *os.File, info os.FileInfo, data []byte, path string) (*FileIdentity, error) {
 	if file == nil || info == nil {
 		if file != nil {
@@ -1250,8 +1271,15 @@ func (r Root) CaptureFileLimited(name string, limit int64) (*FileIdentity, error
 		return nil, err
 	}
 	if identity.multipleHardLinks != initialMultipleLinks {
+		// The descriptor now belongs to the Root's retained set, so the local
+		// cleanup must not close it. Release it explicitly instead: no
+		// FileIdentity is returned, so nothing else could free it before the
+		// Root closes.
 		closeOnError = false
-		return nil, fmt.Errorf("%w: %q hard-link state changed during identity capture", ErrFileIdentityChanged, resolved)
+		return nil, errors.Join(
+			fmt.Errorf("%w: %q hard-link state changed during identity capture", ErrFileIdentityChanged, resolved),
+			r.selectedIdentity.releaseFile(file),
+		)
 	}
 	closeOnError = false
 	return identity, nil

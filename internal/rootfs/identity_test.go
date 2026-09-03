@@ -1782,3 +1782,48 @@ func TestIdentityChecksRejectSpecialPermissionBitDrift(t *testing.T) {
 		t.Fatalf("staging or quarantine entries remain after special-bit drift: %v", matches)
 	}
 }
+
+func TestRootIdentityReleaseFileDropsAndClosesRetainedDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("CODE_SIGN_STYLE = Automatic\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open(source) error = %v", err)
+	}
+
+	if !root.selectedIdentity.retainFile(file) {
+		t.Fatal("retainFile() = false, want the descriptor retained")
+	}
+	root.selectedIdentity.mu.RLock()
+	retained := len(root.selectedIdentity.retainedFiles)
+	root.selectedIdentity.mu.RUnlock()
+	if retained != 1 {
+		t.Fatalf("retained descriptors = %d, want 1", retained)
+	}
+
+	// A capture rejected after retention has no FileIdentity to hand back, so
+	// the descriptor must be released rather than pinned until Root.Close.
+	if err := root.selectedIdentity.releaseFile(file); err != nil {
+		t.Fatalf("releaseFile() error = %v", err)
+	}
+	root.selectedIdentity.mu.RLock()
+	retained = len(root.selectedIdentity.retainedFiles)
+	root.selectedIdentity.mu.RUnlock()
+	if retained != 0 {
+		t.Fatalf("retained descriptors after release = %d, want 0", retained)
+	}
+	if _, err := file.Stat(); err == nil {
+		t.Fatal("released descriptor is still open")
+	}
+	// Releasing again must not double-close, and neither must Root.Close.
+	if err := root.selectedIdentity.releaseFile(file); err != nil {
+		t.Fatalf("second releaseFile() error = %v", err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatalf("Close() error = %v after releasing a retained descriptor", err)
+	}
+}
