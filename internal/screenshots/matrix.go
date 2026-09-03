@@ -716,17 +716,18 @@ func relativeMatrixOutputPath(rootPath, path string) (string, error) {
 // find and remove the original directory after a provider renames it, while
 // never recursively deleting a replacement that now occupies the old path.
 type matrixPrivateAttemptRoot struct {
-	root         rootfs.Root
-	path         string
-	grandparent  *os.Root
-	parent       *os.Root
-	pinned       *os.Root
-	child        *os.Root
-	parentID     os.FileInfo
-	identity     os.FileInfo
-	output       *rootfs.Root
-	parentLocked bool
-	childLocked  bool
+	root              rootfs.Root
+	path              string
+	grandparent       *os.Root
+	parent            *os.Root
+	pinned            *os.Root
+	child             *os.Root
+	parentID          os.FileInfo
+	identity          os.FileInfo
+	output            *rootfs.Root
+	parentLocked      bool
+	childLocked       bool
+	grandparentLocked bool
 }
 
 func matrixPrivateAttemptOperation(stage, path string) error {
@@ -1046,6 +1047,13 @@ func createMatrixPrivateAttemptRoot() (matrixPrivateAttemptRoot, error) {
 		closeErr := errors.Join(childCloseErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
 		return matrixPrivateAttemptRoot{}, errors.Join(err, cleanupErr, closeErr)
 	}
+	if err := lockMatrixPrivateAttemptDirectory(grandparent); err != nil {
+		unlockErr := unlockMatrixPrivateAttemptParent(parent)
+		childCloseErr := reopenedChild.Close()
+		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
+		closeErr := errors.Join(childCloseErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
+		return matrixPrivateAttemptRoot{}, errors.Join(err, unlockErr, cleanupErr, closeErr)
+	}
 	currentParentEntry, parentEntryErr := grandparent.Lstat(parentName)
 	currentParentID, parentStatErr := parent.Stat(".")
 	currentChildEntry, childEntryErr := parent.Lstat(name)
@@ -1058,21 +1066,21 @@ func createMatrixPrivateAttemptRoot() (matrixPrivateAttemptRoot, error) {
 	}
 	if parentEntryErr != nil || parentStatErr != nil || childEntryErr != nil || childOpenErr != nil || validatedChildCloseErr != nil || !os.SameFile(createdParentID, currentParentEntry) || !os.SameFile(createdParentID, currentParentID) || !os.SameFile(pinnedID, currentChildEntry) || !os.SameFile(pinnedID, validatedChildID) {
 		identityErr := errors.New("private matrix attempt root changed before parent lock")
-		unlockErr := unlockMatrixPrivateAttemptParent(parent)
+		unlockErr := errors.Join(unlockMatrixPrivateAttemptDirectory(grandparent), unlockMatrixPrivateAttemptParent(parent))
 		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
 		closeErr := errors.Join(reopenedChild.Close(), pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
 		return matrixPrivateAttemptRoot{}, errors.Join(identityErr, unlockErr, cleanupErr, closeErr)
 	}
 	closeErr := reopenedChild.Close()
 	if closeErr != nil {
-		unlockErr := unlockMatrixPrivateAttemptParent(parent)
+		unlockErr := errors.Join(unlockMatrixPrivateAttemptDirectory(grandparent), unlockMatrixPrivateAttemptParent(parent))
 		cleanupErr := cleanupMatrixPrivateAttemptConstruction(parent, grandparent, pinned, pinnedID, parentID)
 		return matrixPrivateAttemptRoot{}, errors.Join(closeErr, unlockErr, cleanupErr, pinned.Close(), root.Close(), anchoredChild.Close(), parent.Close(), grandparent.Close())
 	}
 	return matrixPrivateAttemptRoot{
 		root: root, path: path, grandparent: grandparent,
 		parent: parent, pinned: pinned, child: anchoredChild, parentID: parentID, identity: identity,
-		parentLocked: true,
+		parentLocked: true, grandparentLocked: true,
 	}, nil
 }
 
@@ -1190,6 +1198,11 @@ func (attempt matrixPrivateAttemptRoot) cleanup() error {
 	}
 	if attempt.parentLocked {
 		if err := unlockMatrixPrivateAttemptParent(attempt.parent); err != nil {
+			return err
+		}
+	}
+	if attempt.grandparentLocked {
+		if err := unlockMatrixPrivateAttemptDirectory(attempt.grandparent); err != nil {
 			return err
 		}
 	}
@@ -2100,7 +2113,11 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		outputRootErr = matrixLockError("output", outputLockErr)
 	}
 	if outputRootErr != nil {
-		markMatrixOutputFailure(result)
+		if isMatrixContextTermination(outputRootErr) {
+			markMatrixCellsCanceled(result)
+		} else {
+			markMatrixOutputFailure(result)
+		}
 		if runErr == nil {
 			runErr = outputRootErr
 		} else {
@@ -2377,7 +2394,7 @@ func executeMatrixCellWithSimulatorLock(ctx context.Context, cell MatrixCell, ba
 		result.FailureStage = attemptResult.FailureStage
 		result.FailureCode = attemptResult.FailureCode
 		result.Error = newMatrixCellError(attemptResult.FailureStage, attemptResult.FailureCode, attemptResult.Error)
-		if attempt == maxAttempts || (attemptResult.FailureStage != "execution" && attemptResult.FailureStage != "framing") {
+		if attempt == maxAttempts || attemptResult.CleanupFailed || (attemptResult.FailureStage != "execution" && attemptResult.FailureStage != "framing") {
 			break
 		}
 		if err := waitContext(ctx, backoff); err != nil {
@@ -2634,8 +2651,24 @@ func executeMatrixCellAttempt(ctx context.Context, cell MatrixCell, base *Plan, 
 		frameSourceRoot = frameOutputRoot
 		frameSourceRootPath = frameOutputRoot.Path()
 	}
+	if err := verifyMatrixRetainedOutputRoot(outputRoots.raw); err != nil {
+		attempt.FailureStage = "framing"
+		attempt.FailureCode = "raw_output_failed"
+		attempt.Error = "raw screenshot root changed before framing"
+		return attempt, err
+	}
 	frameSources := make([]string, 0, len(attempt.RawPaths))
 	for index, inputPath := range attempt.RawPaths {
+		contained, containsErr := outputRoots.raw.ContainsPath(inputPath)
+		if containsErr != nil || !contained {
+			attempt.FailureStage = "framing"
+			attempt.FailureCode = "raw_output_failed"
+			attempt.Error = "raw screenshot is no longer inside the retained raw root"
+			if containsErr != nil {
+				return attempt, containsErr
+			}
+			return attempt, errors.New("raw screenshot left the retained raw root")
+		}
 		tempFrame := filepath.Join(frameSourceRootPath, filepath.Base(cell.FramedPaths[index]))
 		frameRequest := FrameRequest{InputPath: inputPath, OutputPath: tempFrame, Device: frameDevice}
 		var frameResult *FrameResult

@@ -165,7 +165,16 @@ func createMatrixPrivateScratchDir(prefix string) (string, error) {
 }
 
 func createMatrixPrivateAttemptParent() (string, error) {
-	return createMatrixPrivateScratchDir(".asc-matrix-attempt-parent-")
+	namespace, err := createMatrixPrivateScratchDir(".asc-matrix-attempt-ns-")
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Join(namespace, "parent")
+	if err := createMatrixOwnerOnlyDirectory(parent); err != nil {
+		_ = os.RemoveAll(namespace)
+		return "", err
+	}
+	return parent, nil
 }
 
 func createMatrixPrivateAttemptChild(parent *os.Root, parentPath, name string) error {

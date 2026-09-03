@@ -2220,6 +2220,83 @@ func TestRunMatrix_ReviewRootReplacementFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRunMatrix_DoesNotRetryAfterAttemptCleanupFailure(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{
+  "version":1,"base_plan":"base.json",
+  "devices":[{"id":"phone","udid":"UDID"}],
+  "locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],
+  "execution":{"max_attempts":2},"output":{"raw_dir":"raw","review_dir":"review"}
+}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	var attempts int
+	previous := matrixPrivateAttemptCleanupForTest
+	matrixPrivateAttemptCleanupForTest = func(string) error { return errors.New("injected attempt cleanup failure") }
+	t.Cleanup(func() { matrixPrivateAttemptCleanupForTest = previous })
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			attempts++
+			return nil, errors.New("injected execution failure")
+		},
+		Appearance:  &matrixTestAppearance{},
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want cleanup-failed cell")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want no retry after cleanup failure", attempts)
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one cell", result)
+	}
+	if result.Cells[0].Status != MatrixCellCleanupFailed || result.Cells[0].Attempts != 1 {
+		t.Fatalf("cell = %+v, want cleanupFailed after a single attempt", result.Cells[0])
+	}
+}
+
+func TestRunMatrix_CanceledOutputLockMarksCellsCanceled(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{
+  "version":1,"base_plan":"base.json",
+  "devices":[{"id":"phone","udid":"UDID"}],
+  "locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],
+  "output":{"raw_dir":"raw","review_dir":"review"}
+}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, runErr := RunMatrixWithDependencies(ctx, matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(context.Context, *Plan) (*RunResult, error) {
+			t.Fatal("RunPlan should not run after caller cancellation")
+			return nil, nil
+		},
+		Appearance:  &matrixTestAppearance{},
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want caller cancellation")
+	}
+	if result == nil || len(result.Cells) != 1 {
+		t.Fatalf("result = %+v, want one canceled cell", result)
+	}
+	if result.Cells[0].Status != MatrixCellCanceled || result.Cells[0].FailureCode != "canceled" {
+		t.Fatalf("cell = %+v, want canceled rather than output_root_failed", result.Cells[0])
+	}
+}
+
 func TestRunMatrix_RetriesExecutionButNotValidation(t *testing.T) {
 	dir := t.TempDir()
 	basePath := filepath.Join(dir, "base.json")
@@ -4042,6 +4119,74 @@ func TestRunMatrixKeepsExecutionRootsPinnedAfterLock(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "review", "manifest.json")); err != nil {
 		t.Fatalf("partial review manifest stat error = %v, want review publication to remain available", err)
+	}
+}
+
+func TestExecuteMatrixCellAttemptRejectsReplacedRawRootBeforeFraming(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows temporary volumes do not reliably distinguish a replaced raw directory identity")
+	}
+	dir := t.TempDir()
+	rawDir := filepath.Join(dir, "raw")
+	framedDir := filepath.Join(dir, "framed")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("create raw output root: %v", err)
+	}
+	if err := os.MkdirAll(framedDir, 0o755); err != nil {
+		t.Fatalf("create framed output root: %v", err)
+	}
+	rawRoot, err := rootfs.New(rawDir)
+	if err != nil {
+		t.Fatalf("open raw output root: %v", err)
+	}
+	defer rawRoot.Close()
+	framedRoot, err := rootfs.New(framedDir)
+	if err != nil {
+		t.Fatalf("open framed output root: %v", err)
+	}
+	defer framedRoot.Close()
+	cell := MatrixCell{
+		ID:          "phone|en-US|light|default",
+		Device:      "phone",
+		UDID:        "SIM-UDID",
+		RawDir:      filepath.Join(rawDir, "en-US", "phone", "light", "default"),
+		FramedDir:   filepath.Join(framedDir, "en-US", "phone", "light", "default"),
+		RawPaths:    []string{filepath.Join(rawDir, "en-US", "phone", "light", "default", "home.png")},
+		FramedPaths: []string{filepath.Join(framedDir, "en-US", "phone", "light", "default", "home.png")},
+	}
+	base := &Plan{Version: 1, App: PlanApp{BundleID: "com.example.app"}, Steps: []PlanStep{{Action: ActionScreenshot, Name: stringPtr("home")}}}
+	matrixPlan := &MatrixPlan{Output: MatrixOutput{Frame: MatrixFrame{Enabled: true, DeviceByMatrixDevice: map[string]string{"phone": "iphone-17-pro"}}}}
+	creates := 0
+	previous := matrixPrivateAttemptParentCreatedForTest
+	matrixPrivateAttemptParentCreatedForTest = func(string) {
+		creates++
+		if creates != 2 {
+			return
+		}
+		original := rawDir + "-original"
+		if err := os.Rename(rawDir, original); err != nil {
+			t.Errorf("rename raw root: %v", err)
+			return
+		}
+		if err := os.Mkdir(rawDir, 0o700); err != nil {
+			t.Errorf("replace raw root: %v", err)
+		}
+	}
+	t.Cleanup(func() { matrixPrivateAttemptParentCreatedForTest = previous })
+	_, attemptErr := executeMatrixCellAttempt(context.Background(), cell, base, matrixPlan, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			if err := writeMatrixPNGFile(filepath.Join(plan.App.OutputDir, "home.png")); err != nil {
+				return nil, err
+			}
+			return &RunResult{}, nil
+		},
+		Frame: func(context.Context, FrameRequest) (*FrameResult, error) {
+			t.Fatal("Frame should not run after the retained raw root was replaced")
+			return nil, nil
+		},
+	}, matrixOutputRoots{raw: rawRoot, rawPath: rawDir, framed: framedRoot, framedPath: framedDir, hasFramed: true})
+	if attemptErr == nil {
+		t.Fatal("executeMatrixCellAttempt() error = nil, want replaced raw root failure")
 	}
 }
 
