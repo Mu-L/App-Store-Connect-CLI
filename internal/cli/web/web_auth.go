@@ -971,18 +971,21 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
-
 			warnDeprecatedTwoFactorCodeFlag(*twoFactorCode)
 			selection := webcore.ProviderSelection{
 				ProviderID:       *providerID,
 				PublicProviderID: *publicProviderID,
 			}
-			session, source, err := callResolveSessionForProviderSelection(requestCtx, *appleID, "", *twoFactorCode, *twoFactorCodeCommand, selection)
+			session, source, err := callResolveSessionForProviderSelection(ctx, *appleID, "", *twoFactorCode, *twoFactorCodeCommand, selection)
 			if err != nil {
 				return err
 			}
+
+			// Provider selection is a request, so its budget starts once the
+			// interactive login finished.
+			requestCtx, cancel := newWebRequestContext(ctx)
+			defer cancel()
+
 			if err := selectResolvedWebSessionProvider(requestCtx, session, selection); err != nil {
 				return err
 			}

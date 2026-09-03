@@ -156,9 +156,8 @@ resolution but does not mutate App Store Connect.
 				}
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -281,9 +280,8 @@ func WebSubscriptionsPricingAdjustedEqualizationsViewCommand() *ffcli.Command {
 			if normalizedPlanType != "MONTHLY" {
 				return shared.UsageError(`--plan-type only supports "MONTHLY"; Apple's endpoint rejects UPFRONT`)
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}

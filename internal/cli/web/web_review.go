@@ -824,10 +824,8 @@ func WebReviewListCommand() *ffcli.Command {
 				return err
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -903,10 +901,8 @@ Selection:
 				}
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}

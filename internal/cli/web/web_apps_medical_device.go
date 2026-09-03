@@ -89,7 +89,8 @@ Examples:
 				return shared.UsageError("--declared true is not yet supported; only false is currently supported")
 			}
 
-			session, err := resolveWebSessionForCommand(ctx, authFlags)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
+			defer cancel()
 			if err != nil {
 				return err
 			}
@@ -98,9 +99,6 @@ Examples:
 			if accountID == "" {
 				return fmt.Errorf("web apps medical-device set failed: web session is missing public provider/account id (run 'asc web auth login')")
 			}
-
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
 
 			client := newWebClientFn(session)
 			var result *webcore.MedicalDeviceDeclarationResult

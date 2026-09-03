@@ -82,9 +82,8 @@ Example:
 			if len(args) > 0 {
 				return shared.UsageError("web app-groups list does not accept positional arguments")
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups list")
 			}
@@ -141,9 +140,8 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups create")
 			}
@@ -207,9 +205,8 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups assign")
 			}

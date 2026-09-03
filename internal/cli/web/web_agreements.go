@@ -103,10 +103,8 @@ Example:
 				return shared.UsageError("web agreements status does not accept positional arguments")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -198,10 +196,8 @@ Examples:
 				return fmt.Errorf("web agreements download failed: %w", err)
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -355,10 +351,8 @@ Examples:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
