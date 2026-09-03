@@ -7,6 +7,9 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	webcmd "github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/web"
+	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 func TestRootUsageIncludesWebSessionGroup(t *testing.T) {
@@ -72,8 +75,54 @@ func TestWebAppsMedicalDeviceSetSubcommandIsRegistered(t *testing.T) {
 
 func TestWebBundleIDCapabilitiesSyncAppClipSubcommandIsRegistered(t *testing.T) {
 	root := RootCommand("1.2.3")
-	if sub := findSubcommand(root, "web", "bundle-ids", "capabilities", "sync-app-clip"); sub == nil {
+	sub := findSubcommand(root, "web", "bundle-ids", "capabilities", "sync-app-clip")
+	if sub == nil {
 		t.Fatalf("expected web bundle-ids capabilities sync-app-clip to be registered")
+	}
+	for _, flagName := range []string{"bundle-id", "parent-bundle-id", "capability", "settings-json", "confirm", "apple-id", "output"} {
+		if sub.FlagSet.Lookup(flagName) == nil {
+			t.Fatalf("expected --%s flag", flagName)
+		}
+	}
+	if !strings.Contains(sub.ShortUsage, "--confirm") {
+		t.Fatalf("expected --confirm in short usage, got %q", sub.ShortUsage)
+	}
+}
+
+func TestWebBundleIDCapabilitiesSyncAppClipMissingConfirmFailsBeforeSession(t *testing.T) {
+	restore := webcmd.SetResolveWebSession(func(context.Context, string, string, string) (*webcore.AuthSession, string, error) {
+		t.Fatal("web session must not be resolved when --confirm is missing")
+		return nil, "", nil
+	})
+	defer restore()
+	restoreSync := webcmd.SetSyncAppClipBundleIDCapability(func(context.Context, *webcore.Client, webcore.AppClipBundleIDCapabilitySyncRequest) (*webcore.AppClipBundleIDCapabilitySyncResult, error) {
+		t.Fatal("sync must not run when --confirm is missing")
+		return nil, nil
+	})
+	defer restoreSync()
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "bundle-ids", "capabilities", "sync-app-clip", "--bundle-id", "clip-1", "--parent-bundle-id", "parent-1", "--capability", "PUSH_NOTIFICATIONS"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "Warning: web bundle-ids capabilities sync-app-clip now requires --confirm") {
+		t.Fatalf("expected migration warning, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "Error: --confirm is required") {
+		t.Fatalf("expected missing --confirm error, got %q", stderr)
 	}
 }
 
