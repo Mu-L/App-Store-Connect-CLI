@@ -1250,6 +1250,10 @@ func signingValueDependsOnRequestedChange(
 	depth int,
 	source string,
 ) bool {
+	const signingDependencyMaxDepth = 32
+	if depth > signingDependencyMaxDepth {
+		return true
+	}
 	for _, match := range signingReferencePattern.FindAllStringSubmatch(value, -1) {
 		name := match[1]
 		if name == "" {
@@ -1264,8 +1268,14 @@ func signingValueDependsOnRequestedChange(
 				return true
 			}
 			for _, lowerValue := range values {
+				nextConfiguration := configuration
+				if source == "xcconfig" && configuration != nil && !configuration.projectLevel {
+					if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil {
+						nextConfiguration = fallback
+					}
+				}
 				if signingValueDependsOnRequestedChange(
-					configuration,
+					nextConfiguration,
 					setting,
 					lowerValue.value,
 					settingValues,

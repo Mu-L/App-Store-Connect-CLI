@@ -85,17 +85,19 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		key := masked[indices[4]:indices[5]]
 		operatorStart, operatorEnd := indices[8], indices[9]
 		valueStart, valueEnd := indices[12], indices[13]
-		joined := masked[valueStart:valueEnd]
+		joined := body[valueStart:valueEnd]
 		endIndex := index
-		value, quote, err := parseXCConfigValue(joined)
+		logical, _ := maskXCConfigComments(joined, false)
+		value, quote, err := parseXCConfigValue(logical)
 		for err != nil && xcconfigValueHasLineContinuation(joined) && endIndex+1 < len(lines) {
 			endIndex++
 			nextBody := strings.TrimSuffix(lines[endIndex], "\n")
 			nextBody = strings.TrimSuffix(nextBody, "\r")
-			nextMasked, nextBlock := maskXCConfigComments(nextBody, inBlockComment)
+			_, nextBlock := maskXCConfigComments(nextBody, inBlockComment)
 			inBlockComment = nextBlock
-			joined = trimXCConfigLineContinuation(joined) + nextMasked
-			value, quote, err = parseXCConfigValue(joined)
+			joined = trimXCConfigLineContinuation(joined) + nextBody
+			logical, _ = maskXCConfigComments(joined, false)
+			value, quote, err = parseXCConfigValue(logical)
 		}
 		if err != nil {
 			return xcconfigDocument{}, fmt.Errorf("xcconfig line %d: %w", index+1, err)

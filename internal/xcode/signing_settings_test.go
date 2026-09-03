@@ -3857,6 +3857,53 @@ func TestSigningPlanKeepsStableInheritedAliasNoOp(t *testing.T) {
 	}
 }
 
+func TestSigningPlanTerminatesProjectXCConfigInheritedTraversal(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	projectRoot := filepath.Dir(project)
+	projectConfigPath := filepath.Join(projectRoot, "Configs", "Project.xcconfig")
+	if err := os.WriteFile(projectConfigPath, []byte(
+		"DEVELOPMENT_TEAM = ABCDE12345\n"+
+			"CODE_SIGN_IDENTITY = Apple Development\n"+
+			"CODE_SIGN_IDENTITY = $(inherited) $(DEVELOPMENT_TEAM)\n",
+	), 0o640); err != nil {
+		t.Fatalf("WriteFile(project xcconfig) error = %v", err)
+	}
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	contents := mustReadVersionTestFile(t, pbxprojPath)
+	fileReference := `
+		BBBBBBBBBBBBBBBBBBBBBBBB /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/Project.xcconfig; sourceTree = SOURCE_ROOT; };`
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(contents, marker) {
+		t.Fatal("project fixture is missing project object marker")
+	}
+	contents = strings.Replace(contents, marker, fileReference+"\n"+marker, 1)
+	projectConfiguration := "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; buildSettings = {}; name = Debug; };"
+	updatedConfiguration := "999999999999999999999991 /* Project Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = BBBBBBBBBBBBBBBBBBBBBBBB; buildSettings = {}; name = Debug; };"
+	if !strings.Contains(contents, projectConfiguration) {
+		t.Fatal("project fixture is missing project Debug configuration")
+	}
+	contents = strings.Replace(contents, projectConfiguration, updatedConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":"Apple Development ABCDE12345",
+			"DEVELOPMENT_TEAM":"XYZAB67890"
+		}}]}]
+	}`)
+
+	if _, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	}); err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want inherited project xcconfig traversal to terminate", err)
+	}
+}
+
 func TestSigningPlanMaterializesTopLevelInheritedIdentityWhenTeamChanges(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
