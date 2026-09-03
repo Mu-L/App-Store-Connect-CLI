@@ -40,6 +40,15 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Region codes reference: https://developer.apple.com/help/app-store-connect/reference/financial-report-regions-and-currencies/
 - Use `asc finance regions` to see all available region codes
 
+## Tax Categories and Transaction Tax Reports
+
+Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec version 4.4.1):
+
+- There is no tax-category endpoint, and no tax-category attribute on `apps`, `appInfos`, or `inAppPurchases`. The App Store Connect UI is the only way to read or set an app or in-app purchase tax category.
+- `GET /v1/financeReports` accepts only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and `GET /v1/salesReports` has no tax report type, so Transaction Tax reports cannot be generated or downloaded through the public API.
+- Both surfaces still need a live web-session endpoint capture before any `asc web` command can be shipped: the request method, path, headers, request body, and response body for the App Information tax category read and write, and for the Payments and Financial Reports "Create Reports" Transaction Tax generate, poll, and download calls. See issue #2299.
+- `asc capabilities --area monetization` reports the tax category gap, and `asc capabilities --status not-public-api` reports both gaps.
+
 ## Sandbox Testers
 
 - `asc web sandbox create` requires `--first-name`, `--last-name`, `--email`, `--password`, and `--territory`
@@ -68,6 +77,15 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
 - Revoke and `--individual` create still need a live web-session endpoint capture.
 
+## Web-session Resolution Center
+
+- Resolution Center has no official App Store Connect API surface; the OpenAPI snapshot contains no `resolutionCenter*` or `reviewRejection*` path. Every reader below is a web-session (`/iris/v1`) call and needs Apple ID auth, not an API key.
+- Threads have two scopes and they are not interchangeable. `asc web review show` resolves the submission scope (`GET /iris/v1/resolutionCenterThreads?filter[reviewSubmission]={id}&include=reviewSubmission`), which only returns threads Apple attached to that review submission. `asc web review threads --app` reads the app scope (`GET /iris/v1/apps/{appId}/resolutionCenterThreads?include=appStoreVersions,app,appMessageThreadDetail,build,betaBackgroundAssetReviewSubmission&limit[appStoreVersions]=2000&filter[threadType]=REJECTION_BINARY,REJECTION_METADATA,REJECTION_REVIEW_SUBMISSION,APP_MESSAGE_ARC,APP_MESSAGE_ARB,APP_MESSAGE_COMM,APP_MESSAGE_INFORMATIONAL`), which also returns binary, metadata, and informational threads that no submission owns. `show` reports the app-scoped threads the selected submission does not cover under `appThreads`.
+- The app-scoped relationship is sent with the review center's captured `filter[threadType]` set rather than a narrowed one. Unsupported include or filter shapes on these surfaces answer 400 (for example `include=fromActor,rejections,resolutionCenterThread` on `resolutionCenterMessages`), so the known-good query shapes are sent verbatim.
+- A thread's unsent draft reply lives at `GET /iris/v1/resolutionCenterThreads/{threadId}/resolutionCenterDraftMessage?include=resolutionCenterMessageAttachments,fromActor&limit[resolutionCenterMessageAttachments]=1000`. It is a single-resource document: a thread with no draft answers with a null `data` member, and the relationship can also answer 404. Both mean "no draft" rather than an error. `asc web review threads --drafts` reads it read-only, keeps Apple's raw HTML body, and never returns the attachments' signed download URLs.
+- All of these readers follow `links.next` internally, so the commands have no `--paginate` flag.
+- Sending a reply or a draft is not implemented; only reads are supported.
+
 ## Web-session app distribution method
 
 - The public App Store Connect API has no distribution-method surface: `App` and `AppUpdateRequest` in `docs/openapi/latest.json` expose only `contentRightsDeclaration`, `streamlinedPurchasingEnabled`, subscription status URLs, and identity fields, and `AppAvailabilityV2` only carries `availableInNewTerritories`. The setting is web-session only.
@@ -75,6 +93,7 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Observed values are `APP_STORE` (public App Store distribution) and `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager). Apple omits the attribute for accounts or apps that never carried it; the command reports `unknown` in table output and omits the field in JSON rather than defaulting it to `APP_STORE`.
 - Writes are not shipped. The observed write contract pairs `distributionType` with `educationDiscountType` in a single app PATCH, and public/private transitions carry Apple-side eligibility restrictions that are not observable from the read payload, so the CLI fails closed and leaves the change to the App Store Connect web UI.
 - Unlisted App Store distribution is a request form reviewed by Apple, not an attribute value on this resource. There is no captured endpoint for it, so no flag is offered.
+
 ## Web-session last-compatible version settings
 
 - App Store Connect's Last-Compatible Version Settings screen has no dedicated resource and no `lastCompatibleVersion` attribute. The feature is carried by the boolean `downloadable` attribute on the existing `appStoreVersions` resource; `lastCompatibleVersion` is only a client-side label App Store Connect puts on the `appStoreVersions` collection it reads back. The public OpenAPI snapshot documents `downloadable` on `AppStoreVersion` and `AppStoreVersionUpdateRequest`, but the public CLI versions client does not currently request or print it.
