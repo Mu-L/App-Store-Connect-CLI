@@ -2425,8 +2425,12 @@ func (r Root) openExpectedIdentityRootedFile(parent *os.Root, name string, expec
 	if !os.SameFile(expected.info, info) {
 		return nil, nil, ErrFileIdentityChanged
 	}
-	if info.Mode().Perm() != expected.info.Mode().Perm() {
-		return nil, nil, fmt.Errorf("%w: file permissions changed", ErrFileIdentityChanged)
+	// Compare the complete mode, not only the 0777 bits: a setuid, setgid or
+	// sticky change alters neither the permission bits nor the modification
+	// time, and copyReplacementMetadata does not carry those bits onto a
+	// replacement.
+	if info.Mode() != expected.info.Mode() {
+		return nil, nil, fmt.Errorf("%w: file mode changed", ErrFileIdentityChanged)
 	}
 	if !info.ModTime().Equal(expected.info.ModTime()) {
 		return nil, nil, fmt.Errorf("%w: file modification time changed", ErrFileIdentityChanged)
@@ -2810,7 +2814,7 @@ func (r Root) removeExpectedIdentityQuarantine(parent *os.Root, quarantineName s
 	if err != nil {
 		return quarantineCleanupUncertain(quarantineName, "recheck quarantined file before removal", err)
 	}
-	if !os.SameFile(info, latest) || latest.Mode().Perm() != info.Mode().Perm() {
+	if !os.SameFile(info, latest) || latest.Mode() != info.Mode() {
 		return quarantineCleanupUncertain(quarantineName, "quarantined file identity changed before removal", nil)
 	}
 	if err := parent.Remove(quarantineName); err != nil {

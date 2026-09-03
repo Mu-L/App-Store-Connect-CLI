@@ -1728,3 +1728,57 @@ func requireBoundedRecoveryToken(t *testing.T, identity *FileIdentity) {
 		t.Fatalf("strict publication recovery token retained %d bytes, want at most %d", len(got), fileIdentityDataLimit)
 	}
 }
+
+func TestIdentityChecksRejectSpecialPermissionBitDrift(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "settings.xcconfig")
+	const original = "CODE_SIGN_STYLE = Automatic\n"
+	if err := os.WriteFile(path, []byte(original), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := root.CaptureFile("settings.xcconfig")
+	if err != nil {
+		t.Fatalf("CaptureFile() error = %v", err)
+	}
+	// setgid lives outside the ordinary 0777 bits and changes neither the
+	// modification time nor the ownership, so it is invisible to every other
+	// strict comparison.
+	if err := os.Chmod(path, 0o640|os.ModeSetgid); err != nil {
+		t.Skipf("set the setgid bit: %v", err)
+	}
+	drifted, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(source) error = %v", err)
+	}
+	if drifted.Mode()&os.ModeSetgid == 0 {
+		t.Skip("filesystem dropped the setgid bit")
+	}
+
+	if err := root.CheckFileIdentity("settings.xcconfig", identity); !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("CheckFileIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	installed, err := root.ReplaceFileIfSame("settings.xcconfig", identity, []byte("CODE_SIGN_STYLE = Manual\n"), 0o640, true)
+	if !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("ReplaceFileIfSame() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if installed != nil {
+		t.Fatal("ReplaceFileIfSame() returned an identity after special-bit drift")
+	}
+	if err := root.RemoveFileIfSameIdentity("settings.xcconfig", identity); !errors.Is(err, ErrFileIdentityChanged) {
+		t.Fatalf("RemoveFileIfSameIdentity() error = %v, want ErrFileIdentityChanged", err)
+	}
+	if got := mustRead(t, path); got != original {
+		t.Fatalf("source after special-bit drift = %q, want %q", got, original)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".asc-tmp-*"))
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("staging or quarantine entries remain after special-bit drift: %v", matches)
+	}
+}
