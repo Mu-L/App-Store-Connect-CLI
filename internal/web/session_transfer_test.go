@@ -1,9 +1,12 @@
 package web
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 func withFileSessionCache(t *testing.T) {
 	t.Helper()
 	withArraySessionKeyring(t)
+	withSessionInfoStub(t)
 	t.Setenv(webSessionCacheEnabledEnv, "1")
 	t.Setenv(webSessionBackendEnv, "file")
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
@@ -167,6 +171,133 @@ func validTestBundle(expires time.Time) *SessionBundle {
 			Path:    "/",
 			Expires: &expiry,
 		}},
+	}
+}
+
+func fakeSessionInfoValidator(t *testing.T, status int, body string) (sessionInfoValidator, *int) {
+	t.Helper()
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("session info method = %s, want GET", r.Method)
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+
+	return func(ctx context.Context, client *http.Client) (string, error) {
+		target, err := url.Parse(olympusSessionURL)
+		if err != nil {
+			return "", err
+		}
+		if client == nil || client.Jar == nil || len(client.Jar.Cookies(target)) == 0 {
+			return "", errors.New("session info validator received no imported cookies")
+		}
+		info, err := getSessionInfoAt(ctx, client, server.URL)
+		if err != nil {
+			return "", err
+		}
+		return info.User.EmailAddress, nil
+	}, &calls
+}
+
+func TestImportSessionBundleValidatesWithFakeSessionInfoServer(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	validator, calls := fakeSessionInfoValidator(t, http.StatusOK, `{"provider":{"providerId":42},"user":{"emailAddress":"user@example.com"}}`)
+
+	summary, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator)
+	if err != nil {
+		t.Fatalf("importSessionBundleWithValidator() error = %v", err)
+	}
+	if summary.AppleID != bundle.AppleID {
+		t.Fatalf("summary AppleID = %q, want %q", summary.AppleID, bundle.AppleID)
+	}
+	if *calls != 1 {
+		t.Fatalf("fake session info calls = %d, want 1", *calls)
+	}
+	if _, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID)); err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the validated session", ok, err)
+	}
+}
+
+func TestImportSessionBundleRejectsUnvalidatedSessionBeforePersistence(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":"unauthorized"}`},
+		{name: "forbidden", status: http.StatusForbidden, body: `{"error":"forbidden"}`},
+		{name: "malformed response", status: http.StatusOK, body: "{"},
+		{name: "trailing response", status: http.StatusOK, body: `{"user":{"emailAddress":"user@example.com"}} trailing`},
+		{name: "apple id mismatch", status: http.StatusOK, body: `{"user":{"emailAddress":"other@example.com"}}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withFileSessionCache(t)
+			bundle := validTestBundle(time.Now().Add(time.Hour))
+			validator, calls := fakeSessionInfoValidator(t, tc.status, tc.body)
+
+			if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); !errors.Is(err, ErrSessionBundleValidationFailed) {
+				t.Fatalf("importSessionBundleWithValidator() error = %v, want ErrSessionBundleValidationFailed", err)
+			}
+			if *calls != 1 {
+				t.Fatalf("fake session info calls = %d, want 1", *calls)
+			}
+			if _, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID)); err != nil || ok {
+				t.Fatalf("readSessionFromFile() = (%v, %v), want no persisted session", ok, err)
+			}
+		})
+	}
+}
+
+func TestImportSessionBundleDoesNotOverwriteExistingSessionWhenValidationFails(t *testing.T) {
+	withFileSessionCache(t)
+	persistTestSession(
+		t,
+		"user@example.com",
+		&http.Cookie{Name: "myacinfo", Value: "old-token", Path: "/", Expires: time.Now().Add(time.Hour)},
+	)
+	bundle := validTestBundle(time.Now().Add(2 * time.Hour))
+	validator, _ := fakeSessionInfoValidator(t, http.StatusUnauthorized, `{"error":"unauthorized"}`)
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, true, validator); !errors.Is(err, ErrSessionBundleValidationFailed) {
+		t.Fatalf("importSessionBundleWithValidator() error = %v, want ErrSessionBundleValidationFailed", err)
+	}
+	loaded, ok, err := LoadCachedSession(bundle.AppleID)
+	if err != nil || !ok || loaded == nil {
+		t.Fatalf("LoadCachedSession() = (%v, %v, %v), want the prior session", loaded, ok, err)
+	}
+	target, _ := url.Parse("https://appstoreconnect.apple.com/")
+	values := loaded.Client.Jar.Cookies(target)
+	if len(values) != 1 || values[0].Value != "old-token" {
+		t.Fatalf("cached cookies = %#v, want old-token", values)
+	}
+}
+
+func TestImportSessionBundleRejectsSessionInfoTransportError(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	endpoint := server.URL
+	server.Close()
+	validator := func(ctx context.Context, client *http.Client) (string, error) {
+		info, err := getSessionInfoAt(ctx, client, endpoint)
+		if err != nil {
+			return "", err
+		}
+		return info.User.EmailAddress, nil
+	}
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); !errors.Is(err, ErrSessionBundleValidationFailed) {
+		t.Fatalf("importSessionBundleWithValidator() error = %v, want ErrSessionBundleValidationFailed", err)
+	}
+	if _, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID)); err != nil || ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want no persisted session", ok, err)
 	}
 }
 
@@ -461,6 +592,7 @@ func TestImportSessionBundleRestoresExistingSessionWhenLastSessionPointerCannotB
 
 func TestImportSessionBundleOverwritesMalformedKeychainStore(t *testing.T) {
 	kr := withArraySessionKeyring(t)
+	withSessionInfoStub(t)
 	t.Setenv(webSessionCacheEnabledEnv, "1")
 	t.Setenv(webSessionBackendEnv, "keychain")
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "unused-file-cache"))
@@ -480,6 +612,7 @@ func TestImportSessionBundleOverwritesMalformedKeychainStore(t *testing.T) {
 
 func TestImportSessionBundleOverwriteRemovesDefaultKeychainFallback(t *testing.T) {
 	withArraySessionKeyring(t)
+	withSessionInfoStub(t)
 	t.Setenv(webSessionCacheEnabledEnv, "1")
 	t.Setenv(webSessionBackendEnv, "")
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
@@ -562,6 +695,13 @@ func TestImportSessionBundleDoesNotMergeDifferentAppleIDs(t *testing.T) {
 	bundle.AppleID = "second@example.com"
 	bundle.Cookies[0].Name = "myacinfo"
 	bundle.Cookies[0].Value = "second-token"
+	previousFetcher := sessionInfoFetcher
+	sessionInfoFetcher = func(context.Context, *http.Client) (*sessionInfo, error) {
+		out := &sessionInfo{}
+		out.User.EmailAddress = "second@example.com"
+		return out, nil
+	}
+	t.Cleanup(func() { sessionInfoFetcher = previousFetcher })
 
 	if _, err := ImportSessionBundle(bundle); err != nil {
 		t.Fatalf("ImportSessionBundle() error = %v", err)

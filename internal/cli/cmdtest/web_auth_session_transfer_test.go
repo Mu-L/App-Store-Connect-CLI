@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -50,7 +52,27 @@ func isolateWebSessionCache(t *testing.T) string {
 	t.Setenv("ASC_WEB_SESSION_CACHE_BACKEND", "file")
 	t.Setenv("ASC_IRIS_SESSION_CACHE", "0")
 	t.Setenv("ASC_IRIS_SESSION_CACHE_DIR", t.TempDir())
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = webSessionInfoTransport{base: previousTransport}
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
 	return cacheDir
+}
+
+type webSessionInfoTransport struct {
+	base http.RoundTripper
+}
+
+func (t webSessionInfoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && req.URL.Scheme == "https" && req.URL.Host == "appstoreconnect.apple.com" && req.URL.Path == "/olympus/v1/session" {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"provider":{"providerId":42},"user":{"emailAddress":"user@example.com"}}`)),
+			Request:    req,
+		}, nil
+	}
+	return t.base.RoundTrip(req)
 }
 
 const webSessionBundleFixture = `{

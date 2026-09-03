@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,7 +43,13 @@ var (
 	// ErrSessionCookieInvalid reports that a cookie name, value, path, or
 	// domain is not a valid HTTP cookie field.
 	ErrSessionCookieInvalid = errors.New("web session bundle cookie is invalid")
+
+	// ErrSessionBundleValidationFailed reports that Apple did not accept the
+	// imported session or that its authenticated identity could not be proved.
+	ErrSessionBundleValidationFailed = errors.New("web session bundle could not be validated")
 )
+
+type sessionInfoValidator func(context.Context, *http.Client) (string, error)
 
 // SessionBundle is the portable representation of a cached Apple web session.
 // It is written by `asc web auth export` and read by `asc web auth import` so
@@ -467,7 +474,7 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 // writes, so later `asc web` commands resume it. The imported session also
 // becomes the last cached session.
 func ImportSessionBundle(bundle *SessionBundle) (SessionImportSummary, error) {
-	return ImportSessionBundleWithOptions(bundle, false)
+	return ImportSessionBundleWithContext(context.Background(), bundle, false)
 }
 
 // ImportSessionBundleWithOptions imports a bundle and optionally permits
@@ -475,6 +482,16 @@ func ImportSessionBundle(bundle *SessionBundle) (SessionImportSummary, error) {
 // recovery from a malformed keychain aggregate to the explicit replacement
 // path; ordinary login and refresh writes must not erase other accounts.
 func ImportSessionBundleWithOptions(bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
+	return ImportSessionBundleWithContext(context.Background(), bundle, overwrite)
+}
+
+// ImportSessionBundleWithContext imports a bundle using ctx for the
+// pre-persistence Apple session validation request.
+func ImportSessionBundleWithContext(ctx context.Context, bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
+	return importSessionBundleWithValidator(ctx, bundle, overwrite, nil)
+}
+
+func importSessionBundleWithValidator(ctx context.Context, bundle *SessionBundle, overwrite bool, validator sessionInfoValidator) (SessionImportSummary, error) {
 	if bundle == nil {
 		return SessionImportSummary{}, errors.New("web session bundle is empty")
 	}
@@ -488,8 +505,48 @@ func ImportSessionBundleWithOptions(bundle *SessionBundle, overwrite bool) (Sess
 	if selection.backend == sessionBackendOff {
 		return SessionImportSummary{}, ErrSessionCacheDisabled
 	}
+	if err := validateImportedSession(ctx, sess, validator); err != nil {
+		return SessionImportSummary{}, err
+	}
 	if err := persistImportedSessionBySelection(selection, webSessionCacheKey(summary.AppleID), sess, overwrite); err != nil {
 		return SessionImportSummary{}, err
 	}
 	return summary, nil
+}
+
+func validateImportedSession(ctx context.Context, sess persistedSession, validator sessionInfoValidator) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if validator == nil {
+		validator = validateSessionInfo
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return fmt.Errorf("%w: failed to create cookie jar: %w", ErrSessionBundleValidationFailed, err)
+	}
+	if hydrateCookieJar(jar, sess) == 0 {
+		return fmt.Errorf("%w: session bundle has no usable cookies", ErrSessionBundleValidationFailed)
+	}
+
+	appleID, err := validator(ctx, newWebHTTPClient(jar))
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrSessionBundleValidationFailed, err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(appleID), strings.TrimSpace(sess.UserEmail)) {
+		return fmt.Errorf("%w: authenticated Apple ID does not match bundle Apple ID", ErrSessionBundleValidationFailed)
+	}
+	return nil
+}
+
+func validateSessionInfo(ctx context.Context, client *http.Client) (string, error) {
+	info, err := sessionInfoFetcher(ctx, client)
+	if err != nil {
+		return "", err
+	}
+	if info == nil {
+		return "", errors.New("session info response is empty")
+	}
+	return strings.TrimSpace(info.User.EmailAddress), nil
 }

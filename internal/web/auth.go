@@ -995,7 +995,11 @@ func signinComplete(ctx context.Context, client *http.Client, username, m1, m2 s
 }
 
 func getSessionInfo(ctx context.Context, client *http.Client) (*sessionInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", olympusSessionURL, nil)
+	return getSessionInfoAt(ctx, client, olympusSessionURL)
+}
+
+func getSessionInfoAt(ctx context.Context, client *http.Client, endpoint string) (*sessionInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

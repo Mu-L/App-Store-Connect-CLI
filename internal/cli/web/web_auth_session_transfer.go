@@ -26,8 +26,8 @@ const (
 )
 
 // sessionTransferWarning writes the reminders that an exported bundle is a
-// credential and that an imported session has not been validated. os.Stderr is
-// resolved per call so redirected process output is honored.
+// credential and that an imported session was validated. os.Stderr is resolved
+// per call so redirected process output is honored.
 func sessionTransferWarning(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format, args...)
 }
@@ -73,8 +73,9 @@ The bundle records the Apple Account email and the session cookies for Apple's
 App Store Connect and developer origins. Apple's login populates a cookie jar
 that keeps only cookie names and values, so an exported bundle usually carries
 no expiry date and reports "expiresAt" only when the cached cookies record one.
-Importing does not prove the session is still accepted; run
-"asc web auth status" on the target machine to confirm it still works.
+The export itself does not validate the session; import validates it against
+Apple before writing it on the target machine. Run "asc web auth status" on
+the target machine to inspect the resumed session if needed.
 
 Examples:
   asc web auth export --output-path ./web-session.json
@@ -196,8 +197,10 @@ bundle with no usable cookie is refused without writing to the cache. Pass
 The imported session also becomes the last cached session, so "asc web"
 commands resume it without --apple-id.
 
-Importing does not contact Apple. Run "asc web auth status" afterwards to
-confirm the session is still accepted.
+Import validates the session against Apple's session endpoint before writing
+anything to the cache. Invalid, expired, malformed, unreachable, or
+identity-mismatched sessions are rejected without changing the cache. Run
+"asc web auth status" afterwards if you need to inspect the resumed session.
 
 Examples:
   asc web auth import --file ./web-session.json
@@ -235,13 +238,15 @@ Examples:
 			} else if ok && existing != nil && !*overwrite {
 				return fmt.Errorf("web auth import failed: a cached web session for %s already exists; pass --overwrite to replace it", bundle.AppleID)
 			}
-			summary, err := webcore.ImportSessionBundleWithOptions(bundle, *overwrite)
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+			summary, err := webcore.ImportSessionBundleWithContext(requestCtx, bundle, *overwrite)
 			if err != nil {
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
 
 			sessionTransferWarning(
-				"Imported web session for %s without contacting Apple. Run \"asc web auth status\" to confirm it is still valid.\n",
+				"Imported web session for %s after validating it with Apple. Run \"asc web auth status\" to inspect it if needed.\n",
 				summary.AppleID,
 			)
 
