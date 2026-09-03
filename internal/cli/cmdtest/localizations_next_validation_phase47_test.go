@@ -2,6 +2,8 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -64,7 +66,16 @@ func runLocalizationsInvalidNextURLCases(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if wantWarning := expectedLocalizationsStderr(argsPrefix); wantWarning != "" {
+			// Commands that classify this as a usage error print the
+			// diagnostic themselves and exit 2; the rest still surface it
+			// only through the returned error. Both shapes are accepted here
+			// because this runner is shared across command groups that are
+			// migrating to shared.UsageError at different times.
+			if errors.Is(runErr, flag.ErrHelp) {
+				if !strings.Contains(stderr, test.wantErr) {
+					t.Fatalf("expected stderr to contain %q, got %q", test.wantErr, stderr)
+				}
+			} else if wantWarning := expectedLocalizationsStderr(argsPrefix); wantWarning != "" {
 				if !strings.Contains(stderr, wantWarning) {
 					t.Fatalf("expected deprecation warning %q, got %q", wantWarning, stderr)
 				}
