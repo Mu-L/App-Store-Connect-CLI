@@ -57,7 +57,8 @@ Migration:
 | Retired | Replacement |
 | --- | --- |
 | `asc web apps last-compatible-version view --app APP_ID` | `asc versions list --app APP_ID --paginate --output json` |
-| (no write existed) | `asc versions update --version-id VERSION_ID --downloadable true\|false` |
+| (no write existed) | `asc versions update --version-id VERSION_ID --downloadable true` |
+| (no write existed) | `asc versions update --version-id VERSION_ID --downloadable false --confirm` |
 
 The `capabilities` inventory row for this feature moves from `partial` to
 `cli-supported` and no longer lists a web-session command.

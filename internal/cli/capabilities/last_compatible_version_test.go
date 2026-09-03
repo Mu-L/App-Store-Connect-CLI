@@ -34,6 +34,14 @@ func TestLastCompatibleVersionCapabilityUsesPublicAPICommands(t *testing.T) {
 		if strings.Contains(capability.NextAction, "last-compatible-version") {
 			t.Fatalf("retired web-session command still in next action: %q", capability.NextAction)
 		}
+		for _, want := range []string{
+			"asc versions update --version-id VERSION_ID --downloadable true",
+			"asc versions update --version-id VERSION_ID --downloadable false --confirm",
+		} {
+			if !strings.Contains(capability.NextAction, want) {
+				t.Fatalf("next action missing %q: %q", want, capability.NextAction)
+			}
+		}
 		for _, note := range capability.Notes {
 			if strings.Contains(note, "does not currently request or print") {
 				t.Fatalf("stale public-client claim remains: %q", note)

@@ -198,6 +198,29 @@ func TestVersionsUpdateDownloadableFalseRejectsExplicitConfirmFalse(t *testing.T
 	}
 }
 
+// Boolean flags do not consume a following spaced value. Reject the leftover
+// operand before a bare --confirm can authorize the destructive write.
+func TestVersionsUpdateRejectsSpacedConfirmFalseBeforeHTTP(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	stubTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("must fail before HTTP: %s %s", req.Method, req.URL.String())
+		return nil, errors.New("unexpected request")
+	}))
+
+	stdout, stderr, runErr := runCommand(t, []string{"versions", "update", "--version-id", "version-1", "--downloadable", "false", "--confirm", "false"})
+	if runErr == nil {
+		t.Fatal("run error = nil, want usage error")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "unexpected argument(s): false") {
+		t.Fatalf("stderr = %q, want positional-argument guidance", stderr)
+	}
+}
+
 // --downloadable alone satisfies the "at least one field" guard; it must not be
 // reported as a no-op update.
 func TestVersionsUpdateAcceptsDownloadableAsTheOnlyField(t *testing.T) {
