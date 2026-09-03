@@ -29,11 +29,15 @@ that direction requires `--confirm`:
 Error: --confirm is required with --downloadable false because making a released version unavailable for download is not reversible from every state. No request was sent.
 ```
 
-`--confirm` is rejected in any other combination rather than silently ignored:
+`--confirm` is rejected in any other combination rather than silently ignored,
+including an explicit `--confirm=false`:
 
 ```text
 Error: --confirm applies only to --downloadable false; remove it or pass --downloadable false
 ```
+
+`--downloadable false --confirm=false` is not confirmation either, so the write
+is still refused.
 
 `asc versions update --output json` now also echoes `downloadable` in its
 receipt when Apple returns the attribute, matching `asc versions view`.

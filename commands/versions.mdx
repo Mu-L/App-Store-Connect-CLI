@@ -212,7 +212,7 @@ Update an app store version.
 </ParamField>
 
 <ParamField path="--confirm" type="boolean">
-  Required with `--downloadable false`, because making a previously released version unavailable for download is not reversible from every state. It is rejected as a usage error in any other combination rather than silently ignored.
+  Required with `--downloadable false`, because making a previously released version unavailable for download is not reversible from every state. It is rejected as a usage error in any other combination rather than silently ignored, including an explicit `--confirm=false`.
 </ParamField>
 
 **Examples:**

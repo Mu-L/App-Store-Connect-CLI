@@ -145,6 +145,9 @@ func TestVersionsUpdateRejectsConfirmWithoutDownloadableFalse(t *testing.T) {
 	}{
 		{name: "downloadable true", args: []string{"--downloadable", "true", "--confirm"}},
 		{name: "unrelated update", args: []string{"--copyright", "2026 Example", "--confirm"}},
+		// An explicit --confirm=false is still a supplied flag with nothing to
+		// confirm, so it is rejected rather than quietly dropped.
+		{name: "explicit false", args: []string{"--copyright", "2026 Example", "--confirm=false"}},
 	}
 
 	for _, test := range tests {
@@ -169,6 +172,29 @@ func TestVersionsUpdateRejectsConfirmWithoutDownloadableFalse(t *testing.T) {
 				t.Fatalf("stderr = %q, want the --confirm misuse error", stderr)
 			}
 		})
+	}
+}
+
+// --confirm=false alongside --downloadable false is not confirmation, so the
+// destructive write is still refused.
+func TestVersionsUpdateDownloadableFalseRejectsExplicitConfirmFalse(t *testing.T) {
+	setupAuth(t)
+	t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+
+	stubTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("must fail before HTTP: %s %s", req.Method, req.URL.String())
+		return nil, errors.New("unexpected request")
+	}))
+
+	stdout, stderr, runErr := runCommand(t, []string{"versions", "update", "--version-id", "version-1", "--downloadable", "false", "--confirm=false"})
+	if runErr == nil {
+		t.Fatal("run error = nil, want usage error")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "--confirm is required") {
+		t.Fatalf("stderr = %q, want --confirm guidance", stderr)
 	}
 }
 

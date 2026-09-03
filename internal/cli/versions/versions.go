@@ -627,7 +627,9 @@ func VersionsUpdateCommand() *ffcli.Command {
 	versionString := fs.String("version", "", "Version string (e.g., 1.0.1)")
 	var downloadable shared.OptionalBool
 	fs.Var(&downloadable, "downloadable", "Download availability for this version on older operating systems and devices: true or false")
-	confirm := fs.Bool("confirm", false, "Confirm making this version unavailable for download (required with --downloadable false)")
+	var confirm shared.OptionalBool
+	confirm.EnableBoolFlag()
+	fs.Var(&confirm, "confirm", "Confirm making this version unavailable for download (required with --downloadable false)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -678,12 +680,15 @@ Examples:
 				return shared.MissingRequiredUsageError("")
 			}
 
+			// --confirm is tracked rather than read as a plain bool so an
+			// explicit --confirm=false is rejected instead of silently
+			// ignored, the same as a --confirm that was never needed.
 			downloadableFalse := downloadable.IsSet() && !downloadable.Value()
-			if downloadableFalse && !*confirm {
+			if downloadableFalse && (!confirm.IsSet() || !confirm.Value()) {
 				fmt.Fprintln(os.Stderr, "Error: --confirm is required with --downloadable false because making a released version unavailable for download is not reversible from every state. No request was sent.")
 				return shared.MissingRequiredUsageError("--confirm")
 			}
-			if *confirm && !downloadableFalse {
+			if confirm.IsSet() && !downloadableFalse {
 				return shared.UsageError("--confirm applies only to --downloadable false; remove it or pass --downloadable false")
 			}
 
