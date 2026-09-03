@@ -185,7 +185,7 @@ func (c *Client) listAppTerritoryAvailabilities(ctx context.Context, availabilit
 	query.Set("limit", "200")
 	path := queryPath("/appAvailabilities/"+url.PathEscape(availabilityID)+"/territoryAvailabilities", query)
 
-	payload, err := c.fetchJSONAPIPagesFrom(ctx, c.webIrisV2BaseURL(), path, "territory availabilities")
+	payload, err := c.fetchJSONAPIPagesFromWithRequiredLinks(ctx, c.webIrisV2BaseURL(), path, "territory availabilities")
 	if err != nil {
 		return nil, err
 	}

@@ -21,6 +21,14 @@ func (c *Client) fetchJSONAPIPages(ctx context.Context, path, responseName strin
 // so iris v2 collections can follow absolute next links without rejoining them
 // onto the client's iris v1 baseURL.
 func (c *Client) fetchJSONAPIPagesFrom(ctx context.Context, baseURL, path, responseName string) (jsonAPIListPayload, error) {
+	return c.fetchJSONAPIPagesFromWithOptions(ctx, baseURL, path, responseName, false)
+}
+
+func (c *Client) fetchJSONAPIPagesFromWithRequiredLinks(ctx context.Context, baseURL, path, responseName string) (jsonAPIListPayload, error) {
+	return c.fetchJSONAPIPagesFromWithOptions(ctx, baseURL, path, responseName, true)
+}
+
+func (c *Client) fetchJSONAPIPagesFromWithOptions(ctx context.Context, baseURL, path, responseName string, requireLinks bool) (jsonAPIListPayload, error) {
 	nextPath := strings.TrimSpace(path)
 	if nextPath == "" {
 		return jsonAPIListPayload{}, fmt.Errorf("%s path is required", responseName)
@@ -44,7 +52,8 @@ func (c *Client) fetchJSONAPIPagesFrom(ctx context.Context, baseURL, path, respo
 			return jsonAPIListPayload{}, err
 		}
 		var envelope struct {
-			Data json.RawMessage `json:"data"`
+			Data  json.RawMessage `json:"data"`
+			Links json.RawMessage `json:"links"`
 		}
 		if err := json.Unmarshal(responseBody, &envelope); err != nil {
 			return jsonAPIListPayload{}, fmt.Errorf("failed to parse %s response: %w", responseName, err)
@@ -52,6 +61,26 @@ func (c *Client) fetchJSONAPIPagesFrom(ctx context.Context, baseURL, path, respo
 		trimmedData := bytes.TrimSpace(envelope.Data)
 		if len(trimmedData) == 0 || bytes.Equal(trimmedData, []byte("null")) {
 			return jsonAPIListPayload{}, fmt.Errorf("%s response missing non-null data", responseName)
+		}
+		if requireLinks {
+			trimmedLinks := bytes.TrimSpace(envelope.Links)
+			if len(trimmedLinks) == 0 || bytes.Equal(trimmedLinks, []byte("null")) {
+				return jsonAPIListPayload{}, fmt.Errorf("%s response missing non-null links", responseName)
+			}
+			var links struct {
+				Self json.RawMessage `json:"self"`
+			}
+			if err := json.Unmarshal(trimmedLinks, &links); err != nil {
+				return jsonAPIListPayload{}, fmt.Errorf("failed to parse %s response links: %w", responseName, err)
+			}
+			trimmedSelf := bytes.TrimSpace(links.Self)
+			if len(trimmedSelf) == 0 || bytes.Equal(trimmedSelf, []byte("null")) {
+				return jsonAPIListPayload{}, fmt.Errorf("%s response missing non-null links.self", responseName)
+			}
+			var self string
+			if err := json.Unmarshal(trimmedSelf, &self); err != nil || strings.TrimSpace(self) == "" {
+				return jsonAPIListPayload{}, fmt.Errorf("%s response links.self must be a non-empty string", responseName)
+			}
 		}
 
 		var payload jsonAPIListPayload

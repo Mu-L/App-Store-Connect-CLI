@@ -297,7 +297,10 @@ func TestGetAppAvailabilityReadsPaginatedTerritoryAvailabilities(t *testing.T) {
 							"attributes": {"available": false},
 							"relationships": {"territory": {"data": {"type": "territories", "id": "CAN"}}}
 						}
-					]
+					],
+					"links": {
+						"self": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/6759231657/territoryAvailabilities?cursor=BQ&include=territory&limit=200"
+					}
 				}`))
 				return
 			}
@@ -316,7 +319,10 @@ func TestGetAppAvailabilityReadsPaginatedTerritoryAvailabilities(t *testing.T) {
 						"relationships": {"territory": {"data": {"type": "territories", "id": "FRA"}}}
 					}
 				],
-				"links": {"next": "` + nextLink + `"}
+				"links": {
+					"self": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/6759231657/territoryAvailabilities",
+					"next": "` + nextLink + `"
+				}
 			}`))
 		default:
 			fixture.Respond(w, "unexpected path: %s", r.URL.Path)
@@ -406,7 +412,8 @@ func TestGetAppAvailabilityFailsWhenTerritoryAvailabilityOmitsAvailable(t *testi
 					"id": "ta-usa",
 					"attributes": {},
 					"relationships": {"territory": {"data": {"type": "territories", "id": "USA"}}}
-				}]
+				}],
+				"links": {"self": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/app-123/territoryAvailabilities"}
 			}`))
 		default:
 			fixture.Respond(w, "unexpected path: %s", r.URL.Path)
@@ -462,6 +469,51 @@ func TestGetAppAvailabilityFailsWhenTerritoryAvailabilitiesDataMissing(t *testin
 			}
 			if !strings.Contains(err.Error(), "data") {
 				t.Fatalf("expected error to name missing data, got %v", err)
+			}
+		})
+	}
+}
+
+func TestGetAppAvailabilityFailsWhenTerritoryAvailabilitiesLinksMissing(t *testing.T) {
+	tests := map[string]string{
+		"field omitted": `{"data": [{"id":"ta-usa","type":"territoryAvailabilities","attributes":{"available":true},"relationships":{"territory":{"data":{"type":"territories","id":"USA"}}}}]}`,
+		"null":          `{"data": [{"id":"ta-usa","type":"territoryAvailabilities","attributes":{"available":true},"relationships":{"territory":{"data":{"type":"territories","id":"USA"}}}}],"links":null}`,
+		"self omitted":  `{"data": [{"id":"ta-usa","type":"territoryAvailabilities","attributes":{"available":true},"relationships":{"territory":{"data":{"type":"territories","id":"USA"}}}}],"links":{}}`,
+	}
+	for name, relatedResponse := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := handlertest.New(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/apps/app-123/appAvailabilityV2":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{
+						"data": {
+							"id": "avail-123",
+							"type": "appAvailabilities",
+							"attributes": {"availableInNewTerritories": false},
+							"relationships": {
+								"territoryAvailabilities": {
+									"links": {"related": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/avail-123/territoryAvailabilities"}
+								}
+							}
+						}
+					}`))
+				case "/iris/v2/appAvailabilities/avail-123/territoryAvailabilities":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(relatedResponse))
+				default:
+					fixture.Respond(w, "unexpected path: %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			_, err := testWebClient(server).GetAppAvailability(context.Background(), "app-123")
+			if err == nil {
+				t.Fatal("expected missing territoryAvailabilities links to fail closed")
+			}
+			if !strings.Contains(err.Error(), "links") {
+				t.Fatalf("expected error to name missing links, got %v", err)
 			}
 		})
 	}
