@@ -2107,6 +2107,30 @@ func TestResolvePrivacyApplyResultKeepsUpdateUnknownWithoutEvidence(t *testing.T
 	}
 }
 
+func TestResolvePrivacyApplyResultKeepsDeleteUnknownWhenRemoteTupleLacksUsageID(t *testing.T) {
+	resolved := resolvePrivacyApplyResult(privacyApplyResult{
+		Unknown: []privacyApplyAction{
+			{
+				Action:  "delete",
+				Key:     "PHONE_NUMBER|ANALYTICS|DATA_LINKED_TO_YOU",
+				UsageID: "usage-phone",
+			},
+		},
+	}, map[string]privacyRemoteState{
+		"PHONE_NUMBER|ANALYTICS|DATA_LINKED_TO_YOU": {},
+	})
+
+	if len(resolved.Unknown) != 1 || resolved.Unknown[0].Action != "delete" {
+		t.Fatalf("an ID-less leftover tuple cannot prove the delete committed: %#v", resolved)
+	}
+	if len(resolved.Applied) != 0 {
+		t.Fatalf("the delete must not be reported as committed: %#v", resolved.Applied)
+	}
+	if len(resolved.NotApplied) != 0 {
+		t.Fatalf("the original usage id is gone, so the delete is not proven not-applied either: %#v", resolved.NotApplied)
+	}
+}
+
 func TestWebPrivacyApplyTableReceiptSeparatesAppliedAndNotAppliedActions(t *testing.T) {
 	stubPrivacyMidSequenceFailure(t)
 

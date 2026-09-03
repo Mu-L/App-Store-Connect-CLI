@@ -72,7 +72,12 @@ step from remote evidence, because a 5xx can still have committed the write:
 
 - `create`: the desired tuple present remotely -> committed, adopting the
   remote usage id; absent -> not applied.
-- `delete`: the usage id gone -> committed; still present -> not applied.
+- `delete`: the usage id still present -> not applied; the usage id gone
+  and the tuple gone, or still present under a different usage id ->
+  committed; the tuple still present with no usage id -> unknown. The
+  planner records that last case as a skipped delete, so calling the
+  mutation committed would set `changed: true` while the extra
+  declaration remains.
 - `update`: the usage id present under the target tuple key -> committed;
   present under another key -> not applied; absent entirely -> unknown.
 

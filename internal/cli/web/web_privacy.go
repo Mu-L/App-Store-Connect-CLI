@@ -1029,6 +1029,14 @@ func resolvePrivacyApplyResult(result privacyApplyResult, remote map[string]priv
 				resolved.NotApplied = append(resolved.NotApplied, action)
 				continue
 			}
+			// The targeted id is gone, but the tuple may still be present
+			// without an id. The planner records that as a skipped delete, so
+			// treating the mutation as committed would put it in actions and
+			// set changed=true while the extra declaration remains.
+			if state, exists := remote[action.Key]; exists && len(state.UsageIDs) == 0 {
+				resolved.Unknown = append(resolved.Unknown, action)
+				continue
+			}
 			resolved.Applied = append(resolved.Applied, action)
 		case "update":
 			key, exists := remoteUsageIDs[action.UsageID]
