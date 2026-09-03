@@ -388,10 +388,29 @@ Available commands:
 * `asc web subscriptions pricing monthly-commitment bootstrap` - create or reuse MONTHLY availability and attach paired UPFRONT/MONTHLY prices
 * `asc web subscriptions pricing adjusted-equalizations view` - inspect Apple's adjusted price matrix for a MONTHLY subscription price point
 
+The adjusted-equalizations commands cover the same Apple concept but expose
+different contracts:
+
+* Use `asc web subscriptions pricing adjusted-equalizations view` when you need
+  the web-session `/iris` MONTHLY price matrix or the CLI's normalized
+  `missingTerritories` diagnostic after an equalization failure. Apple returns
+  that failure as a 409 conflict; this command converts it into successful JSON
+  output on stdout instead of an error. This workflow requires web-session
+  authentication and accepts the workflow-specific
+  `--price-point-id` and `--plan-type MONTHLY` inputs. It can reuse a session
+  cached by `asc web auth login` or authenticate through the standard
+  web-session flags and environment variables. It prints a computed JSON
+  result rather than Apple's public JSON:API envelope.
+* Use `asc subscriptions pricing price-points adjusted-equalizations` for
+  API-key automation, pagination, territory filters, or `proceeds` fields.
+  Its first page requires `--price-point-id`, `--upfront-price-point-id`, and
+  `--plan-type MONTHLY`; public 409 conflicts remain errors rather than being
+  converted into the web command's missing-territory JSON.
+
 Role requirement: removing an approved auto-renewable subscription from sale requires an Account Holder web session. App Store Connect rejects Admin and App Manager users for this action.
 
 For standard monthly-commitment setup, use `asc subscriptions pricing monthly-commitment enable`.
-Use `asc web subscriptions pricing` for App Store Connect paired pricing and adjusted-equalization workflows.
+Use `asc web subscriptions pricing` for web-session paired pricing and normalized adjusted-equalization diagnostics.
 
 Example:
 

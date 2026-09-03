@@ -711,6 +711,19 @@ Optional selectors include `--territory`, `--subscription-id`, `--fields`,
 `--include territory`, `--territory-fields currency`, `--limit`, and
 `--paginate`.
 
+This is the public API-key command and the default for scripts and CI. It
+prints Apple's unmodified JSON:API collection, so public responses can include
+`proceeds`, `proceedsYear2`, relationship links, included territory currency,
+and pagination metadata. It does not emit the web command's computed
+`status`/`available` fields or its normalized `missingTerritories` result.
+
+For Apple's web-session `/iris` MONTHLY matrix, especially when an equalization
+failure needs the normalized missing-territory diagnostic, use
+`asc web subscriptions pricing adjusted-equalizations view` instead. That
+command requires a web session and does not require
+`--upfront-price-point-id`; its output shape and 409 handling are intentionally
+different.
+
 ## Availability
 
 Control which territories can purchase your subscriptions.
