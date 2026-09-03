@@ -2371,6 +2371,73 @@ func TestSigningPlanRevalidatesNoOpReferenceAfterDependentChange(t *testing.T) {
 	}
 }
 
+func TestSigningPlanReclassifiesNoOpAfterDependentRemoval(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`CODE_SIGN_IDENTITY = com.example.old; PROVISIONING_PROFILE_SPECIFIER = "$(CODE_SIGN_IDENTITY)";`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":null,
+			"PROVISIONING_PROFILE_SPECIFIER":"com.example.old"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got blockers %#v", plan.Blockers)
+	}
+	var identityRemoval, profileChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityRemoval = change
+		case "PROVISIONING_PROFILE_SPECIFIER":
+			profileChange = change
+		}
+	}
+	if identityRemoval == nil || identityRemoval.Operation != "remove" {
+		t.Fatalf("identity change = %#v, want direct removal", identityRemoval)
+	}
+	if profileChange == nil || profileChange.Source != "pbxproj" || profileChange.NewValue == nil || *profileChange.NewValue != "com.example.old" {
+		t.Fatalf("profile change = %#v, want promoted target-level literal", profileChange)
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	if _, _, err := updated.resolveSetting(configuration, "CODE_SIGN_IDENTITY"); !errors.Is(err, errVersionSettingNotFound) {
+		t.Fatalf("resolved identity error = %v, want setting removal", err)
+	}
+	profile, _, err := updated.resolveSetting(configuration, "PROVISIONING_PROFILE_SPECIFIER")
+	if err != nil {
+		t.Fatalf("resolve applied profile: %v", err)
+	}
+	if profile != "com.example.old" {
+		t.Fatalf("applied profile = %q, want requested no-op value", profile)
+	}
+}
+
 func TestSigningPlanReclassifiesNoOpAfterProjectFallbackDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")

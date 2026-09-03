@@ -1702,7 +1702,15 @@ func reclassifySigningNoOps(
 
 		resolved, _, err := resolver.resolveSetting(configuration, candidate.setting)
 		if err != nil {
-			if errors.Is(err, errVersionSettingNotFound) && candidate.noOp {
+			if candidate.noOp {
+				// A previously resolvable no-op can become unresolved when a
+				// staged dependency is removed (for example, a direct setting
+				// that expands a setting removed by the same plan). Materialize
+				// the requested value at the target level so the no-op's
+				// effective value remains stable. Do this for every staged
+				// resolution failure: the initial pass already proved that the
+				// candidate resolved, so a new error necessarily comes from the
+				// staged dependency state.
 				candidate.mode = "pbxproj"
 				candidate.paths = nil
 				candidate.noOp = false
