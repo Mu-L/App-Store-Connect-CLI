@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -148,6 +149,9 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
+			if err := rejectAmbiguousTrailingConfirm(fs, args); err != nil {
+				return err
+			}
 			if err := shared.RecoverBoolFlagTailArgs(fs, args, availableInNew); err != nil {
 				return err
 			}
@@ -391,6 +395,17 @@ func formatTerritoryList(territoryIDs []string) string {
 		return "none"
 	}
 	return strings.Join(territoryIDs, ",")
+}
+
+func rejectAmbiguousTrailingConfirm(fs *flag.FlagSet, args []string) error {
+	if len(args) == 0 || !flagWasProvided(fs, "confirm") {
+		return nil
+	}
+	token := strings.TrimSpace(args[0])
+	if _, err := strconv.ParseBool(token); err != nil {
+		return nil
+	}
+	return shared.UsageErrorf("--confirm %s is ambiguous after another boolean flag; use --confirm=%s", token, token)
 }
 
 func warnTruncatedPlanAvailabilityTerritories(resp *asc.SubscriptionPlanAvailabilitiesResponse) {

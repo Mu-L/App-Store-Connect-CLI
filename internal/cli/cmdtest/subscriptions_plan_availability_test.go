@@ -98,6 +98,11 @@ func TestSubscriptionsPricingPlanAvailabilityValidationErrors(t *testing.T) {
 			wantErr: "--confirm is required",
 		},
 		{
+			name:    "set rejects confirm false after another boolean",
+			args:    []string{"subscriptions", "pricing", "plan-availability", "set", "--subscription-id", "sub-1", "--plan-type", "UPFRONT", "--territories", "USA", "--available-in-new-territories", "--confirm", "false"},
+			wantErr: "--confirm",
+		},
+		{
 			name:    "set rejects available in new territories for monthly",
 			args:    []string{"subscriptions", "pricing", "plan-availability", "set", "--subscription-id", "sub-1", "--plan-type", "MONTHLY", "--territories", "Norway", "--available-in-new-territories", "--confirm"},
 			wantErr: "--available-in-new-territories is not supported for MONTHLY plan availability",
@@ -123,6 +128,46 @@ func TestSubscriptionsPricingPlanAvailabilityValidationErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			assertUsageExit(t, test.args, test.wantErr)
 		})
+	}
+}
+
+func TestSubscriptionsPricingPlanAvailabilitySetRejectsConfirmFalseAfterBoolean(t *testing.T) {
+	setupAuth(t)
+
+	var patched bool
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPatch {
+			patched = true
+		}
+		t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+		return nil, nil
+	}))
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	stdout, _ := captureOutput(t, func() {
+		if err := root.Parse([]string{
+			"subscriptions", "pricing", "plan-availability", "set",
+			"--subscription-id", "8000000001",
+			"--plan-type", "UPFRONT",
+			"--territories", "USA",
+			"--available-in-new-territories",
+			"--confirm", "false",
+			"--output", "json",
+		}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		err := root.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "--confirm") {
+			t.Fatalf("expected a --confirm rejection, got %v", err)
+		}
+	})
+	if patched {
+		t.Fatal("must not PATCH when --confirm false is supplied")
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
 }
 
