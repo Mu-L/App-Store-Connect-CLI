@@ -1395,12 +1395,12 @@ func (r Root) writeFileIfSame(
 			r.removeExpectedQuarantine(parent, quarantineName, expected, expectedData),
 		)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
 
 	temporary, temporaryName, err := secureopen.CreateTempNoFollowInRoot(parent, ".", temporaryFilePattern, perm)
 	if err != nil {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
 	temporaryDone := false
 	temporaryClosed := false
@@ -1422,12 +1422,10 @@ func (r Root) writeFileIfSame(
 			copyMetadata = r.copyReplacementMetadataForTest
 		}
 		if err := copyMetadata(temporary, quarantine, quarantineInfo); err != nil {
-			closeErr := quarantine.Close()
-			quarantineClosed = true
-			return nil, errors.Join(err, closeErr, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+			return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 		}
 	} else if err := temporary.Chmod(perm); err != nil {
-		return nil, errors.Join(err, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+		return nil, errors.Join(err, r.closeAndRestoreQuarantine(quarantine, &quarantineClosed, parent, quarantineName, base, expected, expectedData))
 	}
 	if err := quarantine.Close(); err != nil {
 		quarantineClosed = true
@@ -1740,6 +1738,22 @@ func (r Root) syncConditionalParentDirectory(parent *os.Root) error {
 	return nil
 }
 
+func (r Root) closeAndRestoreQuarantine(
+	quarantine *os.File,
+	quarantineClosed *bool,
+	parent *os.Root,
+	quarantineName, base string,
+	expected os.FileInfo,
+	expectedData []byte,
+) error {
+	var closeErr error
+	if !*quarantineClosed {
+		closeErr = quarantine.Close()
+		*quarantineClosed = true
+	}
+	return errors.Join(closeErr, r.restoreOrRemoveQuarantine(parent, quarantineName, base, expected, expectedData))
+}
+
 func (r Root) restoreOrRemoveQuarantine(parent *os.Root, quarantineName, base string, expected os.FileInfo, expectedData []byte) error {
 	file, _, err := r.openExpectedRootedFile(parent, quarantineName, expected, expectedData)
 	if err != nil {
@@ -1977,7 +1991,10 @@ func (r Root) createNewFromWithInfo(name string, reader io.Reader, perm os.FileM
 		return 0, nil, err
 	}
 	defer func() {
-		resultErr = errors.Join(resultErr, parent.Close())
+		closeErr := parent.Close()
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
 	}()
 
 	info, err := parent.Lstat(base)

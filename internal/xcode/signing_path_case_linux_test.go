@@ -9,6 +9,6 @@ func TestSigningLinuxFilesystemCaseInsensitive(t *testing.T) {
 		t.Fatal("vfat should be case-insensitive")
 	}
 	if signingLinuxFilesystemCaseInsensitive(0x9123683e) { // BTRFS
-		t.Fatal("btrfs should stay case-sensitive")
+		t.Fatal("btrfs should not be classified as a known insensitive volume")
 	}
 }

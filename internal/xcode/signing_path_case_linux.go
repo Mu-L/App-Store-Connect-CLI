@@ -39,7 +39,13 @@ func signingCaseInsensitiveVolumeFor(path string) (caseInsensitive, known bool) 
 		var stat unix.Statfs_t
 		err := unix.Statfs(candidate, &stat)
 		if err == nil {
-			return signingLinuxFilesystemCaseInsensitive(int64(stat.Type)), true
+			if signingLinuxFilesystemCaseInsensitive(int64(stat.Type)) {
+				return true, true
+			}
+			// Unlisted filesystems may still be case-insensitive (ext4
+			// casefold, FUSE, overlay). Treat them as unknown so a missing
+			// PLAN.json cannot bypass alias checks.
+			return false, false
 		}
 		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, unix.ENOENT) {
 			return false, false

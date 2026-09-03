@@ -2206,7 +2206,7 @@ func signingPathLexicallyContained(project *structuredVersionProject, path strin
 	if signingNormalizedPathContained(root, absolute) {
 		return true
 	}
-	if runtimeGOOS != "windows" && runtimeGOOS != "darwin" {
+	if runtimeGOOS != "windows" && runtimeGOOS != "darwin" && runtimeGOOS != "linux" {
 		return false
 	}
 	// A path outside the exact normalized root and outside its case-folded
@@ -2264,7 +2264,7 @@ func signingPathDefinitelyExternal(project *structuredVersionProject, path strin
 	if signingNormalizedPathContained(root, absolute) {
 		return false
 	}
-	if runtimeGOOS != "windows" && runtimeGOOS != "darwin" {
+	if runtimeGOOS != "windows" && runtimeGOOS != "darwin" && runtimeGOOS != "linux" {
 		return true
 	}
 	return !signingPathCaseFoldedPrefixContained(root, absolute)

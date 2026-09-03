@@ -260,6 +260,32 @@ func TestSigningApplyKeepsCompletedReceiptWhenRetainedCloseFails(t *testing.T) {
 	}
 }
 
+func TestSigningPathLexicallyContainedUsesLinuxVolumeSemantics(t *testing.T) {
+	previousOS := runtimeGOOS
+	previousFn := signingCaseInsensitiveVolumeFn
+	runtimeGOOS = "linux"
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return true, true }
+	t.Cleanup(func() {
+		runtimeGOOS = previousOS
+		signingCaseInsensitiveVolumeFn = previousFn
+	})
+
+	root := "/mnt/vfat/Project"
+	variantPath := "/mnt/vfat/project/Config.xcconfig"
+	project := &structuredVersionProject{rootDir: root}
+	if signingPathDefinitelyExternal(project, variantPath) {
+		t.Fatalf("linux case-variant path %q was treated as definitely external", variantPath)
+	}
+	if !signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("linux case-variant path %q was not contained in %q", variantPath, root)
+	}
+
+	signingCaseInsensitiveVolumeFn = func(string) (bool, bool) { return false, true }
+	if signingPathLexicallyContained(project, variantPath) {
+		t.Fatalf("linux case-variant path %q was authorized on a known case-sensitive volume", variantPath)
+	}
+}
+
 func TestSigningArtifactLexicalPathEqualUsesVolumeSeamOnLinux(t *testing.T) {
 	previousOS := runtimeGOOS
 	previousFn := signingCaseInsensitiveVolumeFn
