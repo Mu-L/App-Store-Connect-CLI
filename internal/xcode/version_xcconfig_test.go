@@ -84,6 +84,21 @@ func TestXCConfigResolverAcceptsSupersededSameSelectorConditional(t *testing.T) 
 	}
 }
 
+func TestXCConfigResolverAcceptsSupersededReorderedSelectorConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Values.xcconfig")
+	contents := "DEVELOPMENT_TEAM[sdk=iphoneos*][arch=arm64] = OLDOLD1234\nDEVELOPMENT_TEAM[arch=arm64][sdk=iphoneos*] = NEWNEW1234\nDEVELOPMENT_TEAM = NEWNEW1234\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSetting(path, "DEVELOPMENT_TEAM")
+	if err != nil {
+		t.Fatalf("resolveXCConfigSetting() error = %v, want reordered same-selector assignment to replace OLDOLD1234", err)
+	}
+	if resolved.value != "NEWNEW1234" || !resolved.exact {
+		t.Fatalf("resolved = %#v, want NEWNEW1234 from the later reordered selector", resolved)
+	}
+}
+
 func TestXCConfigResolverRejectsDivergentConditionalOverride(t *testing.T) {
 	for _, test := range []struct {
 		name     string

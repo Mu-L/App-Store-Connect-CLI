@@ -746,9 +746,10 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				continue
 			}
 			if assignment.operator == "=" {
+				selector := signingXCConfigSelectorIdentity(assignment.key)
 				filtered := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
 				for _, existing := range resolved.conditionals {
-					if existing.key == assignment.key {
+					if signingXCConfigSelectorIdentity(existing.key) == selector {
 						continue
 					}
 					filtered = append(filtered, existing)
