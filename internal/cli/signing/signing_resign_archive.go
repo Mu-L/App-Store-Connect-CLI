@@ -394,7 +394,15 @@ func discoverSigningResignArchive(ctx context.Context, reader *zip.Reader, tree 
 		if name == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
 			return signingResignArchive{}, fmt.Errorf("IPA contains a non-local archive path")
 		}
-		for candidate := name; candidate != "." && candidate != ""; candidate = path.Dir(candidate) {
+		// Only real and implied directories may participate in target
+		// discovery. A regular member is never a bundle, so start at its
+		// parent: otherwise a resource whose name ends in .app or .appex
+		// would be rejected as an unsupported nested target.
+		candidate := name
+		if !member.FileInfo().IsDir() {
+			candidate = path.Dir(name)
+		}
+		for ; candidate != "." && candidate != ""; candidate = path.Dir(candidate) {
 			directories[candidate] = struct{}{}
 		}
 	}

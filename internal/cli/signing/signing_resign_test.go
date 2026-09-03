@@ -3121,3 +3121,120 @@ func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
 		}
 	}
 }
+
+func TestDiscoverSigningResignArchiveIgnoresRegularFilesNamedLikeBundles(t *testing.T) {
+	info, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":         "com.example.app",
+		"CFBundleExecutable":         "App",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	data := buildSigningResignZip(t, []signingResignZipEntry{
+		{name: "Payload/App.app/Info.plist", data: info},
+		{name: "Payload/App.app/App", data: executable, mode: 0o755},
+		{name: "Payload/App.app/Resources/example.app", data: []byte("resource named like a bundle")},
+		{name: "Payload/App.app/Resources/example.appex", data: []byte("resource named like an extension")},
+	})
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignArchive(context.Background(), reader); err != nil {
+		t.Fatalf("validateSigningResignArchive() error = %v", err)
+	}
+	tree, err := rootfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	treeOS, err := tree.OpenRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer treeOS.Close()
+	if err := materializeSigningResignArchive(context.Background(), reader, treeOS); err != nil {
+		t.Fatalf("materializeSigningResignArchive() error = %v", err)
+	}
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{
+			Stderr: []byte("staged executable: code object is not signed at all"),
+		}, errors.New("codesign failed")
+	}
+	archive, err := discoverSigningResignArchive(context.Background(), reader, tree)
+	if err != nil {
+		t.Fatalf("discoverSigningResignArchive() error = %v, want regular files named like bundles to be ignored", err)
+	}
+	if archive.MainPath != "Payload/App.app" {
+		t.Fatalf("archive.MainPath = %q, want Payload/App.app", archive.MainPath)
+	}
+	if len(archive.Targets) != 1 || archive.Targets[0].RelativePath != "Payload/App.app" {
+		t.Fatalf("archive.Targets = %+v, want only the main application", archive.Targets)
+	}
+}
+
+func TestDiscoverSigningResignArchiveStillRejectsNestedBundleDirectories(t *testing.T) {
+	info, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":         "com.example.app",
+		"CFBundleExecutable":         "App",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	for _, test := range []struct {
+		name    string
+		entries []signingResignZipEntry
+	}{
+		{
+			name: "implied directory",
+			entries: []signingResignZipEntry{
+				{name: "Payload/App.app/Frameworks/Helper.app/Info.plist", data: info},
+			},
+		},
+		{
+			name: "explicit directory entry",
+			entries: []signingResignZipEntry{
+				{name: "Payload/App.app/Frameworks/Helper.app/", directory: true},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entries := append([]signingResignZipEntry{
+				{name: "Payload/App.app/Info.plist", data: info},
+				{name: "Payload/App.app/App", data: executable, mode: 0o755},
+			}, test.entries...)
+			data := buildSigningResignZip(t, entries)
+			reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree, err := rootfs.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tree.Close()
+			_, err = discoverSigningResignArchive(context.Background(), reader, tree)
+			if err == nil || !strings.Contains(err.Error(), "unsupported nested app target") {
+				t.Fatalf("discoverSigningResignArchive() error = %v, want unsupported nested target rejection", err)
+			}
+		})
+	}
+}
