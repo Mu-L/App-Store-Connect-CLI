@@ -379,9 +379,11 @@ The adjusted-equalizations commands cover the same Apple concept but expose
 different contracts:
 
 * Use `asc web subscriptions pricing adjusted-equalizations view` when you need
-  the web-session `/iris` MONTHLY price matrix or Apple's normalized
-  `missingTerritories` diagnostic after an equalization failure. This workflow
-  requires web-session authentication and accepts the workflow-specific
+  the web-session `/iris` MONTHLY price matrix or the CLI's normalized
+  `missingTerritories` diagnostic after an equalization failure. Apple returns
+  that failure as a 409 conflict; this command converts it into successful JSON
+  output on stdout instead of an error. This workflow requires web-session
+  authentication and accepts the workflow-specific
   `--price-point-id` and `--plan-type MONTHLY` inputs. It can reuse a session
   cached by `asc web auth login` or authenticate through the standard
   web-session flags and environment variables. It prints a computed JSON
