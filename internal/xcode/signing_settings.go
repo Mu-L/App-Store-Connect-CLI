@@ -1745,7 +1745,18 @@ func (resolver *signingSettingResolver) resolveInheritedSettingValue(
 		return expanded, nil
 	}
 	inherited, _, err := resolver.resolveLowerSettingWithContext(configuration, expansionConfiguration, setting)
-	return inherited, err
+	if err == nil {
+		return inherited, nil
+	}
+	if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil && fallback != configuration {
+		for _, key := range matchingBuildSettingKeys(fallback.buildSettings, setting) {
+			literal, ok := fallback.buildSettings[key].(string)
+			if ok && strings.TrimSpace(literal) != "" && !strings.Contains(literal, "$(") && !strings.Contains(literal, "${") {
+				return literal, nil
+			}
+		}
+	}
+	return "", err
 }
 
 func (resolver *signingSettingResolver) resolveLowerSettingWithContext(
@@ -2817,11 +2828,16 @@ func signingProjectInputPaths(
 				}
 			}
 		}
-		_, targetDefinesUnconditional := configuration.buildSettings["CODE_SIGN_ENTITLEMENTS"].(string)
+		value, targetDefinesUnconditional := configuration.buildSettings["CODE_SIGN_ENTITLEMENTS"].(string)
+		if targetDefinesUnconditional && (strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}")) {
+			targetDefinesUnconditional = false
+		}
 		if !targetDefinesUnconditional && authorized {
 			if files := configFiles[configuration.id]; len(files) > 0 {
 				if resolved, resolveErr := resolver.resolveConfigurationXCConfigWithContext(configuration, configuration, files[0], "CODE_SIGN_ENTITLEMENTS"); resolveErr == nil && resolved.found && resolved.exact {
-					targetDefinesUnconditional = true
+					if !strings.Contains(resolved.value, "$(inherited)") && !strings.Contains(resolved.value, "${inherited}") {
+						targetDefinesUnconditional = true
+					}
 				}
 			}
 		}
