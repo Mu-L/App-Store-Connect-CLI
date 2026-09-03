@@ -1503,6 +1503,9 @@ func TestWebPrivacyPullNotCollectedRoundTripsThroughPlan(t *testing.T) {
 		}]
 	}`
 	stubPrivacyWebSession(t, func(req *http.Request) (*http.Response, error) {
+		if resp, ok := privacyCatalogRoundTrip(req); ok {
+			return resp, nil
+		}
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/iris/v1/apps/"+privacyTestAppID+"/dataUsages":
 			return privacyJSONResponse(req, notCollectedUsages), nil
