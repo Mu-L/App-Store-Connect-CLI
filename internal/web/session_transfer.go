@@ -1,9 +1,11 @@
 package web
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -281,8 +283,16 @@ func DecodeSessionBundle(data []byte) (*SessionBundle, error) {
 		return nil, errors.New("web session bundle is empty")
 	}
 	var bundle SessionBundle
-	if err := json.Unmarshal(data, &bundle); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&bundle); err != nil {
 		return nil, fmt.Errorf("decode web session bundle: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("decode web session bundle: multiple JSON values")
+		}
+		return nil, fmt.Errorf("decode web session bundle: trailing data: %w", err)
 	}
 	if err := bundle.Validate(); err != nil {
 		return nil, err
@@ -457,6 +467,14 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 // writes, so later `asc web` commands resume it. The imported session also
 // becomes the last cached session.
 func ImportSessionBundle(bundle *SessionBundle) (SessionImportSummary, error) {
+	return ImportSessionBundleWithOptions(bundle, false)
+}
+
+// ImportSessionBundleWithOptions imports a bundle and optionally permits
+// replacing an existing cache entry. The overwrite bit is also used to scope
+// recovery from a malformed keychain aggregate to the explicit replacement
+// path; ordinary login and refresh writes must not erase other accounts.
+func ImportSessionBundleWithOptions(bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
 	if bundle == nil {
 		return SessionImportSummary{}, errors.New("web session bundle is empty")
 	}
@@ -470,7 +488,7 @@ func ImportSessionBundle(bundle *SessionBundle) (SessionImportSummary, error) {
 	if selection.backend == sessionBackendOff {
 		return SessionImportSummary{}, ErrSessionCacheDisabled
 	}
-	if err := persistSessionBySelection(selection, webSessionCacheKey(summary.AppleID), sess); err != nil {
+	if err := persistImportedSessionBySelection(selection, webSessionCacheKey(summary.AppleID), sess, overwrite); err != nil {
 		return SessionImportSummary{}, err
 	}
 	return summary, nil

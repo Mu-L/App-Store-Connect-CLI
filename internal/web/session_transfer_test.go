@@ -288,6 +288,26 @@ func TestDecodeSessionBundleRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeSessionBundleRejectsUnknownFields(t *testing.T) {
+	document := []byte(`{
+  "kind": "asc-web-session",
+  "version": 1,
+  "appleId": "user@example.com",
+  "cookies": [{
+    "url": "https://appstoreconnect.apple.com/",
+    "name": "myacinfo",
+    "value": "token",
+    "expire": "2099-01-01T00:00:00Z"
+  }]
+}`)
+
+	if _, err := DecodeSessionBundle(document); err == nil {
+		t.Fatal("DecodeSessionBundle() error = nil, want an unknown-field failure")
+	} else if !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("DecodeSessionBundle() error = %v, want unknown-field context", err)
+	}
+}
+
 func TestImportSessionBundleRejectsInvalidCookieSyntax(t *testing.T) {
 	withFileSessionCache(t)
 	bundle := validTestBundle(time.Now().Add(time.Hour))
@@ -390,6 +410,53 @@ func TestImportSessionBundleFailsWhenLastSessionPointerCannotBeUpdated(t *testin
 	if _, err := ImportSessionBundle(bundle); err == nil {
 		t.Fatal("ImportSessionBundle() error = nil, want a last-session pointer failure")
 	}
+	key := webSessionCacheKey(bundle.AppleID)
+	if _, ok, err := readSessionFromFile(key); err != nil {
+		t.Fatalf("readSessionFromFile() error = %v", err)
+	} else if ok {
+		t.Fatal("failed import left a new session cache entry behind")
+	}
+}
+
+func TestImportSessionBundleRestoresExistingSessionWhenLastSessionPointerCannotBeUpdated(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	old := persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-token", Path: "/"}},
+		},
+	}
+	if err := writeSessionToFile(key, old); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+	lastPath, err := webSessionLastFilePath()
+	if err != nil {
+		t.Fatalf("webSessionLastFilePath() error = %v", err)
+	}
+	if err := os.Remove(lastPath); err != nil {
+		t.Fatalf("Remove(%q) error = %v", lastPath, err)
+	}
+	if err := os.MkdirAll(lastPath, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", lastPath, err)
+	}
+
+	if _, err := ImportSessionBundle(bundle); err == nil {
+		t.Fatal("ImportSessionBundle() error = nil, want a last-session pointer failure")
+	}
+	restored, ok, err := readSessionFromFile(key)
+	if err != nil {
+		t.Fatalf("readSessionFromFile() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("failed import removed the previous session cache entry")
+	}
+	if got := restored.Cookies["https://appstoreconnect.apple.com/"][0].Value; got != "old-token" {
+		t.Fatalf("restored cookie value = %q, want old-token", got)
+	}
 }
 
 func TestImportSessionBundleOverwritesMalformedKeychainStore(t *testing.T) {
@@ -402,12 +469,46 @@ func TestImportSessionBundleOverwritesMalformedKeychainStore(t *testing.T) {
 	}
 
 	bundle := validTestBundle(time.Now().Add(time.Hour))
-	if _, err := ImportSessionBundle(bundle); err != nil {
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err != nil {
 		t.Fatalf("ImportSessionBundle() error = %v, want overwrite of a malformed keychain store", err)
 	}
 	loaded, ok, err := LoadCachedSession("user@example.com")
 	if err != nil || !ok || loaded == nil {
 		t.Fatalf("LoadCachedSession() = (%v, %v, %v), want the imported session", loaded, ok, err)
+	}
+}
+
+func TestImportSessionBundleOverwriteRemovesDefaultKeychainFallback(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	if err := writeSessionToKeychain(key, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToKeychain() error = %v", err)
+	}
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err != nil {
+		t.Fatalf("ImportSessionBundleWithOptions() error = %v", err)
+	}
+	if _, ok, err := readSessionFromKeychain(key); err != nil {
+		t.Fatalf("readSessionFromKeychain() error = %v", err)
+	} else if ok {
+		t.Fatal("overwrite left the stale keychain fallback entry behind")
+	}
+	if _, ok, err := readSessionFromFile(key); err != nil {
+		t.Fatalf("readSessionFromFile() error = %v", err)
+	} else if !ok {
+		t.Fatal("overwrite did not persist the imported file-backed session")
 	}
 }
 

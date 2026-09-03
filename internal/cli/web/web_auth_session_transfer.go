@@ -235,7 +235,7 @@ Examples:
 			} else if ok && existing != nil && !*overwrite {
 				return fmt.Errorf("web auth import failed: a cached web session for %s already exists; pass --overwrite to replace it", bundle.AppleID)
 			}
-			summary, err := webcore.ImportSessionBundle(bundle)
+			summary, err := webcore.ImportSessionBundleWithOptions(bundle, *overwrite)
 			if err != nil {
 				return fmt.Errorf("web auth import failed: %w", err)
 			}

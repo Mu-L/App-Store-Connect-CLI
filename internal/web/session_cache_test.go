@@ -123,6 +123,37 @@ func TestResolveBackendSelectionKeychainFallsBackToFile(t *testing.T) {
 	}
 }
 
+func TestPersistSessionDoesNotEraseOtherAccountsWhenKeychainStoreIsMalformed(t *testing.T) {
+	kr := withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+	if err := kr.Set(keyring.Item{Key: webSessionStoreItem, Data: []byte("{")}); err != nil {
+		t.Fatalf("seed malformed keychain store: %v", err)
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New() error = %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{{Name: "myacinfo", Value: "token", Path: "/"}})
+	err = PersistSession(&AuthSession{
+		Client:    &http.Client{Jar: jar},
+		UserEmail: "user@example.com",
+	})
+	if !errors.Is(err, errMalformedSessionStore) {
+		t.Fatalf("PersistSession() error = %v, want malformed-store error", err)
+	}
+	item, err := kr.Get(webSessionStoreItem)
+	if err != nil {
+		t.Fatalf("read malformed keychain store: %v", err)
+	}
+	if string(item.Data) != "{" {
+		t.Fatalf("malformed keychain store changed to %q", item.Data)
+	}
+}
+
 func TestPersistSessionDefaultBackendWritesFileWithoutKeychain(t *testing.T) {
 	kr := withArraySessionKeyring(t)
 	t.Setenv(webSessionCacheEnabledEnv, "1")

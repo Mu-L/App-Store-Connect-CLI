@@ -495,6 +495,10 @@ func removeLegacyLastKeyFromKeyring(kr keyring.Keyring) error {
 }
 
 func writeSessionToKeychain(key string, sess persistedSession) error {
+	return writeSessionToKeychainWithRecovery(key, sess, false)
+}
+
+func writeSessionToKeychainWithRecovery(key string, sess persistedSession, recoverMalformed bool) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -502,6 +506,9 @@ func writeSessionToKeychain(key string, sess persistedSession) error {
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
 		if !errors.Is(err, errMalformedSessionStore) {
+			return err
+		}
+		if !recoverMalformed {
 			return err
 		}
 		store = newPersistedSessionStore()
@@ -532,6 +539,55 @@ func readSessionFromKeychain(key string) (persistedSession, bool, error) {
 	return sess, true, nil
 }
 
+type sessionFileBackup struct {
+	exists bool
+	data   []byte
+	mode   os.FileMode
+}
+
+func backupSessionFile(path string) (sessionFileBackup, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return sessionFileBackup{}, nil
+		}
+		return sessionFileBackup{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sessionFileBackup{}, err
+	}
+	return sessionFileBackup{exists: true, data: data, mode: info.Mode().Perm()}, nil
+}
+
+func restoreSessionFile(path string, backup sessionFileBackup) error {
+	if !backup.exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".asc-web-session-rollback-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(backup.mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(backup.data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func writeSessionToFile(key string, sess persistedSession) error {
 	dir, err := webSessionCacheDir()
 	if err != nil {
@@ -549,29 +605,40 @@ func writeSessionToFile(key string, sess persistedSession) error {
 	if err != nil {
 		return err
 	}
+	backup, err := backupSessionFile(sessionPath)
+	if err != nil {
+		return fmt.Errorf("failed to back up session cache: %w", err)
+	}
+	rollback := func(cause error) error {
+		if rollbackErr := restoreSessionFile(sessionPath, backup); rollbackErr != nil {
+			return errors.Join(cause, fmt.Errorf("failed to roll back session cache: %w", rollbackErr))
+		}
+		return cause
+	}
 	tmpSessionPath := sessionPath + ".tmp"
 	if err := os.WriteFile(tmpSessionPath, raw, 0o600); err != nil {
 		return fmt.Errorf("failed to write session cache: %w", err)
 	}
 	if err := os.Rename(tmpSessionPath, sessionPath); err != nil {
+		_ = os.Remove(tmpSessionPath)
 		return fmt.Errorf("failed to finalize session cache: %w", err)
 	}
 
 	lastPath, err := webSessionLastFilePath()
 	if err != nil {
-		return fmt.Errorf("failed to resolve last session pointer: %w", err)
+		return rollback(fmt.Errorf("failed to resolve last session pointer: %w", err))
 	}
 	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
 	if err != nil {
-		return fmt.Errorf("failed to marshal last session pointer: %w", err)
+		return rollback(fmt.Errorf("failed to marshal last session pointer: %w", err))
 	}
 	tmpLastPath := lastPath + ".tmp"
 	if err := os.WriteFile(tmpLastPath, lastRaw, 0o600); err != nil {
-		return fmt.Errorf("failed to write last session pointer: %w", err)
+		return rollback(fmt.Errorf("failed to write last session pointer: %w", err))
 	}
 	if err := os.Rename(tmpLastPath, lastPath); err != nil {
 		_ = os.Remove(tmpLastPath)
-		return fmt.Errorf("failed to finalize last session pointer: %w", err)
+		return rollback(fmt.Errorf("failed to finalize last session pointer: %w", err))
 	}
 	return nil
 }
@@ -815,6 +882,33 @@ func persistSessionBySelection(selection backendSelection, key string, sess pers
 	}
 }
 
+func persistImportedSessionBySelection(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
+	switch selection.backend {
+	case sessionBackendOff:
+		return nil
+	case sessionBackendKeychain:
+		if err := writeSessionToKeychainWithRecovery(key, sess, overwrite); err != nil {
+			if selection.fallbackFile && isKeyringUnavailable(err) {
+				return writeSessionToFile(key, sess)
+			}
+			return err
+		}
+		return nil
+	case sessionBackendFile:
+		if err := writeSessionToFile(key, sess); err != nil {
+			return err
+		}
+		if overwrite && selection.fallbackKeychain {
+			if err := ignoreUnavailableKeyringError(deleteSessionFromKeychainWithRecovery(key, true)); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
 func readSessionFromFileWithKeychainFallback(key string, fallbackKeychain bool) (persistedSession, bool, error) {
 	sess, ok, err := readSessionFromFile(key)
 	if err == nil && (ok || !fallbackKeychain) {
@@ -952,12 +1046,25 @@ func deleteSessionFromFile(key string) error {
 }
 
 func deleteSessionFromKeychain(key string) error {
+	return deleteSessionFromKeychainWithRecovery(key, false)
+}
+
+func deleteSessionFromKeychainWithRecovery(key string, recoverMalformed bool) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
 	}
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
+		if recoverMalformed && errors.Is(err, errMalformedSessionStore) {
+			if removeErr := removeSessionStoreFromKeyring(kr); removeErr != nil {
+				return removeErr
+			}
+			if removeErr := removeLegacySessionFromKeyring(kr, key); removeErr != nil {
+				return removeErr
+			}
+			return removeLegacyLastKeyFromKeyring(kr)
+		}
 		return err
 	}
 	if ok {
