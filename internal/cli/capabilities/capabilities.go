@@ -324,10 +324,10 @@ func capabilityRows() []Capability {
 		{
 			Area:       "app-management",
 			Capability: "Last-compatible version settings inspection",
-			Status:     statusWebSession,
-			Commands:   []string{"asc web apps last-compatible-version view"},
-			Notes:      []string{"This command mirrors App Store Connect's Last-Compatible Version Settings iris read. The public OpenAPI snapshot documents downloadable on appStoreVersions, but the public CLI versions client does not currently request or print it."},
-			NextAction: "Use App Store Connect web UI, or asc web apps last-compatible-version view.",
+			Status:     statusPartial,
+			Commands:   []string{"asc versions list --output json", "asc versions view --output json", "asc web apps last-compatible-version view"},
+			Notes:      []string{"Public versions JSON preserves downloadable when Apple returns it; the default table omits the field. The web command mirrors App Store Connect's Last-Compatible Version Settings iris read and relationship order."},
+			NextAction: "Use public versions JSON for API-key reads, or asc web apps last-compatible-version view for the UI-matched read.",
 		},
 		{
 			Area:       "app-management",

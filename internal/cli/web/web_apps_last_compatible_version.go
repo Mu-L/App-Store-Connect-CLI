@@ -33,10 +33,10 @@ Last-Compatible Version Settings, where a previously released version can be
 made unavailable for download on older operating systems and devices.
 
 The public App Store Connect API's OpenAPI snapshot documents downloadable on
-appStoreVersions, but the public CLI versions client does not currently request
-or print it. This command reads App Store Connect's own Last-Compatible Version
-Settings iris request, including its sparse fieldset, relationship order, and
-limit.
+appStoreVersions, and asc versions list/view --output json preserves it when
+Apple returns the attribute. The default public versions table does not include
+it. This command reads App Store Connect's own Last-Compatible Version Settings
+iris request, including its sparse fieldset, relationship order, and limit.
 
 This command is read-only. Making a version unavailable for download is not
 reversible from every state, and the write request body is not captured yet, so
