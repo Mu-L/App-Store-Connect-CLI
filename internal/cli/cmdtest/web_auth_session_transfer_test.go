@@ -1,6 +1,8 @@
 package cmdtest
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -352,6 +354,37 @@ func TestWebAuthImportRefusesExistingSessionWithoutOverwrite(t *testing.T) {
 	})
 	if code == cmd.ExitSuccess {
 		t.Fatalf("expected import to refuse an existing cached session; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "--overwrite") {
+		t.Fatalf("expected --overwrite guidance, got stderr=%q", stderr)
+	}
+
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--overwrite", "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("import --overwrite exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
+	}
+	if strings.Contains(stdout, "super-secret-token") {
+		t.Fatalf("import receipt leaked a cookie value: %q", stdout)
+	}
+}
+
+func TestWebAuthImportOverwriteReplacesMalformedCache(t *testing.T) {
+	cacheDir := isolateWebSessionCache(t)
+	sum := sha256.Sum256([]byte("user@example.com"))
+	malformedPath := filepath.Join(cacheDir, "session-"+hex.EncodeToString(sum[:])+".json")
+	if err := os.WriteFile(malformedPath, []byte("{"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	bundlePath := writeWebSessionBundleFixture(t, t.TempDir(), "session.json", webSessionBundleFixture)
+
+	var code int
+	_, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--output", "json"}, "1.0.0")
+	})
+	if code == cmd.ExitSuccess {
+		t.Fatalf("expected import to refuse a malformed cached session; stderr=%q", stderr)
 	}
 	if !strings.Contains(stderr, "--overwrite") {
 		t.Fatalf("expected --overwrite guidance, got stderr=%q", stderr)

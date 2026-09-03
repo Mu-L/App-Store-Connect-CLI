@@ -36,6 +36,10 @@ var (
 	// ErrSessionCookieNotStorable reports that a cookie names a supported
 	// origin but a Domain the session jar will not store for that origin.
 	ErrSessionCookieNotStorable = errors.New("web session bundle cookie cannot be stored for its origin")
+
+	// ErrSessionCookieInvalid reports that a cookie name, value, path, or
+	// domain is not a valid HTTP cookie field.
+	ErrSessionCookieInvalid = errors.New("web session bundle cookie is invalid")
 )
 
 // SessionBundle is the portable representation of a cached Apple web session.
@@ -307,6 +311,28 @@ func (b *SessionBundle) Validate() error {
 				canonical,
 			)
 		}
+		if err := sessionBundleCookieSyntaxValid(cookie); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sessionBundleCookieSyntaxValid(cookie SessionBundleCookie) error {
+	parsed := http.Cookie{
+		Name:     cookie.Name,
+		Value:    cookie.Value,
+		Path:     cookie.Path,
+		Domain:   cookie.Domain,
+		Secure:   cookie.Secure,
+		HttpOnly: cookie.HTTPOnly,
+		SameSite: http.SameSite(cookie.SameSite),
+	}
+	if cookie.Expires != nil {
+		parsed.Expires = *cookie.Expires
+	}
+	if err := parsed.Valid(); err != nil {
+		return fmt.Errorf("%w: cookie %q has an invalid name, value, path, or domain", ErrSessionCookieInvalid, cookie.Name)
 	}
 	return nil
 }

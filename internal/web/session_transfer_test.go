@@ -285,6 +285,25 @@ func TestDecodeSessionBundleRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestImportSessionBundleRejectsInvalidCookieSyntax(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Value = "token;injected"
+
+	if err := bundle.Validate(); !errors.Is(err, ErrSessionCookieInvalid) {
+		t.Fatalf("Validate() error = %v, want ErrSessionCookieInvalid", err)
+	}
+	if _, err := ImportSessionBundle(bundle); !errors.Is(err, ErrSessionCookieInvalid) {
+		t.Fatalf("ImportSessionBundle() error = %v, want ErrSessionCookieInvalid", err)
+	}
+	if err := bundle.Validate(); err != nil && strings.Contains(err.Error(), "token;injected") {
+		t.Fatalf("validation error leaked a cookie value: %v", err)
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || ok {
+		t.Fatalf("LoadCachedSession() = (%v, %v), want no cached session after a refused import", ok, err)
+	}
+}
+
 func TestImportSessionBundleRejectsCookieDomainTheJarCannotStore(t *testing.T) {
 	withFileSessionCache(t)
 	bundle := validTestBundle(time.Now().Add(time.Hour))
