@@ -623,7 +623,7 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 					UsageID:        usageID,
 				})
 			}
-			skippedDeletes = appendIDLessSkippedDeletes(skippedDeletes, key, state)
+			skippedDeletes = appendIDLessSkippedDeletes(skippedDeletes, key, state, 0)
 			continue
 		}
 
@@ -639,7 +639,14 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 				})
 			}
 		}
-		skippedDeletes = appendIDLessSkippedDeletes(skippedDeletes, key, state)
+		// An identified usage already satisfies the desired key, so every
+		// ID-less sibling is extra. If the only remote members are ID-less,
+		// keep one of them — removing it would make the desired tuple absent.
+		keepIDLess := 0
+		if len(state.UsageIDs) == 0 {
+			keepIDLess = 1
+		}
+		skippedDeletes = appendIDLessSkippedDeletes(skippedDeletes, key, state, keepIDLess)
 	}
 
 	sort.Slice(adds, func(i, j int) bool {
@@ -690,8 +697,8 @@ func planFromDesiredAndRemote(appID, file string, desired map[string]privacyTupl
 	}
 }
 
-func appendIDLessSkippedDeletes(skipped []privacySkippedDelete, key string, state privacyRemoteState) []privacySkippedDelete {
-	if state.IDLessCount == 0 {
+func appendIDLessSkippedDeletes(skipped []privacySkippedDelete, key string, state privacyRemoteState, keep int) []privacySkippedDelete {
+	if state.IDLessCount <= keep {
 		return skipped
 	}
 	return append(skipped, privacySkippedDelete{

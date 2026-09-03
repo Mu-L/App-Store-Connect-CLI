@@ -390,6 +390,44 @@ func TestPlanFromDesiredAndRemoteSkipsDeletesWithoutUsageID(t *testing.T) {
 	}
 }
 
+func TestPlanFromDesiredAndRemoteKeepsAMatchingIDLessTuple(t *testing.T) {
+	key := privacyTupleKey(privacyTuple{
+		Category:       "NAME",
+		Purpose:        "APP_FUNCTIONALITY",
+		DataProtection: dataProtectionLinked,
+	})
+	tuple := privacyTuple{
+		Category:       "NAME",
+		Purpose:        "APP_FUNCTIONALITY",
+		DataProtection: dataProtectionLinked,
+	}
+	plan := planFromDesiredAndRemote("123", "./privacy.json", map[string]privacyTuple{key: tuple}, map[string]privacyRemoteState{
+		key: {
+			Tuple:       tuple,
+			IDLessCount: 1,
+		},
+	})
+	if len(plan.Adds) != 0 || len(plan.Deletes) != 0 || len(plan.SkippedDeletes) != 0 {
+		t.Fatalf("a single ID-less remote tuple that matches the file is already converged: %#v", plan)
+	}
+	if !privacyApplyConverged(plan, privacyApplyResult{}) {
+		t.Fatal("keeping the matching ID-less tuple must not block convergence")
+	}
+
+	extra := planFromDesiredAndRemote("123", "./privacy.json", map[string]privacyTuple{key: tuple}, map[string]privacyRemoteState{
+		key: {
+			Tuple:       tuple,
+			IDLessCount: 2,
+		},
+	})
+	if len(extra.SkippedDeletes) != 1 || extra.SkippedDeletes[0].Reason != "missing_usage_id" {
+		t.Fatalf("a second ID-less member of a desired key is still an extra: %#v", extra.SkippedDeletes)
+	}
+	if privacyApplyConverged(extra, privacyApplyResult{}) {
+		t.Fatal("an extra ID-less member of a desired key is not convergence")
+	}
+}
+
 func TestPlanFromDesiredAndRemoteSkipsIDLessExtrasAlongsideIdentifiedUsages(t *testing.T) {
 	key := privacyTupleKey(privacyTuple{
 		Category:       "NAME",
