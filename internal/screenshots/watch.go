@@ -67,7 +67,7 @@ func WatchAndRegenerate(ctx context.Context, configPath string, debounce time.Du
 	if opts != nil && opts.ReviewOutputDir != "" {
 		framedDir := resolveKoubouOutputDir(absConfig)
 		rawDir := opts.ReviewRawDir
-		if rawDir == "" {
+		if strings.TrimSpace(rawDir) == "" {
 			// Fall back to the first asset dir collected from the config.
 			if len(assetDirs) > 0 {
 				rawDir = assetDirs[0]

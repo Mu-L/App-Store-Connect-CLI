@@ -80,10 +80,11 @@ var matrixReviewGeneratedFiles = []string{".asc-matrix-review.lock", "index.html
 const (
 	matrixReviewLockAfterCancelTimeout = 250 * time.Millisecond
 	// Browser snapshots are deliberately bounded independently from the
-	// generated report limit.  A matrix can reference many small images, so a
+	// generated report limit. A matrix can reference many small images, so a
 	// per-file limit alone is not enough to keep the opener's memory/disk work
-	// predictable.
-	maxMatrixReviewBrowserAssets = 1024
+	// predictable. 4096 covers the 256-cell maximum with eight screenshots
+	// per cell and both raw and framed references.
+	maxMatrixReviewBrowserAssets = 4096
 	maxMatrixReviewBrowserBytes  = 256 << 20
 )
 

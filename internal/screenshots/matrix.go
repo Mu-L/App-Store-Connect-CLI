@@ -1871,7 +1871,12 @@ func validateMatrixArtifactPathsDoNotOverwritePlans(plan *MatrixPlan, matrixPath
 			paths []string
 		}{
 			{kind: "raw", paths: cell.RawPaths},
-			{kind: "framed", paths: cell.FramedPaths},
+		}
+		if plan.Output.Frame.Enabled {
+			artifacts = append(artifacts, struct {
+				kind  string
+				paths []string
+			}{kind: "framed", paths: cell.FramedPaths})
 		}
 		for _, artifact := range artifacts {
 			for _, path := range artifact.paths {

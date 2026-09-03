@@ -3310,6 +3310,36 @@ func TestRunMatrixRejectsArtifactOutputAliasingBasePlan(t *testing.T) {
 	}
 }
 
+func TestRunMatrixIgnoresFramedArtifactCollisionsWhenFramingDisabled(t *testing.T) {
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "framed", "en-US", "phone", "light", "default", "home.png")
+	if err := os.MkdirAll(filepath.Dir(basePath), 0o755); err != nil {
+		t.Fatalf("create base-plan directory: %v", err)
+	}
+	if err := os.WriteFile(basePath, []byte(`{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`), 0o644); err != nil {
+		t.Fatalf("write base plan: %v", err)
+	}
+	matrixPath := filepath.Join(dir, "matrix.json")
+	writeMatrixTestFile(t, matrixPath, `{"version":1,"base_plan":"framed/en-US/phone/light/default/home.png","devices":[{"id":"phone","udid":"SIM-UDID"}],"locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],"output":{"raw_dir":"raw","framed_dir":"framed","review_dir":"review","frame":{"enabled":false}}}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			writeMatrixPNG(t, filepath.Join(plan.App.OutputDir, "home.png"))
+			return &RunResult{}, nil
+		},
+		Appearance: &matrixTestAppearance{},
+	})
+	if runErr != nil {
+		t.Fatalf("RunMatrixWithDependencies() error = %v, want raw-only run to ignore unused framed paths", runErr)
+	}
+	if result == nil || result.Succeeded != 1 {
+		t.Fatalf("result = %+v, want one successful raw-only cell", result)
+	}
+}
+
 func TestRunMatrixRejectsPhysicallyAliasedOutputDirectories(t *testing.T) {
 	dir := t.TempDir()
 	realRoot := filepath.Join(dir, "real")
