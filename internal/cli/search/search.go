@@ -864,7 +864,8 @@ func releaseDashboardIntent(queryTokens []string) bool {
 func explicitReleaseDashboardIntent(queryTokens []string) bool {
 	return tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) &&
 		(tokenContains(queryTokens, "release") ||
-			(testFlightContext(queryTokens) && appStoreContext(queryTokens)))
+			(testFlightContext(queryTokens) &&
+				(appStoreContext(queryTokens) || appReviewContext(queryTokens))))
 }
 
 func statusQueryIntent(queryTokens []string) bool {

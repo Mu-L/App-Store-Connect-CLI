@@ -243,3 +243,10 @@ func TestScopedCanonicalIntentPrefersMostSpecificNamedLeaf(t *testing.T) {
 		})
 	}
 }
+
+func TestScopedCanonicalIntentLeavesAppReviewDashboardForAggregateStatus(t *testing.T) {
+	target, _, ok := scopedCanonicalIntent([]string{"testflight", "and", "app", "review", "dashboard"})
+	if ok {
+		t.Fatalf("expected aggregate dashboard scoring, got scoped target %q", target)
+	}
+}

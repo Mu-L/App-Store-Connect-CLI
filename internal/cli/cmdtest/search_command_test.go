@@ -425,6 +425,11 @@ func TestSearchPrioritizesScopedReleaseStatusQueries(t *testing.T) {
 			expected: "asc status",
 		},
 		{
+			name:     "TestFlight and App Review dashboard",
+			query:    []string{"TestFlight", "and", "App", "Review", "dashboard"},
+			expected: "asc status",
+		},
+		{
 			name:     "App Store App Clip build domain status",
 			query:    []string{"App", "Store", "App", "Clip", "build", "domain", "status"},
 			expected: "asc app-clips domain-status",
