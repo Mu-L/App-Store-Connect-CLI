@@ -1133,41 +1133,48 @@ func (r Root) writeFromPreservingMetadata(
 // rather than silently changing hard-link semantics. New files use perm subject
 // to the process umask.
 func (r Root) WriteFilePreservingMode(name string, data []byte, perm os.FileMode) error {
+	_, err := r.WriteFromPreservingMode(name, bytes.NewReader(data), perm)
+	return err
+}
+
+// WriteFromPreservingMode atomically creates or replaces a regular file beneath
+// the root while preserving the supported metadata of an existing destination.
+// It is the streaming counterpart to WriteFilePreservingMode for callers that
+// already have a rooted source file and should not buffer its contents.
+func (r Root) WriteFromPreservingMode(name string, reader io.Reader, perm os.FileMode) (int64, error) {
 	resolved, err := r.prepareWrite(name)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	parent, base, err := r.openParentRooted(resolved)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer parent.Close()
 
 	hadExisting, err := checkReplaceableFileInRoot(parent, base, resolved)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !hadExisting {
-		_, err := r.writeFrom(name, bytes.NewReader(data), perm, false)
-		return err
+		return r.writeFrom(name, reader, perm, false)
 	}
 
 	file, err := secureopen.OpenExistingWritableNoFollowInRoot(parent, base)
 	if err != nil {
-		return fmt.Errorf("open existing file %q for replacement: %w", resolved, err)
+		return 0, fmt.Errorf("open existing file %q for replacement: %w", resolved, err)
 	}
 	defer file.Close()
 	openedInfo, err := file.Stat()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if multiple, err := hasMultipleHardLinks(file, openedInfo); err != nil {
-		return fmt.Errorf("inspect existing file %q: %w", resolved, err)
+		return 0, fmt.Errorf("inspect existing file %q: %w", resolved, err)
 	} else if multiple {
-		return fmt.Errorf("refusing to rewrite multiply linked file %q", resolved)
+		return 0, fmt.Errorf("refusing to rewrite multiply linked file %q", resolved)
 	}
-	_, err = r.writeFromPreservingMetadata(name, bytes.NewReader(data), perm, false, file, openedInfo)
-	return err
+	return r.writeFromPreservingMetadata(name, reader, perm, false, file, openedInfo)
 }
 
 // CheckWriteFilePreservingMode performs the non-mutating checks required before
