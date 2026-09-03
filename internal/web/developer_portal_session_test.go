@@ -115,6 +115,39 @@ func TestEnsureDeveloperPortalSessionUnknownSelectorListsTeams(t *testing.T) {
 	assertDeveloperPortalErrorHasNoSecrets(t, err)
 }
 
+func TestEnsureDeveloperPortalSessionAmbiguousExactNameFailsBeforeMutation(t *testing.T) {
+	var mutationHits int
+	client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case developerPortalTeamsPath:
+			return developerPortalSecretTeamsResponse(`{"teams":[{"teamId":"TEAMONE123","name":"Shared Name"},{"teamId":"TEAMTWO456","name":"Shared Name"}]}`), nil
+		default:
+			mutationHits++
+			t.Errorf("mutation request %s %s must not run for an ambiguous team name", r.Method, r.URL.Path)
+			return developerPortalTestResponse(http.StatusInternalServerError, `{}`, nil), nil
+		}
+	})
+	client.SetDeveloperTeamSelector("shared name")
+
+	_, err := client.EnableDeveloperBundleIDCapability(context.Background(), DeveloperBundleIDCapabilityEnableRequest{
+		BundleID:   "bundle-1",
+		Capability: "PRIVATE_CLOUD_COMPUTE",
+	})
+	if err == nil {
+		t.Fatal("expected ambiguous Developer Portal team name error")
+	}
+	message := err.Error()
+	for _, want := range []string{"shared name", "TEAMONE123", "TEAMTWO456", "--developer-team"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error %q does not contain %q", message, want)
+		}
+	}
+	if mutationHits != 0 {
+		t.Fatalf("mutation requests = %d, want 0", mutationHits)
+	}
+	assertDeveloperPortalErrorHasNoSecrets(t, err)
+}
+
 func TestEnsureDeveloperPortalSessionSelectsSingleTeam(t *testing.T) {
 	var selectedTeamID string
 	client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {

@@ -144,10 +144,7 @@ func resolveDeveloperPortalTeam(teams []developerPortalTeam, selection developer
 	}
 
 	if selector := strings.TrimSpace(selection.Selector); selector != "" {
-		if team, ok := matchDeveloperPortalTeamSelector(valid, selector); ok {
-			return team, nil
-		}
-		return developerPortalTeam{}, unknownDeveloperPortalTeamError(selector, valid)
+		return matchDeveloperPortalTeamSelector(valid, selector)
 	}
 
 	if cachedID := strings.TrimSpace(selection.CachedTeamID); cachedID != "" {
@@ -169,10 +166,17 @@ func resolveDeveloperPortalTeam(teams []developerPortalTeam, selection developer
 
 	providerName := strings.TrimSpace(selection.ProviderName)
 	if providerName != "" {
+		var exactName []developerPortalTeam
 		for _, team := range valid {
 			if strings.EqualFold(providerName, team.Name) {
-				return team, nil
+				exactName = append(exactName, team)
 			}
+		}
+		if len(exactName) == 1 {
+			return exactName[0], nil
+		}
+		if len(exactName) > 1 {
+			return developerPortalTeam{}, ambiguousDeveloperPortalSelectorError(providerName, exactName)
 		}
 		var prefixMatches []developerPortalTeam
 		for _, team := range valid {
@@ -191,22 +195,41 @@ func resolveDeveloperPortalTeam(teams []developerPortalTeam, selection developer
 	return developerPortalTeam{}, ambiguousDeveloperPortalTeamError(providerName, valid)
 }
 
-func matchDeveloperPortalTeamSelector(teams []developerPortalTeam, selector string) (developerPortalTeam, bool) {
+func matchDeveloperPortalTeamSelector(teams []developerPortalTeam, selector string) (developerPortalTeam, error) {
+	var idMatches []developerPortalTeam
 	for _, team := range teams {
 		if strings.EqualFold(selector, team.TeamID) {
-			return team, true
+			idMatches = append(idMatches, team)
 		}
 	}
+	if len(idMatches) == 1 {
+		return idMatches[0], nil
+	}
+	if len(idMatches) > 1 {
+		return developerPortalTeam{}, ambiguousDeveloperPortalSelectorError(selector, idMatches)
+	}
+
+	var nameMatches []developerPortalTeam
 	for _, team := range teams {
 		if team.Name != "" && strings.EqualFold(selector, team.Name) {
-			return team, true
+			nameMatches = append(nameMatches, team)
 		}
 	}
-	return developerPortalTeam{}, false
+	if len(nameMatches) == 1 {
+		return nameMatches[0], nil
+	}
+	if len(nameMatches) > 1 {
+		return developerPortalTeam{}, ambiguousDeveloperPortalSelectorError(selector, nameMatches)
+	}
+	return developerPortalTeam{}, unknownDeveloperPortalTeamError(selector, teams)
 }
 
 func unknownDeveloperPortalTeamError(selector string, teams []developerPortalTeam) error {
 	return fmt.Errorf("unknown Developer Portal team %q; pass --developer-team with one of: %s", selector, formatDeveloperPortalTeamList(teams))
+}
+
+func ambiguousDeveloperPortalSelectorError(selector string, teams []developerPortalTeam) error {
+	return fmt.Errorf("developer portal team %q matches more than one team; pass --developer-team with one of: %s", selector, formatDeveloperPortalTeamList(teams))
 }
 
 func ambiguousDeveloperPortalTeamError(providerName string, teams []developerPortalTeam) error {
