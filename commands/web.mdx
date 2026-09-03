@@ -163,6 +163,10 @@ Available commands:
 * `asc web apps create` - create a new app via the web flow
 * `asc web apps delete` - remove an app after preflighting observable eligibility; use `--dry-run` to check without mutating
 * `asc web apps availability create` - bootstrap initial territory availability
+* `asc web apps compatibility view|edit` - inspect or change the Mac and Apple Vision Pro App Store opt-in settings
+* `asc web apps distribution view` - read the app distribution method (`APP_STORE` or `CUSTOM`)
+* `asc web apps last-compatible-version view` - read per-version download availability (Last-Compatible Version Settings)
+* `asc web apps history` - view App Store version status history, optionally scoped with `--version-id`
 * `asc web apps medical-device set` - manage the regulated medical device declaration
 
 Notes:
@@ -171,6 +175,9 @@ Notes:
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps medical-device set` currently supports only `--declared false`
+* `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
+* `asc web apps last-compatible-version view` is read-only. It prints Apple's `downloadable` flag per version in App Store Connect relationship order. Making a version unavailable for download is not shipped: the iris PATCH target is known but its request body is not captured
+* `asc web apps distribution view` is read-only. Apple prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. Changing the distribution method and requesting unlisted distribution have Apple-side eligibility restrictions whose write contracts are not captured, so both stay in the App Store Connect web UI
 
 ### `asc web sandbox`
 
