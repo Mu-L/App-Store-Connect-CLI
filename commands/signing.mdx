@@ -1,411 +1,765 @@
 # Signing
 
-> Manage signing certificates and provisioning profiles
+> Create, fetch, share, inspect, and use signing assets without committing private keys.
 
-Fetch and manage code signing assets for your applications.
+Apple code signing has four separate pieces:
 
-## Overview
+1. A bundle ID identifies each app or embedded target. Capabilities on the bundle ID must match the app's entitlements.
+2. A certificate is the public half of a signing identity. App Store Connect can create and return the certificate, but it cannot return the private key.
+3. A provisioning profile binds a bundle ID, certificate, capabilities, and, for development or release testing, registered devices.
+4. The machine running Xcode needs the matching private key and the right profile at the same time.
 
-The `signing` command provides high-level operations for managing code signing workflows, automatically resolving and downloading the certificates and provisioning profiles needed for app distribution.
+`asc` manages each piece and can store a usable private identity in an encrypted Git repository. It never invents or downloads a missing private key.
 
-## Fetch Signing Files
+## Choose the right command
 
-Fetch certificates and provisioning profiles for an app in a single command:
+| Goal | Command |
+| --- | --- |
+| Download an existing certificate and profile | `asc signing fetch` |
+| Create a profile when one is missing, then download it | `asc signing fetch --create-missing` |
+| Encrypt one app's signing assets and local private identity in Git | `asc signing sync push --bundle-id ...` |
+| Sync one shared identity across an app and its embedded targets | `asc signing sync push --targets-file ...` |
+| Decrypt signing assets on another machine or CI worker | `asc signing sync pull` |
+| Re-encrypt the repository with a replacement password | `asc signing sync rotate-password --confirm` |
+| Plan profiles for every target in an iOS archive and an exact device set | `asc signing reconcile plan` |
+| Apply an approved reconciliation plan | `asc signing reconcile apply --confirm` |
+| Run one release-testing command with a temporary keychain | `asc signing run` |
+| Keep one identity in a new dedicated keychain (experimental) | `asc signing keychain install --confirm` |
+
+Use `fetch` when the matching private key already exists on the machine. Use `sync` when a team or CI worker needs the private identity too. Use `reconcile` for multi-target, registered-device release testing where one stale or incomplete profile can break the whole export.
+
+## Before you start
+
+Authenticate with an App Store Connect API key that can read signing resources and perform any requested creation:
 
 ```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
+asc auth status
+asc certificates list --output table
+asc profiles list --output table
+asc bundle-ids list --output table
+```
+
+For encrypted sync, you also need:
+
+- a private Git repository that the current Git credentials can clone and push;
+- a generated, high-entropy repository password stored in a private file or secret manager;
+- a PKCS#12 (`.p12`) identity, or the RSA/EC private key that created the certificate request.
+
+Prefer an SSH key or Git credential helper for repository authentication. Do not embed an access token in `--repo`; command lines can be retained in shell history, process listings, CI logs, and job metadata.
+
+Private input files must be regular files, must not be symlinks, and must not be accessible by group or other users. Fix their permissions before running a signing command:
+
+```bash  theme={null}
+chmod 600 \
+  ~/.config/asc/signing-sync-password \
+  ./distribution.p12 \
+  ./distribution-p12-password
+```
+
+Keep decrypted outputs and secrets out of source control:
+
+```gitignore
+.asc/secrets/
+.asc/signing/
+.asc/distribution/
+.asc/keychains/
+```
+
+## Set up the bundle ID and capabilities
+
+Find an existing explicit bundle ID:
+
+```bash  theme={null}
+asc bundle-ids list \
+  --identifier com.example.app \
+  --output table
+```
+
+Create it when it does not exist:
+
+```bash  theme={null}
+asc bundle-ids create \
+  --identifier com.example.app \
+  --name "Example" \
+  --platform IOS
+```
+
+Check capabilities before creating profiles. A profile takes a snapshot of the bundle ID's capability state, so one created before a capability change can be unusable.
+
+```bash  theme={null}
+asc bundle-ids capabilities list \
+  --bundle BUNDLE_ID \
+  --output table
+
+asc bundle-ids capabilities add \
+  --bundle BUNDLE_ID \
+  --capability PUSH_NOTIFICATIONS
+```
+
+Capabilities with settings accept a structure-validated JSON array. Field names and value types must match Apple's request schema:
+
+```bash  theme={null}
+asc bundle-ids capabilities add \
+  --bundle BUNDLE_ID \
+  --capability ICLOUD \
+  --settings '[{"key":"ICLOUD_VERSION","options":[{"key":"XCODE_6","enabled":true}]}]'
+```
+
+Create a new profile after changing capabilities; App Store Connect profiles are immutable.
+
+## Fetch public signing files
+
+`asc signing fetch` resolves the bundle ID, selects an active profile and its active certificates, then writes the `.mobileprovision` and `.cer` files to the output directory.
+
+For App Store distribution:
+
+```bash  theme={null}
+asc signing fetch \
+  --app APP_ID \
+  --bundle-id com.example.app \
   --profile-type IOS_APP_STORE \
-  --output ./signing
+  --output .asc/signing/app-store \
+  --format json \
+  --pretty
 ```
 
-This command:
+`--app` is optional, but when supplied it verifies that the App Store Connect app record uses the requested bundle identifier.
 
-1. Resolves the bundle ID in App Store Connect
-2. Finds matching certificates for the profile type
-3. Finds or creates a provisioning profile
-4. Downloads certificates (.cer) and profile (.mobileprovision)
-5. Saves files to the output directory
-
-### Required Flags
-
-* `--bundle-id` - Bundle identifier (e.g., com.example.app)
-* `--profile-type` - Type of provisioning profile (see [Profile Types](#profile-types))
-
-### Optional Flags
-
-* `--output` - Output directory (default: `./signing`)
-* `--app` - App Store Connect app ID (validates bundle ID match)
-* `--certificate-type` - Filter specific certificate type (usually auto-inferred)
-* `--device` - Device IDs for profiles created with `--create-missing` (comma-separated)
-* `--create-missing` - Create a new profile if none exists
-* `--format` - Output format for metadata: json, table, markdown. Defaults to table in terminals and minified JSON when piped or run in CI; an explicit value always wins.
-
-In 4.x, `signing fetch` and `signing sync push` still accept `--device` without
-`--create-missing` for compatibility, but print a deprecation warning and
-ignore the device IDs. Pair the flags now; 5.0.0 will reject the old
-combination.
-
-## Profile Types
-
-### iOS Profile Types
-
-**App Store Distribution:**
+To create a missing profile:
 
 ```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_STORE
-```
-
-* Used for: App Store submission
-* Certificate type: IOS\_DISTRIBUTION
-* Devices: Not required
-
-**Development:**
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_DEVELOPMENT \
-  --device "DEVICE_ID_1,DEVICE_ID_2" \
-  --create-missing
-```
-
-* Used for: Local development and testing
-* Certificate type: IOS\_DEVELOPMENT
-* Devices: Required (use `asc devices list` to find IDs)
-
-**Ad Hoc:**
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_ADHOC \
-  --device "DEVICE_ID_1,DEVICE_ID_2" \
-  --create-missing
-```
-
-* Used for: External testing (outside TestFlight)
-* Certificate type: IOS\_DISTRIBUTION
-* Devices: Required
-
-**In-House (Enterprise):**
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_INHOUSE
-```
-
-* Used for: Enterprise internal distribution
-* Certificate type: IOS\_DISTRIBUTION
-* Devices: Not required
-* Requires: Apple Developer Enterprise Program
-
-### tvOS Profile Types
-
-* `TVOS_APP_STORE` - App Store distribution
-* `TVOS_APP_DEVELOPMENT` - Development
-* `TVOS_APP_ADHOC` - Ad Hoc distribution
-* `TVOS_APP_INHOUSE` - Enterprise distribution
-
-### macOS Profile Types
-
-**App Store:**
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.macapp \
-  --profile-type MAC_APP_STORE
-```
-
-* Certificate type: MAC\_APP\_DISTRIBUTION
-
-**Direct Distribution:**
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.macapp \
-  --profile-type MAC_APP_DIRECT
-```
-
-* Certificate type: DEVELOPER\_ID\_APPLICATION
-* Used for: Distribution outside Mac App Store
-
-**Development:**
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.macapp \
-  --profile-type MAC_APP_DEVELOPMENT
-```
-
-* Certificate type: MAC\_APP\_DEVELOPMENT
-
-**Mac Catalyst:**
-
-* `MAC_CATALYST_APP_STORE` - Mac App Store
-* `MAC_CATALYST_APP_DIRECT` - Direct distribution
-* `MAC_CATALYST_APP_DEVELOPMENT` - Development
-
-## Certificate Type Inference
-
-The CLI automatically infers the correct certificate type from the profile type:
-
-| Profile Type           | Certificate Type           |
-| ---------------------- | -------------------------- |
-| IOS\_APP\_STORE        | IOS\_DISTRIBUTION          |
-| IOS\_APP\_DEVELOPMENT  | IOS\_DEVELOPMENT           |
-| IOS\_APP\_ADHOC        | IOS\_DISTRIBUTION          |
-| IOS\_APP\_INHOUSE      | IOS\_DISTRIBUTION          |
-| TVOS\_APP\_STORE       | TVOS\_DISTRIBUTION         |
-| TVOS\_APP\_DEVELOPMENT | TVOS\_DEVELOPMENT          |
-| MAC\_APP\_STORE        | MAC\_APP\_DISTRIBUTION     |
-| MAC\_APP\_DEVELOPMENT  | MAC\_APP\_DEVELOPMENT      |
-| MAC\_APP\_DIRECT       | DEVELOPER\_ID\_APPLICATION |
-
-Override with `--certificate-type` if needed.
-
-## Create Missing Profiles
-
-Create a new provisioning profile if none exists:
-
-```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
+asc signing fetch \
+  --bundle-id com.example.app \
   --profile-type IOS_APP_STORE \
-  --create-missing
+  --create-missing \
+  --output .asc/signing/app-store
 ```
 
-**For development profiles, devices are required:**
+For development or ad hoc distribution, profile creation needs device resource IDs:
 
 ```bash  theme={null}
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_DEVELOPMENT \
-  --device "DEVICE_ID_1,DEVICE_ID_2" \
-  --create-missing
-```
+asc devices list --platform IOS --output table
 
-If `--create-missing` is not specified and no matching profile exists, the command will fail with an error suggesting you use this flag.
-
-## Sync a usable private identity
-
-App Store Connect returns certificates and provisioning profiles, but it does
-not return the private key needed to sign an app. Provide the local private
-identity explicitly when pushing to an encrypted signing repository:
-
-```bash  theme={null}
-chmod 600 ~/.config/asc/signing-sync-password ./distribution.p12 ./distribution-p12-password
-
-asc signing sync push \
+asc signing fetch \
   --bundle-id com.example.app \
   --profile-type IOS_APP_ADHOC \
-  --repo git@github.com:team/signing.git \
-  --password-file ~/.config/asc/signing-sync-password \
-  --identity ./distribution.p12 \
-  --identity-password-file ./distribution-p12-password
+  --device "DEVICE_ID_1,DEVICE_ID_2" \
+  --create-missing \
+  --output .asc/signing/release-testing
 ```
 
-Use `--private-key ./distribution-key.pem` instead of `--identity` when the
-local input is an RSA or EC private key. The CLI matches that key to the active
-certificate associated with the selected profile; provide that certificate's
-SHA-256 fingerprint with `--identity-sha256`. If a PKCS#12 contains multiple
-private identities, the same flag selects one certificate fingerprint:
+`--device` only affects profiles created by that invocation. During 4.x, passing it without `--create-missing` prints a deprecation warning and ignores the device IDs; 5.0.0 will reject that combination.
+
+The command does not overwrite output files. This prevents a failed write from silently replacing a known profile or certificate.
+
+### Common profile types
+
+| Profile type | Use | Inferred certificate type | Devices when creating |
+| --- | --- | --- | --- |
+| `IOS_APP_STORE` | iOS App Store and TestFlight | iOS distribution | No |
+| `IOS_APP_DEVELOPMENT` | iOS development | iOS development | Yes |
+| `IOS_APP_ADHOC` | iOS release testing on registered devices | iOS distribution | Yes |
+| `TVOS_APP_STORE` | tvOS App Store | iOS distribution | No |
+| `TVOS_APP_DEVELOPMENT` | tvOS development | iOS development | Yes |
+| `TVOS_APP_ADHOC` | tvOS release testing | iOS distribution | Yes |
+| `MAC_APP_STORE` | Mac App Store | Mac distribution | No |
+| `MAC_APP_DEVELOPMENT` | macOS development | Mac development | Yes |
+| `MAC_APP_DIRECT` | Developer ID distribution | Developer ID Application | No |
+| `MAC_CATALYST_APP_STORE` | Mac Catalyst App Store | Mac distribution | No |
+| `MAC_CATALYST_APP_DEVELOPMENT` | Mac Catalyst development | Mac development | Yes |
+| `MAC_CATALYST_APP_DIRECT` | Mac Catalyst Developer ID distribution | Developer ID Application | No |
+
+Use `--certificate-type` only when the inferred type is not the one you need.
+
+Fetch and sync also accept `IOS_APP_INHOUSE` and `TVOS_APP_INHOUSE`. Those enterprise/in-house profiles install on devices that were never registered, so revoking that distribution certificate stops already-installed apps; revoking an App Store certificate does not pull binaries Apple already re-signed, and development profiles stay limited to registered devices.
+
+## Create a certificate without losing its private key
+
+If no suitable certificate exists, generate the private key and certificate signing request locally while creating the App Store Connect certificate:
+
+```bash  theme={null}
+mkdir -p .asc/signing .asc/secrets
+chmod 700 .asc/signing .asc/secrets
+certificate_response=.asc/signing/distribution-certificate.json
+
+asc certificates create \
+  --certificate-type IOS_DISTRIBUTION \
+  --generate-csr \
+  --key-out .asc/secrets/distribution.key \
+  --csr-out .asc/signing/distribution.csr \
+  --output json \
+  --pretty > "$certificate_response"
+```
+
+The private key stays at `--key-out`; the API response contains only the public certificate. Keep the key private and back it up through encrypted sync before deleting the bootstrap copy.
+
+The key and CSR are written before the App Store Connect request. If that request times out or returns an ambiguous failure, do not rerun `--generate-csr` and do not add `--force`: either action can replace the identity while a certificate from the first request may already exist. List the current certificates into a fresh file and inspect candidates created during the failed attempt. Confirm a candidate by matching its public key to `.asc/secrets/distribution.key`, not by name or date alone:
+
+```bash  theme={null}
+asc certificates list \
+  --certificate-type IOS_DISTRIBUTION \
+  --paginate \
+  --output json \
+  --pretty > .asc/signing/distribution-certificates-after-ambiguous-create.json
+```
+
+If a matching certificate exists, retrieve it into a fresh response file:
+
+```bash  theme={null}
+certificate_response=.asc/signing/distribution-certificate-recovered.json
+asc certificates view \
+  --id MATCHING_CERTIFICATE_ID \
+  --output json \
+  --pretty > "$certificate_response"
+```
+
+If no certificate matches the preserved key, retry the API request with the preserved CSR and a fresh response file:
+
+```bash  theme={null}
+certificate_response=.asc/signing/distribution-certificate-retry.json
+asc certificates create \
+  --certificate-type IOS_DISTRIBUTION \
+  --csr .asc/signing/distribution.csr \
+  --output json \
+  --pretty > "$certificate_response"
+```
+
+Capture the certificate resource ID and calculate its SHA-256 fingerprint from the same create response. The fingerprint binds the private key during `signing sync push`; the resource ID selects that same certificate during profile reconciliation:
+
+```bash  theme={null}
+CERTIFICATE_ID="$(
+  jq -r '.data.id' "$certificate_response"
+)"
+
+CERTIFICATE_SHA256="$(
+  jq -r '.data.attributes.certificateContent' \
+    "$certificate_response" \
+  | openssl base64 -d -A \
+  | openssl x509 -inform DER -outform DER \
+  | shasum -a 256 \
+  | awk '{print toupper($1)}'
+)"
+```
+
+Do not print the private key or store it in shell history. The certificate fingerprint is public metadata.
+
+## Share a usable signing identity
+
+`signing sync push` fetches the chosen certificate and profile, verifies the local private identity against them, encrypts the assets, and publishes one Git commit. It works in a temporary clone and removes that clone after the run.
+
+### What the encrypted store protects
+
+Every `.enc` file uses AES-256-GCM. That authenticated encryption gives confidentiality plus integrity for the ciphertext: a modified file or a wrong password fails decryption. It does not replace a private, least-privilege Git repository or a generated high-entropy password. Anyone who has both can decrypt.
+
+Versioned envelopes (identity PKCS#12 files, identity-context records, and newly written provisioning profiles) derive a 32-byte key with scrypt (`N=32768`, `r=8`, `p=1`). A JSON metadata header is bound as AES-GCM additional authenticated data, so changing the recorded relative path, kind, sensitivity flag, certificate SHA-256, team, bundle ID, profile type, or KDF parameters fails the same way as a modified ciphertext. Identity metadata binds path, kind, sensitivity, certificate fingerprint, and team. Context metadata binds the bundle identifier and profile type. Profile envelopes bind bundle ID, profile type, resource ID, and UUID.
+
+Public certificate files, and older unversioned profile files still present in existing repositories, keep the stable PBKDF2 format: PBKDF2-HMAC-SHA256 with 100,000 iterations, a 16-byte salt, a 32-byte key, and no additional authenticated data. `sync pull` still reads those files. The normalized PKCS#12 payload is separately password-protected with the same sync password using PBKDF2.
+
+The store does not hide Git history, rewrite old commits when you rotate the password, or protect plaintext after a successful pull.
+
+### Push a PKCS#12 identity
 
 ```bash  theme={null}
 asc signing sync push \
   --bundle-id com.example.app \
-  --profile-type IOS_APP_ADHOC \
+  --profile-type IOS_APP_STORE \
   --repo git@github.com:team/signing.git \
   --password-file ~/.config/asc/signing-sync-password \
-  --identity ./identities.p12 \
-  --identity-sha256 A1B2C3D4E5F60718293A4B5C6D7E8F90112233445566778899AABBCCDDEEFF00 \
-  --identity-password-file ./identity-password
+  --identity .asc/secrets/distribution.p12 \
+  --identity-password-file .asc/secrets/distribution-p12-password \
+  --output json \
+  --pretty
 ```
 
-The synced identity is normalized to one password-protected PKCS#12 and stored
-encrypted under `identities/<development-or-distribution>/<certificate-sha256>.p12.enc`.
-The team-wide identity is stored once and authenticated context records bind it
-to each bundle/profile and exact verified provisioning-profile use. Pulling
-decrypts it with mode `0600` and reports it under `sensitiveFiles` in JSON:
+An unprotected PKCS#12 does not need `--identity-password-file`. If the file contains more than one identity, select the intended certificate with `--identity-sha256`.
+
+### Push the private key created with the CSR
+
+```bash  theme={null}
+asc signing sync push \
+  --bundle-id com.example.app \
+  --profile-type IOS_APP_STORE \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --private-key .asc/secrets/distribution.key \
+  --identity-sha256 "$CERTIFICATE_SHA256" \
+  --create-missing \
+  --output json \
+  --pretty
+```
+
+`--private-key` accepts RSA or EC PEM keys and always requires the certificate fingerprint. The CLI checks the private key's public half against the selected active, unexpired App Store Connect certificate and the certificate embedded in the profile.
+
+Private identity sync supports `MAC_APP_DIRECT` and `MAC_CATALYST_APP_DIRECT` with the same protected `--identity` or `--private-key` inputs. The command requires the exact active API profile type, accepts associated Developer ID Application certificates from either supported generation, and verifies the local private key, API certificate, embedded profile certificate, signed macOS platform and all-device claims, team, bundle ID, and signed profile as one identity before publication.
+
+### Sync an app and embedded targets together
+
+Use `--targets-file` for an app, widgets, extensions, App Clips, or other targets that share one profile type and identity. It is mutually exclusive with `--bundle-id`; the remaining push flags apply to every target.
+
+```json
+{
+  "schemaVersion": 1,
+  "targets": [
+    {"bundleId": "com.example.app"},
+    {"bundleId": "com.example.app.widget"}
+  ]
+}
+```
+
+The manifest accepts 1 to 32 unique bundle identifiers. It must be a command-root-relative regular JSON file smaller than 64 KiB; absolute paths, symlinks, `..` escapes, unknown fields, duplicate IDs, path characters, and control or bidi characters are rejected before passwords, authentication, network requests, or Git work.
+
+```bash  theme={null}
+asc signing sync push \
+  --targets-file ./signing-targets.json \
+  --profile-type IOS_APP_STORE \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --identity .asc/secrets/distribution.p12 \
+  --identity-password-file .asc/secrets/distribution-p12-password \
+  --create-missing \
+  --output json \
+  --pretty
+```
+
+Targets are processed in deterministic order. Shared certificates and identities are stored once, profiles use bundle-scoped paths, and the repository gets at most one commit and push. An unchanged rerun creates neither.
+
+`--create-missing` can create App Store Connect profiles before the final Git push. If a later target or repository publication fails, those immutable profiles may remain; the error reports that boundary. Rerun after fixing the failure or inspect the profiles before deciding whether cleanup is appropriate.
+
+Batch JSON includes `bundleIds` and one `targets` result per bundle. Each result states its profile path, whether the profile was created, and the files stored for that target.
+
+### Pull on another machine
+
+```bash  theme={null}
+mkdir -p .asc/signing
+chmod 700 .asc/signing
+
+asc signing sync pull \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --output-dir .asc/signing/pulled \
+  --output json \
+  --pretty > .asc/signing/pull-result.json
+
+jq -r '.sensitiveFiles[]?' .asc/signing/pull-result.json
+```
+
+`files` lists every decrypted output, including private identities. `sensitiveFiles` is the subset of those paths that contains private identity material. Do not treat `files` as a non-sensitive artifact list: exclude or protect every entry also named in `sensitiveFiles`. New files use mode `0600`, and the command refuses unsafe identity envelopes, oversized repositories, path escapes, and metadata that does not match the encrypted artifact.
+
+The normalized PKCS#12 is protected by the same sync password. A pull that reports `identityPresent: false` contains certificates and profiles only and cannot sign an app by itself.
+
+Use `--password-file` for local work. In a secret-managed CI environment, `ASC_SIGNING_SYNC_PASSWORD` is also supported. The inline `--password` flag and `ASC_MATCH_PASSWORD` are deprecated during 4.x and will be rejected in 5.0.0.
+
+### Install a persistent signing keychain
+
+> [experimental] This workflow can change before it reaches stable lifecycle status.
+
+Use `signing run` when an identity should exist only for one child command. Use
+`signing keychain install` when separate archive, export, or CI steps need one
+dedicated keychain to remain available:
+
+```bash  theme={null}
+mkdir -p .asc/keychains .asc/secrets
+chmod 700 .asc/keychains .asc/secrets
+
+keychain_password_file=.asc/secrets/release-keychain-password
+if [ ! -e "$keychain_password_file" ]; then
+  (umask 077 && openssl rand -base64 48 > "$keychain_password_file")
+fi
+chmod 600 "$keychain_password_file"
+
+identity_path="$(
+  jq -er '
+    [.sensitiveFiles[]? | select(endswith(".p12"))]
+    | if length == 1 then .[0]
+      else error("expected exactly one signing identity")
+      end
+  ' .asc/signing/pull-result.json
+)"
+
+asc signing keychain install \
+  --identity ".asc/signing/pulled/$identity_path" \
+  --identity-password-file ~/.config/asc/signing-sync-password \
+  --keychain .asc/keychains/release.keychain-db \
+  --keychain-password-file "$keychain_password_file" \
+  --expected-certificate-sha256 CERTIFICATE_SHA256 \
+  --add-to-search-list \
+  --confirm \
+  --output json
+```
+
+The command is macOS-only and requires a cgo-enabled build. It decodes the
+PKCS#12, verifies the private key and currently valid code-signing certificate,
+and checks the optional SHA-256 fingerprint before creating anything. The
+destination must not exist. This keeps partition-list changes inside a new
+keychain rather than modifying unrelated identities in a login or shared
+keychain.
+
+Both passwords come from protected regular files and are never placed in
+subprocess arguments. The command deletes the new keychain if import,
+codesigning verification, or search-list activation fails. It does not change
+the default keychain. Before creation it snapshots the user search list and
+restores that exact snapshot after any later failure, including when the
+destination had a stale entry. Without `--add-to-search-list`, a successful
+install removes any automatic or stale destination entry so the new keychain
+remains isolated.
+
+The JSON receipt contains the absolute keychain path, public certificate
+fingerprints, team ID, and whether the user search list changed. It never
+contains the identity source path or either password. The keychain persists on
+success; delete it explicitly when the job or machine no longer needs it.
+
+Provisioning profiles remain independent persistent assets. Install each
+profile with `asc profiles local install`, using the exact paths reported by
+`signing sync pull`.
+
+To decrypt only one app context, select the bundle ID and profile type:
 
 ```bash  theme={null}
 asc signing sync pull \
   --repo git@github.com:team/signing.git \
+  --bundle-id com.example.app \
+  --profile-type IOS_APP_STORE \
   --password-file ~/.config/asc/signing-sync-password \
-  --output-dir ./signing \
+  --output-dir .asc/signing/pulled \
+  --output json \
+  --pretty > .asc/signing/pull-result.json
+```
+
+Use the same schema-versioned `--targets-file` accepted by `sync push` when the app has extensions, widgets, App Clips, or other embedded targets. `--bundle-id` and `--targets-file` are mutually exclusive, and either selector requires one shared, exact App Store Connect `--profile-type`. Partial values and added suffixes fail before secret or repository access.
+
+A selected pull authenticates and validates the whole encrypted repository before filtering output, so an unselected corrupt artifact is still an error. It identifies development, ad hoc, store, in-house, and direct-distribution profiles from their signed bundle, platform, and distribution claims rather than filenames. It includes stored public certificates whose fingerprints appear in each profile without requiring inactive or otherwise unsynced embedded certificates, then includes the exact identity context and shared private identity when present. Identity-backed output also requires the stored public certificate for that exact identity. Every requested bundle must have an active matching profile. All selected destinations are checked before the first file is written; an existing file for an unselected target does not block the pull.
+
+Native Mac and Mac Catalyst profiles can have the same signed platform and distribution claims. Push therefore authenticates the exact API profile type alongside each encrypted profile. Older identity-backed stores can use the exact type in their authenticated identity context. An older certificate-only Mac profile without either form of provenance is not guessed: the selected pull reports no exact match. Push that bundle again with the exact `--profile-type` to upgrade the profile artifact, then retry the selected pull. Full-repository pulls remain available during migration.
+
+Single-target JSON reports `bundleId` and `profileType`. Multi-target JSON reports `bundleIds` plus one `targets` entry per bundle. A target can report multiple `profilePaths` when the store contains more than one active matching profile; `profilePath` remains the first deterministic path for compatibility with the existing target result shape. `files`, `sensitiveFiles`, and `identityPresent` describe only the selected output.
+
+### Rotate the repository password
+
+Prepare the replacement secret in a separate protected file, distribute it to
+dependent machines and CI secret stores, and then rotate the selected branch:
+
+```bash  theme={null}
+umask 077
+printf '%s' "$SIGNING_SYNC_PASSWORD_NEXT" \
+  > ~/.config/asc/signing-sync-password-next
+
+asc signing sync rotate-password \
+  --repo git@github.com:team/signing.git \
+  --password-file ~/.config/asc/signing-sync-password \
+  --new-password-file ~/.config/asc/signing-sync-password-next \
+  --confirm \
+  --output json \
+  --pretty
+```
+
+The two password files must be distinct regular files with mode `0600` or more
+restrictive. Rotation does not accept inline passwords or environment
+fallbacks. The command authenticates and validates the complete repository
+with the current password, re-encrypts all artifacts with fresh salts and
+nonces, rewraps normalized PKCS#12 identities with the new password, validates
+the complete result again, and publishes one Git commit. A corrupt or
+inconsistent artifact aborts the operation before publication.
+
+Existing pulls that still use the previous password fail against the new branch
+head. Update every dependent worker promptly and keep the replacement password
+file out of source control and build artifacts. The rotation commit does not
+rewrite Git history: the previous password can still decrypt matching artifacts
+from older commits. If the password was exposed, also rotate repository access
+and follow your team's history-retention procedure.
+
+### Current sync scope
+
+The encrypted store currently uses Git. Push applies one profile configuration and one identity across its selected targets; it does not accept per-target profile types or device sets. Pull selectors similarly use one profile type per invocation. Certificate renewal and stale encrypted-store deletion remain explicit operator work; [Rotation and expiry](#rotation-and-expiry) has the ordering. Dedicated persistent keychain installation is separate from sync, creates a new keychain for one identity per invocation, and leaves provisioning-profile installation as an independent operation.
+
+## CI example
+
+The example below keeps all secret-file, profile-installation, and keychain
+steps in one shell process. The repository password therefore remains
+available through identity installation, and one trap removes both password
+files and the persistent job keychain. Do not upload `.asc/signing/pulled` as a
+workflow artifact.
+
+`signing sync` is noninteractive for its own Git subprocesses: it sets
+`GIT_TERMINAL_PROMPT=0`, and when `GIT_SSH_COMMAND`, `GIT_SSH`, and
+`core.sshCommand` are unset it uses `GIT_SSH_COMMAND=ssh -o BatchMode=yes`. A
+custom `GIT_SSH_COMMAND` is preserved verbatim, so include `-o BatchMode=yes`
+(or an equivalent no-prompt wrapper) yourself; an SSH passphrase or unknown-host
+prompt will hang the runner. The job-level values below cover any other Git or
+SSH the step runs:
+
+```yaml  theme={null}
+- name: Pull signing assets
+  shell: bash
+  env:
+    SIGNING_SYNC_PASSWORD: ${{ secrets.SIGNING_SYNC_PASSWORD }}
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_SSH_COMMAND: ssh -o BatchMode=yes
+  run: |
+    set +x
+    umask 077
+    keychain_dir="$(mktemp -d "$RUNNER_TEMP/asc-signing.XXXXXX")"
+    password_file="$keychain_dir/repository-password"
+    keychain_path="$keychain_dir/release.keychain-db"
+    keychain_password_file="$keychain_dir/keychain-password"
+    cleanup_signing() {
+      /usr/bin/security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+      rm -f "$password_file" "$keychain_password_file"
+      rmdir "$keychain_dir" >/dev/null 2>&1 || true
+    }
+    trap cleanup_signing EXIT
+    printf '%s' "$SIGNING_SYNC_PASSWORD" > "$password_file"
+    mkdir -p .asc/signing
+    chmod 700 .asc/signing
+
+    asc signing sync pull \
+      --repo git@github.com:team/signing.git \
+      --password-file "$password_file" \
+      --output-dir .asc/signing/pulled \
+      --output json > .asc/signing/pull-result.json
+
+    identity_path="$(
+      jq -er '
+        [.sensitiveFiles[]? | select(endswith(".p12"))]
+        | if length == 1 then .[0]
+          else error("expected exactly one signing identity")
+          end
+      ' .asc/signing/pull-result.json
+    )"
+
+    jq -r '.files[] | select(endswith(".mobileprovision"))' \
+      .asc/signing/pull-result.json \
+    | while IFS= read -r profile_path; do
+        asc profiles local install \
+          --path ".asc/signing/pulled/$profile_path" \
+          --output json
+      done
+
+    openssl rand -base64 32 > "$keychain_password_file"
+    asc signing keychain install \
+      --identity ".asc/signing/pulled/$identity_path" \
+      --identity-password-file "$password_file" \
+      --keychain "$keychain_path" \
+      --keychain-password-file "$keychain_password_file" \
+      --add-to-search-list \
+      --confirm \
+      --output json
+
+    asc xcode archive \
+      --workspace Example.xcworkspace \
+      --scheme Example \
+      --archive-path .asc/artifacts/Example.xcarchive
+
+    asc xcode export \
+      --archive-path .asc/artifacts/Example.xcarchive \
+      --ipa-path .asc/artifacts/Example.ipa \
+      --signing-style manual \
+      --team-id TEAM_ID
+```
+
+For an App Store export, the profile loop reads exact paths from the pull
+receipt instead of guessing the repository layout. The identity lookup likewise
+uses the complete relative path from `sensitiveFiles` and requires exactly one
+pulled PKCS#12 identity. The generated keychain password is independent of the
+repository password. The run-owned temporary directory ensures the cleanup trap
+cannot delete a pre-existing keychain when installation fails. The keychain
+intentionally persists through archive and export, then the trap removes it.
+
+Manual export inspects the archive and matches locally installed profiles for the main app and embedded targets. An explicit `--export-options` file is authoritative and cannot be combined with `--signing-style`, `--team-id`, or `--method`.
+
+## Reconcile registered-device profiles for an archive
+
+`signing reconcile` is an iOS, macOS-hosted workflow for ad hoc release testing. It inspects the signed entitlements of the main app and embedded app, extension, Watch, and App Clip targets inside an `.xcarchive`.
+
+Create a protected devices file:
+
+```json
+{
+  "schemaVersion": 1,
+  "devices": [
+    {
+      "name": "QA iPhone",
+      "udid": "DEVICE_UDID",
+      "platform": "IOS"
+    }
+  ]
+}
+```
+
+```bash  theme={null}
+chmod 600 .asc/distribution/devices.json
+
+asc signing reconcile plan \
+  --archive-path .asc/artifacts/Example.xcarchive \
+  --devices-file .asc/distribution/devices.json \
+  --minimum-validity-days 14 \
+  --state-dir .asc/distribution/signing \
+  --output json \
+  --pretty
+```
+
+Planning makes no App Store Connect mutations. It writes a mode-`0600` `plan.json`; a blocked plan still succeeds with `ready: false` so automation can inspect its blockers. Raw UDIDs do not appear in the plan or normal command output.
+
+Plan creation refuses to replace an existing `plan.json`. After reviewing a blocked plan and fixing its blockers, rerun the same command with `--overwrite`. Use a new `--state-dir` instead when the blocked plan must remain available for comparison.
+
+When more than one active iOS distribution certificate is eligible, select the resource ID that matches the synced identity. The example reuses `CERTIFICATE_ID` captured from the same certificate response as `CERTIFICATE_SHA256`. For an existing identity, match its certificate fingerprint to the App Store Connect certificate first; do not choose an arbitrary active resource ID.
+
+```bash  theme={null}
+asc signing reconcile plan \
+  --archive-path .asc/artifacts/Example.xcarchive \
+  --devices-file .asc/distribution/devices.json \
+  --certificate "$CERTIFICATE_ID" \
   --output json
 ```
 
-Certificate/profile-only sync remains supported and reports
-`identityPresent: false`. It does not produce a usable signing identity.
-
-Private identity sync currently rejects `MAC_APP_DIRECT` and
-`MAC_CATALYST_APP_DIRECT` before reading local identity data. Omit
-`--identity`/`--private-key` to continue using certificate/profile-only sync for
-those profile types.
-
-Use a generated high-entropy sync password: it protects both the scrypt/AES-GCM
-repository envelope and the pulled modern PKCS#12 interchange file.
-
-`--password` and `ASC_MATCH_PASSWORD` remain available during the 4.x
-transition, but print a deprecation warning. Migrate to `--password-file` or
-`ASC_SIGNING_SYNC_PASSWORD`; the legacy sources will be rejected in 5.0.0.
-
-## Output Files
-
-Files are saved to the output directory with sanitized names:
-
-**Provisioning Profile:**
-
-```
-./signing/IOS_APP_STORE-20250304.mobileprovision
-```
-
-**Certificates:**
-
-```
-./signing/A1B2C3D4E5.cer
-./signing/F6G7H8I9J0.cer
-```
-
-File names are based on profile name/ID and certificate serial numbers.
-
-## Complete Example Workflows
-
-### App Store Submission
-
-`signing fetch` downloads only the public certificate and provisioning profile.
-It can support a build only when the matching private key is already installed
-in the selected keychain. To share a usable identity, use `signing sync push`
-with `--identity`, then `signing sync pull`; importing the pulled P12 remains an
-explicit operator step until the ephemeral-keychain workflow lands.
+Review the plan, then apply that exact artifact:
 
 ```bash  theme={null}
-# 1. Fetch App Store signing files
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_STORE \
-  --output ./signing
-
-# 2. Verify the matching private signing identity is already installed
-security find-identity -v -p codesigning ~/Library/Keychains/login.keychain-db
-
-# 3. Install provisioning profile
-cp ./signing/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
-
-# 4. Build and sign your app
-xcodebuild -project MyApp.xcodeproj \
-  -scheme MyApp \
-  -configuration Release \
-  -archivePath ./build/MyApp.xcarchive \
-  archive
+asc signing reconcile apply \
+  --plan .asc/distribution/signing/plan.json \
+  --confirm \
+  --output json \
+  --pretty
 ```
 
-### Development Setup
+Apply rechecks the archive, device input, plan hash, and remote preconditions before each action. It can register missing devices, create baseline explicit bundle IDs, and create successor ad hoc profiles. It never deletes or updates profiles, creates certificates, changes capabilities, or broadens the requested device set. A partial mode-`0600` receipt records completed work so the same plan can be retried safely.
+
+Value-specific entitlements such as App Groups, Apple Pay merchant IDs, Network Extensions, and Wallet pass identifiers can block a plan when their remote settings cannot be proved. Configure those capabilities first; do not treat a blocked plan as permission to guess.
+
+## Run one command with a temporary signing identity
+
+`asc signing run` is macOS-only and currently accepts iOS release-testing profiles: the profile must contain registered devices, must not allow debugging, and must not be an enterprise or App Store profile.
+
+It validates the PKCS#12, private key, certificate, team, signed profile, expiration, and embedded certificate before changing local signing state. During child execution, it installs the profile in the user's Xcode provisioning-profile directory and prepends the temporary keychain to that user's keychain search list. This state is temporary, but it is visible to unrelated Xcode or `codesign` processes running as the same macOS user. Use a job-exclusive or disposable user so another process cannot consume or interfere with it. The command executes the argv after `--` without a shell, restores the search list, and removes ASC-owned temporary state afterward.
+
+The wrapper accepts exactly one `--profile`. The example below therefore applies only to a single-target archive. For an archive with embedded targets, use a disposable macOS worker, import the identity into its job-scoped keychain, install each completed profile action's `outputPath` from `signing reconcile apply`, export, and discard the worker state after the job.
 
 ```bash  theme={null}
-# 1. List your registered devices
-asc devices list --platform IOS --output table
+signing_command=(
+  asc xcode export
+  --archive-path .asc/artifacts/Example.xcarchive
+  --ipa-path .asc/artifacts/Example.ipa
+  --method release-testing
+  --signing-style manual
+  --team-id TEAM_ID
+)
 
-# 2. Fetch development signing files
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_DEVELOPMENT \
-  --device "DEV_DEVICE_1,DEV_DEVICE_2,DEV_DEVICE_3" \
-  --output ./signing \
-  --create-missing
-
-# 3. Install the profile; the matching private identity must already be in the keychain
-cp ./signing/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
+asc signing run \
+  --identity .asc/signing/pulled/identities/distribution/IDENTITY.p12 \
+  --identity-password-file ~/.config/asc/signing-sync-password \
+  --profile .asc/distribution/signing/profiles/PROFILE.mobileprovision \
+  --purpose release-testing \
+  --receipt .asc/distribution/signing-run.json \
+  -- "${signing_command[@]}"
 ```
 
-### CI/CD Integration
+The child owns stdin, stdout, stderr, and its exit code. The optional receipt contains certificate/profile digests, profile UUID, team, bundle ID, child result, and cleanup state; it does not contain credentials, device identifiers, or child arguments.
 
-```yaml  theme={null}
-# GitHub Actions example. Provision the matching private identity into the
-# temporary keychain through your CI secret manager before the build.
-- name: Fetch public signing files
-  run: |
-    asc signing fetch \
-      --bundle-id com.example.app \
-      --profile-type IOS_APP_STORE \
-      --output ./signing
+The receipt path is create-only, including when the child fails. Before retrying in the same workspace, retain or move the reviewed receipt, remove it only when it is no longer needed, or choose a fresh `--receipt` path. The command does not overwrite an existing receipt.
 
-- name: Prepare keychain for a pre-provisioned private identity
-  run: |
-    security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-    security default-keychain -s build.keychain
-    security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-    security set-key-partition-list -S apple-tool:,apple: \
-      -s -k "$KEYCHAIN_PASSWORD" build.keychain
+If a prior run was interrupted, the next run attempts bounded recovery from an ASC-owned crash journal. It refuses journals or files that fail ownership, permission, containment, link-count, or digest checks.
 
-- name: Install provisioning profile
-  run: |
-    mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-    cp ./signing/*.mobileprovision \
-      ~/Library/MobileDevice/Provisioning\ Profiles/
+## Inspect and maintain local profiles
+
+Inspect a downloaded profile without installing it:
+
+```bash  theme={null}
+asc profiles inspect \
+  --path .asc/signing/app-store/PROFILE.mobileprovision \
+  --output json \
+  --pretty
 ```
+
+Install by file or App Store Connect resource ID:
+
+```bash  theme={null}
+asc profiles local install --path ./PROFILE.mobileprovision
+asc profiles local install --id PROFILE_ID
+```
+
+List installed profiles and find expired entries:
+
+```bash  theme={null}
+asc profiles local list --bundle-id com.example.app --output table
+asc profiles local list --expired --output table
+```
+
+Preview cleanup before confirming it:
+
+```bash  theme={null}
+asc profiles local clean --expired --dry-run
+asc profiles local clean --expired --confirm
+```
+
+## Rotation and expiry
+
+Profiles cannot be edited. When a device, capability, certificate, or validity requirement changes, create a successor profile and move builds to it. Keep the old profile until every active build path has switched.
+
+`signing sync` does not renew certificates or delete stale encrypted files. Do that work in this order:
+
+1. Create the new certificate from a locally retained private key or a new generated CSR.
+2. Create or reconcile successor profiles that use the new certificate.
+3. Push the new identity and verified profiles to the encrypted repository. Push advances the authenticated identity-context record; Git history still contains the previous ciphertext.
+4. Pull and test on a clean worker.
+5. Keep the old certificate until every active build path has switched. Deactivate it (`asc certificates update --id CERT_ID --activated false`) when you only need to stop new profile creation. Revoke it when the private key is compromised or you must invalidate remaining profiles that still embed that certificate:
+
+```bash  theme={null}
+asc certificates revoke --id CERT_ID --confirm
+```
+
+`--confirm` is required. Revocation cannot be undone and cannot be reversed with `--activated`. It invalidates provisioning profiles that embed that certificate. It does not pull App Store binaries Apple already re-signed; stopping already-installed apps is the in-house case under [Common profile types](#common-profile-types). Apple still counts a revoked certificate against the per-type limit until it expires, so revocation is not a way to free a slot immediately; see [Certificates](/commands/certificates).
+
+6. If HEAD should no longer carry unused `.enc` files, delete those paths in a later reviewed Git commit. Sync does not remove them. Password rotation re-encrypts the current branch head only; rewriting history is a separate incident-response decision.
+
+Git history retains encrypted prior assets, so repository access and password rotation deserve the same controls as other signing secrets. Do not commit the decrypted pull directory, password files, raw private keys, or PKCS#12 inputs.
 
 ## Troubleshooting
 
-### Bundle ID Not Found
+### `bundle ID not found`
 
-```
-Error: bundle ID not found: com.example.app
-```
+Create the bundle ID first, or check the exact identifier with `asc bundle-ids list --identifier ...`. For extensions, create and configure every embedded target's bundle ID separately.
 
-**Solution:** Create the bundle ID first:
+### `no certificates found`
 
-```bash  theme={null}
-asc bundle-ids create --identifier com.example.app \
-  --name "My App" \
-  --platform IOS
-```
+Run `asc certificates list --output table`. If a new certificate is required, use `asc certificates create --generate-csr` so the private key exists locally and can be backed up.
 
-### No Certificates Found
+### `no active profile found`
 
-```
-Error: no certificates found for type IOS_DISTRIBUTION
-```
+Add `--create-missing` after confirming the bundle ID capabilities. For development or ad hoc profiles, also provide device resource IDs.
 
-**Solution:** Create a certificate:
+### `identity private key does not match`
 
-```bash  theme={null}
-# 1. Generate CSR
-asc certificates csr generate --key-out ./cert.key --csr-out ./cert.csr
+The local key, App Store Connect certificate, and certificate embedded in the profile are not one identity. Select the correct PKCS#12 identity with `--identity-sha256`, or use the private key that created the certificate request.
 
-# 2. Create certificate
-asc certificates create --certificate-type IOS_DISTRIBUTION \
-  --csr ./cert.csr
-```
+### `multiple certificates` or `multiple identities`
 
-### No Active Profile Found
+Choose the exact certificate. `signing sync push` accepts `--identity-sha256`; `signing reconcile plan` accepts the App Store Connect `--certificate` resource ID.
 
-```
-Error: no active profile found for bundle ID; use --create-missing to create one
-```
+### Protected file or symlink errors
 
-**Solution:** Add `--create-missing` flag or create profile manually:
+Move the input to an owner-controlled directory, replace symlinks with regular files, and run `chmod 600 FILE`. The signing commands intentionally reject permissive or ambiguous secret paths.
 
-```bash  theme={null}
-asc profiles create --name "My App Store Profile" \
-  --profile-type IOS_APP_STORE \
-  --bundle "BUNDLE_ID" \
-  --certificate "CERT_ID"
-```
+### `signing run` rejects the profile
 
-### Devices Required for Development
+Use an iOS ad hoc profile with registered devices and `get-task-allow` disabled. App Store, development, enterprise, macOS, and tvOS profiles are outside the current `release-testing` boundary.
 
-```
-Error: --device is required for development profiles
-```
+### Reconciliation returns `ready: false`
 
-**Solution:** Specify device IDs:
+Read the plan blockers. Common causes include multiple eligible certificates, an entitlement whose capability settings cannot be verified, a team mismatch, an unsupported archive platform, or a mutation count over `--max-mutations`. Planning does not repair those conditions silently.
 
-```bash  theme={null}
-# List devices to find IDs
-asc devices list --platform IOS --output table
+### Expired or missing WWDR intermediate
 
-# Add devices to command
-asc signing fetch --bundle-id com.example.app \
-  --profile-type IOS_APP_DEVELOPMENT \
-  --device "DEVICE_ID_1,DEVICE_ID_2" \
-  --create-missing
-```
+Apple issues developer certificates under a Worldwide Developer Relations (WWDR) intermediate. If that intermediate is expired or missing from the System keychain, `codesign` can reject a pulled identity that is otherwise valid. Eligible Xcode versions install current WWDR intermediates automatically; otherwise download them from the [Apple PKI](https://www.apple.com/certificateauthority/) page and install them into `/Library/Keychains/System.keychain`. `asc` does not fetch or install WWDR intermediates.
 
-## Related Commands
+### Identity is present but `codesign` cannot see it
 
-* [Certificates](/commands/certificates) - Manage individual certificates
-* [Profiles](/commands/profiles) - Manage provisioning profiles
-* [Bundle IDs](/commands/bundle-ids) - Manage bundle identifiers
+`codesign` only uses identities in keychains on the current user search list, and only when the private key's partition list includes `apple-tool:` and `apple:`. `asc signing keychain install --add-to-search-list --confirm` does both inside a new dedicated keychain. `asc signing run` prepends its temporary keychain for the child process, then restores the search list.
+
+If you imported the PKCS#12 some other way, run `security list-keychains` and confirm the destination is on that list. Partition-list updates against the login or a shared keychain can affect unrelated private keys; prefer `signing keychain install` or `signing run` so those changes stay in a dedicated keychain. Do not put a keychain password on a `security set-key-partition-list` command line.
+
+## Related commands
+
+* [Certificates](/commands/certificates) - create, inspect, download, deactivate, and revoke public certificates
+* [Profiles](/commands/profiles) - create, download, inspect, install, and clean profiles
+* [Bundle IDs](/commands/bundle-ids) - manage identifiers and capabilities
+* [Devices](/commands/devices) - list and register test devices
+* [Agent iOS release guide](/guides/agent-ios-release) - archive, export, and publish an iOS build

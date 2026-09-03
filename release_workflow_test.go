@@ -756,6 +756,7 @@ func TestReleaseWorkflowPushesWinGetBranchWithoutHistoryRewriteOrWorkflowScope(t
 		"git push --force",
 		`git merge-base --is-ancestor origin/master "origin/${BRANCH}"`,
 		`git checkout -b "${BRANCH}" upstream/master`,
+		`git checkout -B "${BRANCH}" upstream/master`,
 		`grep -Ev "^manifests/r/Rorkai/ASC/${VERSION}/"`,
 	} {
 		if strings.Contains(workflow, unwanted) {
@@ -764,7 +765,7 @@ func TestReleaseWorkflowPushesWinGetBranchWithoutHistoryRewriteOrWorkflowScope(t
 	}
 	for _, want := range []string{
 		`git merge-base --is-ancestor origin/master upstream/master`,
-		`git checkout -b "${BRANCH}" origin/master`,
+		`retry_transient git checkout -B "${BRANCH}" origin/master`,
 		`git push --set-upstream origin "${BRANCH}"`,
 		`git diff --name-only -z upstream/master...HEAD`,
 		`case "$changed_path" in`,
