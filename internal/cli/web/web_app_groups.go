@@ -85,6 +85,7 @@ func WebAppGroupsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web app-groups list", flag.ExitOnError)
 	paginate := fs.Bool("paginate", false, "Fetch all pages")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "list",
@@ -107,17 +108,19 @@ Example:
 			if len(args) > 0 {
 				return shared.UsageError("web app-groups list does not accept positional arguments")
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups list")
 			}
-			result, err := listDeveloperAppGroupsFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupsListOptions{Paginate: *paginate})
+			result, err := listDeveloperAppGroupsFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupsListOptions{Paginate: *paginate})
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups list")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,
@@ -136,6 +139,7 @@ func WebAppGroupsCreateCommand() *ffcli.Command {
 	identifier := fs.String("identifier", "", "App Group identifier beginning with group.")
 	confirm := fs.Bool("confirm", false, "Confirm registering this App Group")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "create",
@@ -166,20 +170,25 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups create")
 			}
-			result, err := createDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupCreateRequest{Name: resolvedName, Identifier: resolvedIdentifier})
+			result, err := createDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupCreateRequest{Name: resolvedName, Identifier: resolvedIdentifier})
+			// Persist after the create attempt so a later command without
+			// --developer-team still targets the team that may have registered
+			// the group even when Apple's 2xx body is malformed.
+			persistDeveloperPortalSession(session)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups create")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups create failed: missing create result")
 			}
-			persistDeveloperAppGroupSession(session)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,
@@ -198,6 +207,7 @@ func WebAppGroupsAssignCommand() *ffcli.Command {
 	bundleID := fs.String("bundle-id", "", "Opaque Developer Portal Bundle ID resource ID")
 	confirm := fs.Bool("confirm", false, "Confirm assignment; a changed App ID invalidates existing provisioning profiles")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "assign",
@@ -232,20 +242,22 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups assign")
 			}
-			result, err := assignDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupAssignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
+			result, err := assignDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupAssignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups assign")
+				return developerAppGroupMutationError(session, err, "web app-groups assign")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups assign failed: missing assign result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutputWithRenderers(
 				result,
@@ -265,6 +277,7 @@ func WebAppGroupsUnassignCommand() *ffcli.Command {
 	bundleID := fs.String("bundle-id", "", "Opaque Developer Portal Bundle ID resource ID")
 	confirm := fs.Bool("confirm", false, "Confirm removal; a changed App ID invalidates existing provisioning profiles")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "unassign",
@@ -299,20 +312,22 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups unassign")
 			}
-			result, err := unassignDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupUnassignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
+			result, err := unassignDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupUnassignRequest{BundleID: resolvedBundleID, GroupID: resolvedGroupID})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups unassign")
+				return developerAppGroupMutationError(session, err, "web app-groups unassign")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups unassign failed: missing unassign result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
@@ -327,6 +342,7 @@ func WebAppGroupsSetCommand() *ffcli.Command {
 	bundleID := fs.String("bundle-id", "", "Opaque Developer Portal Bundle ID resource ID")
 	confirm := fs.Bool("confirm", false, "Confirm reconciliation; a changed App ID invalidates existing provisioning profiles")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "set",
@@ -362,20 +378,22 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups set")
 			}
-			result, err := setDeveloperAppGroupsFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupSetRequest{BundleID: resolvedBundleID, GroupIDs: []string(groupIDs)})
+			result, err := setDeveloperAppGroupsFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupSetRequest{BundleID: resolvedBundleID, GroupIDs: []string(groupIDs)})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups set")
+				return developerAppGroupMutationError(session, err, "web app-groups set")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups set failed: missing set result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
@@ -388,6 +406,7 @@ func WebAppGroupsDeleteCommand() *ffcli.Command {
 	groupID := fs.String("group-id", "", "Opaque App Group resource ID from app-groups list")
 	confirm := fs.Bool("confirm", false, "Confirm deletion; deleting a group invalidates existing provisioning profiles for App IDs that referenced it")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
 		Name:       "delete",
@@ -420,38 +439,37 @@ Example:
 				return shared.UsageError("--confirm is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups delete")
 			}
-			result, err := deleteDeveloperAppGroupFn(requestCtx, newWebClientFn(session), webcore.DeveloperAppGroupDeleteRequest{GroupID: resolvedGroupID})
+			result, err := deleteDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupDeleteRequest{GroupID: resolvedGroupID})
 			if err != nil {
-				return developerAppGroupMutationError(err, "web app-groups delete")
+				return developerAppGroupMutationError(session, err, "web app-groups delete")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups delete failed: missing delete result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Deleted)
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
 
-func persistDeveloperAppGroupSession(session *webcore.AuthSession) {
-	if err := persistWebSessionFn(session); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to persist refreshed web session: %v\n", err)
-	}
-}
-
 // developerAppGroupMutationError keeps the auth hint behavior of every other
 // web command, and additionally warns when the portal accepted a write that
 // could not be verified, because the App ID may already have changed.
-func developerAppGroupMutationError(err error, command string) error {
+func developerAppGroupMutationError(session *webcore.AuthSession, err error, command string) error {
 	var unverified *webcore.DeveloperAppGroupUnverifiedError
 	if errors.As(err, &unverified) {
+		// Persist before returning so a later command without --developer-team
+		// still targets the team that accepted the write.
+		persistDeveloperPortalSession(session)
 		_, _ = fmt.Fprintln(os.Stderr, "Warning: the Developer Portal accepted the change but it could not be verified; assume it was applied.")
 		warnDeveloperAppGroupProfileInvalidation(true)
 	}
