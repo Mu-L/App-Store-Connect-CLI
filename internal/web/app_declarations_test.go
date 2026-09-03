@@ -67,9 +67,11 @@ func TestListAppDeclarationsReturnsRequirements(t *testing.T) {
 }
 
 func TestListAppDeclarationsRequiresIdentifiers(t *testing.T) {
-	client := testWebClient(httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
-	})))
+	}))
+	t.Cleanup(server.Close)
+	client := testWebClient(server)
 
 	if _, err := client.ListAppDeclarations(context.Background(), "", "app-123"); err == nil ||
 		!strings.Contains(err.Error(), "account id is required") {

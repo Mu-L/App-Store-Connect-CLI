@@ -84,13 +84,13 @@ func WebAppsDeclarationsListCommand() *ffcli.Command {
 				return shared.UsageError("--app is required (or set ASC_APP_ID)")
 			}
 
-			accountID, client, err := resolveWebComplianceClient(ctx, authFlags, "web apps declarations list")
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+
+			accountID, client, err := resolveWebComplianceClient(requestCtx, authFlags, "web apps declarations list")
 			if err != nil {
 				return err
 			}
-
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
 
 			declarations := []webcore.AppDeclaration{}
 			err = withWebSpinner("Fetching app declarations", func() error {
@@ -169,13 +169,13 @@ Examples:
 				return shared.UsageError("--app is required (or set ASC_APP_ID)")
 			}
 
-			accountID, client, err := resolveWebComplianceClient(ctx, authFlags, "web apps medical-device view")
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+
+			accountID, client, err := resolveWebComplianceClient(requestCtx, authFlags, "web apps medical-device view")
 			if err != nil {
 				return err
 			}
-
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
 
 			var state *webcore.MedicalDeviceDeclarationState
 			err = withWebSpinner("Fetching regulated medical device declaration", func() error {

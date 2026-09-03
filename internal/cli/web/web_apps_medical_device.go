@@ -95,13 +95,13 @@ Examples:
 				return shared.UsageError("--declared true is not yet supported; only false is currently supported")
 			}
 
-			accountID, client, err := resolveWebComplianceClient(ctx, authFlags, "web apps medical-device set")
+			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			defer cancel()
+
+			accountID, client, err := resolveWebComplianceClient(requestCtx, authFlags, "web apps medical-device set")
 			if err != nil {
 				return err
 			}
-
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
 
 			var result *webcore.MedicalDeviceDeclarationResult
 			err = withWebSpinner("Saving regulated medical device declaration", func() error {

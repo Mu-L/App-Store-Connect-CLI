@@ -337,6 +337,16 @@ func capabilityRows() []Capability {
 			NextAction: "Use App Store Connect web UI, or asc web privacy.",
 		},
 		{
+			Area:       "app-management",
+			Capability: "App Store Regulations and Permits declarations",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps declarations"},
+			Notes: []string{
+				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; writes other than medical-device --declared false remain website-only. EU DSA trader status is account-level and is not part of this listing.",
+			},
+			NextAction: "Use App Store Connect web UI, or asc web apps declarations list.",
+		},
+		{
 			Area:       "monetization",
 			Capability: "Subscriptions and in-app purchases",
 			Status:     statusCLISupported,

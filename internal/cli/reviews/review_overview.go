@@ -636,7 +636,7 @@ func buildReviewDoctorResult(snapshot reviewSnapshot, report validation.Report) 
 	case strings.EqualFold(strings.TrimSpace(snapshot.Version.State), "READY_FOR_SALE"):
 		result.NextAction = "No action needed."
 	default:
-		result.NextAction = "No public-API submission blockers detected. Verify App Store Regulations and Permits in App Store Connect before submission."
+		result.NextAction = "No public-API submission blockers detected. Run `asc web apps declarations list` before submission."
 	}
 
 	return result
@@ -648,7 +648,7 @@ func reviewDoctorCoverageWarnings() []reviewCoverageWarning {
 			ID:          "review.coverage.app_store_regulations_and_permits",
 			Status:      "NOT_CHECKED",
 			Message:     "App Store Regulations and Permits declarations, including the personal-service declaration, are managed on the App Store Connect website and are not checked by asc review doctor.",
-			Remediation: "Verify App Store Regulations and Permits in App Store Connect before submission.",
+			Remediation: "Run `asc web apps declarations list --app APP_ID` with a web session, then answer outstanding requirements in App Store Connect or with `asc web apps medical-device set --declared false`.",
 		},
 	}
 }
