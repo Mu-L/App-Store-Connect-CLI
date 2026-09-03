@@ -40,6 +40,15 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - Region codes reference: https://developer.apple.com/help/app-store-connect/reference/financial-report-regions-and-currencies/
 - Use `asc finance regions` to see all available region codes
 
+## Tax Categories and Transaction Tax Reports
+
+Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec version 4.4.1):
+
+- There is no tax-category endpoint, and no tax-category attribute on `apps`, `appInfos`, or `inAppPurchases`. The App Store Connect UI is the only way to read or set an app or in-app purchase tax category.
+- `GET /v1/financeReports` accepts only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and `GET /v1/salesReports` has no tax report type, so Transaction Tax reports cannot be generated or downloaded through the public API.
+- Both surfaces still need a live web-session endpoint capture before any `asc web` command can be shipped: the request method, path, headers, request body, and response body for the App Information tax category read and write, and for the Payments and Financial Reports "Create Reports" Transaction Tax generate, poll, and download calls. See issue #2299.
+- `asc capabilities --area monetization` reports the tax category gap, and `asc capabilities --status not-public-api` reports both gaps.
+
 ## Sandbox Testers
 
 - `asc web sandbox create` requires `--first-name`, `--last-name`, `--email`, `--password`, and `--territory`
@@ -49,6 +58,17 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 - This normalization is limited to verified ASC alpha-3 territory surfaces, including customer-review filters; public storefront and finance region flags keep their existing namespaces
 - List, view, update, and clear-history use the v2 API through `asc sandbox`
 - Public `asc sandbox` does not expose create or delete. Create testers with `asc web sandbox create`, which posts to `/sandbox/v2/account/create`
+
+## App Store Regulations & Permits declarations
+
+- The public App Store Connect API has no declaration surface. `appInfos` in `docs/openapi/latest.json` exposes no `isRegulatedMedicalDevice`, `isPersonalService`, trader, or DSA attribute, and a case-insensitive scan of the whole snapshot finds no `medical`, `personalService`, `trader`, or `digitalServicesAct` field anywhere. The only trader-adjacent values are read-only `TerritoryAvailability.contentStatuses` reasons (`TRADER_STATUS_NOT_PROVIDED`, `TRADER_STATUS_VERIFICATION_FAILED`, `TRADER_STATUS_VERIFICATION_STATUS_MISSING`), which report a consequence rather than let anything be declared.
+- Declarations therefore live on the web-session `ppm/complianceform/v1` service, which is neither JSON:API nor `/ci/api` plain JSON; requests need the App Store Connect UI headers (`X-Csrf-Itc: itc`, `Origin`, and a `/apps/{id}/distribution/info` `Referer`).
+- `GET /ppm/complianceform/v1/accounts/{accountId}/requirements?contentId={appId}` lists every declaration Apple tracks for the app. Each row carries `id`, `name`, `ref`, `status`, `dateSigned`, `formId`, and `isRequired`. `requirementData` is keyed by `contentId`; prefer the entry whose `contentId` matches the app and fall back to the entry with an empty `contentId`. `asc web apps declarations list` reads exactly this.
+- `GET /ppm/complianceform/v1/accounts/{accountId}/requirements/{requirementId}/forms?contentId={appId}` returns the stored answer alongside `constraints`, an object of JSONPath keys to `{attributeName, options[{value, listValues}]}` validation metadata. The constraint keys are rooted at `$[*]`, so the stored answer is returned as an array; readers accept the answer at the top level, under a `data` object, or as the first element of a `data` array. `asc web apps medical-device view` reads `medicalDeviceData.declaration` (`no`, `yes`, or absent while outstanding) from it.
+- `POST /ppm/complianceform/v1/accounts/{accountId}/contents/{appId}/requirements/{requirementId}/forms` saves an answer. The captured body is `{accountId, contentId, requirementId, requirementName, countriesOrRegions, medicalDeviceData:{declaration:"no"}}`, where `countriesOrRegions` comes from the form's own `countriesOrRegions` constraint options with `EU` normalized to `EEA`. `asc web apps medical-device set --declared false` sends this only when the stored declaration is not already `no` with the requirement at `COLLECTED`; otherwise it reports `changed: false` without writing.
+- The affirmative medical-device path is not implemented: the extra `medicalDeviceData` attributes Apple requires for a "Yes" answer (regulatory contact and evidence fields) have never been captured, and the constraint metadata alone does not establish the request body.
+- The personal-service declaration is likewise not implemented. No capture in this repository or in any reachable reference records its requirement `name` or its form attribute, so there is nothing to send. `asc web apps declarations list` surfaces whatever requirement rows Apple returns, which is how the missing names should be captured.
+- EU DSA trader status is account-level rather than app-level: it is read from `GET /ppm/v1/accounts/{id}/sellerInfo` and filed by `POST /ppm/v1/legalEntities/{id}/sellerInfo`, whose body carries contact details, an `isAppTraderOverride` flag, base64 identity documents, and a `jwtToken` minted by a separate `authenticationDetail` call and validated interactively against `id.apple.com`. Every `ppm/v1` record also carries an `optimisticLock`. A legal filing behind an interactive identity check is out of scope for an unattended CLI write.
 
 ## Web-session API keys
 
