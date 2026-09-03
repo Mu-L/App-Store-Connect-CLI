@@ -384,7 +384,20 @@ func OpenReview(ctx context.Context, req ReviewOpenRequest) (*ReviewOpenResult, 
 	}
 	pair, err := readMatrixReviewPairSnapshotWithRoots(htmlPath)
 	if err != nil {
-		return nil, err
+		if !isUnboundLegacyReviewHTML(htmlPath) {
+			return nil, err
+		}
+		if req.DryRun {
+			return &ReviewOpenResult{HTMLPath: htmlPath, Opened: false}, nil
+		}
+		open := openPathInBrowser
+		if matrixReviewOpenPathForTest != nil {
+			open = matrixReviewOpenPathForTest
+		}
+		if openErr := open(htmlPath); openErr != nil {
+			return nil, openErr
+		}
+		return &ReviewOpenResult{HTMLPath: htmlPath, Opened: true}, nil
 	}
 	htmlData, manifest := pair.htmlData, pair.manifest
 	if req.DryRun {

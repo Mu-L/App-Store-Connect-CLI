@@ -630,8 +630,9 @@ var matrixOutputLocksAcquiredForTest func()
 var matrixOutputLockRootOpenedForTest func(*os.Root)
 
 // matrixOutputLockReleaseErrForTest injects a release failure after the real
-// output locks have been dropped, so tests can prove the printed result does
-// not stay success when the command still returns an error.
+// output locks have been dropped, so tests can prove the printed result and
+// the published review both stop reporting success when the command still
+// returns an error.
 var matrixOutputLockReleaseErrForTest error
 
 func openMatrixOutputRoot(path string) (rootfs.Root, error) {
@@ -2144,24 +2145,6 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 		}
 	}
 	countMatrixResultStatuses(result)
-	reviewCtx := context.WithoutCancel(ctx)
-	var review *MatrixReviewResult
-	var reviewErr error
-	reviewRequest := MatrixReviewRequest{Result: result, OutputDir: reviewDir, LockContext: ctx}
-	if reviewRootReady {
-		review, reviewErr = generateMatrixReviewWithRoot(reviewCtx, reviewRequest, reviewRoot)
-	} else {
-		review, reviewErr = GenerateMatrixReview(reviewCtx, reviewRequest)
-	}
-	if reviewErr == nil {
-		result.Review = review
-	} else if runErr == nil {
-		result.Status = MatrixCellFailed
-		runErr = fmt.Errorf("write matrix review: %w", reviewErr)
-	} else {
-		result.Status = MatrixCellFailed
-		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
-	}
 	if releaseOutputLocks != nil {
 		releaseErr := releaseOutputLocks()
 		if matrixOutputLockReleaseErrForTest != nil {
@@ -2178,6 +2161,28 @@ func RunMatrixWithDependencies(ctx context.Context, matrixPath string, matrixPla
 				runErr = errors.Join(runErr, lockErr)
 			}
 		}
+	}
+	reviewCtx := context.WithoutCancel(ctx)
+	var review *MatrixReviewResult
+	var reviewErr error
+	reviewRequest := MatrixReviewRequest{Result: result, OutputDir: reviewDir, LockContext: ctx}
+	if reviewRootReady {
+		if err := verifyMatrixRetainedOutputRoot(reviewRoot); err != nil {
+			reviewErr = err
+		} else {
+			review, reviewErr = generateMatrixReviewWithRoot(reviewCtx, reviewRequest, reviewRoot)
+		}
+	} else {
+		review, reviewErr = GenerateMatrixReview(reviewCtx, reviewRequest)
+	}
+	if reviewErr == nil {
+		result.Review = review
+	} else if runErr == nil {
+		result.Status = MatrixCellFailed
+		runErr = fmt.Errorf("write matrix review: %w", reviewErr)
+	} else {
+		result.Status = MatrixCellFailed
+		runErr = errors.Join(runErr, fmt.Errorf("write matrix review: %w", reviewErr))
 	}
 	return result, runErr
 }

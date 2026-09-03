@@ -70,6 +70,11 @@ func generateMatrixReviewWithRoot(ctx context.Context, request MatrixReviewReque
 // TestGenerateMatrixReviewWritesOnlyTheDeclaredFiles pins that.
 var errMatrixReviewPairMismatch = errors.New("matrix review HTML does not match manifest")
 
+// matrixReviewLockReleaseErrForTest injects a release failure after the report
+// pair has been committed, so tests can prove a cleanup-only unlock error does
+// not rewrite a successful generation into a failed return.
+var matrixReviewLockReleaseErrForTest error
+
 var matrixReviewGeneratedFiles = []string{".asc-matrix-review.lock", "index.html", "manifest.json"}
 
 const (
@@ -153,7 +158,11 @@ func generateMatrixReviewWithWriterAndRoot(ctx context.Context, request MatrixRe
 		return nil, fmt.Errorf("lock matrix review output directory: %w", err)
 	}
 	defer func() {
-		if releaseErr := releaseReviewLock(); releaseErr != nil {
+		releaseErr := releaseReviewLock()
+		if matrixReviewLockReleaseErrForTest != nil {
+			releaseErr = errors.Join(releaseErr, matrixReviewLockReleaseErrForTest)
+		}
+		if releaseErr != nil && retErr != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("release matrix review output lock: %w", releaseErr))
 		}
 	}()
@@ -385,6 +394,39 @@ type matrixReviewPairSnapshot struct {
 	htmlData       []byte
 	manifest       *MatrixReviewManifest
 	assetRootRoots map[string]*rootfs.Root
+}
+
+// isUnboundLegacyReviewHTML reports whether path is a historical review HTML
+// file that is not digest-bound to a matrix manifest. OpenReview keeps the
+// direct-open fallback for those reports, including when the HTML path itself
+// is a symlink that the no-follow pair reader refuses.
+func isUnboundLegacyReviewHTML(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	manifestPath := filepath.Join(filepath.Dir(path), "manifest.json")
+	manifestInfo, err := os.Lstat(manifestPath)
+	if err != nil {
+		return true
+	}
+	if manifestInfo.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return true
+	}
+	var binding struct {
+		HTMLSHA256 string `json:"htmlSha256"`
+	}
+	if err := json.Unmarshal(data, &binding); err != nil || strings.TrimSpace(binding.HTMLSHA256) == "" {
+		return true
+	}
+	return false
 }
 
 func readMatrixReviewPairSnapshotWithRoots(path string) (matrixReviewPairSnapshot, error) {

@@ -1163,6 +1163,30 @@ func TestGenerateMatrixReview_RollsBackPairWhenManifestPublishFails(t *testing.T
 	}
 }
 
+func TestGenerateMatrixReview_LockReleaseFailureKeepsSuccessfulResult(t *testing.T) {
+	dir := t.TempDir()
+	previous := matrixReviewLockReleaseErrForTest
+	matrixReviewLockReleaseErrForTest = errors.New("injected review lock release failure")
+	t.Cleanup(func() { matrixReviewLockReleaseErrForTest = previous })
+	result, err := GenerateMatrixReview(context.Background(), MatrixReviewRequest{
+		Result:    &MatrixResult{Cells: []MatrixCellResult{{ID: "phone|en-US|light|default", Status: MatrixCellSuccess}}},
+		OutputDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("GenerateMatrixReview() error = %v, want successful generation after cleanup-only unlock failure", err)
+	}
+	if result == nil {
+		t.Fatal("GenerateMatrixReview() result = nil")
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if manifest.Status != MatrixCellSuccess {
+		t.Fatalf("published review status = %q, want success to match the returned generation", manifest.Status)
+	}
+}
+
 func TestGenerateMatrixReviewSerializesPublicationOfEachPair(t *testing.T) {
 	dir := t.TempDir()
 	firstHTMLPublished := make(chan struct{})
@@ -2132,6 +2156,67 @@ func TestRunMatrix_OutputLockReleaseFailureMarksResultFailed(t *testing.T) {
 	}
 	if result.Succeeded != 1 || result.Failed != 0 {
 		t.Fatalf("cell totals = succeeded %d failed %d, want successful cells with failed run status", result.Succeeded, result.Failed)
+	}
+	manifest, err := LoadMatrixReviewManifest(filepath.Join(dir, "review", "manifest.json"))
+	if err != nil {
+		t.Fatalf("LoadMatrixReviewManifest() error = %v", err)
+	}
+	if manifest.Status != MatrixCellFailed {
+		t.Fatalf("published review status = %q, want failed to match the command result", manifest.Status)
+	}
+}
+
+func TestRunMatrix_ReviewRootReplacementFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows temporary volumes do not reliably distinguish a replaced review directory identity")
+	}
+	dir := t.TempDir()
+	basePath := filepath.Join(dir, "base.json")
+	matrixPath := filepath.Join(dir, "matrix.json")
+	reviewDir := filepath.Join(dir, "review")
+	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"screenshot","name":"home"}]}`)
+	writeMatrixTestFile(t, matrixPath, `{
+  "version":1,"base_plan":"base.json",
+  "devices":[{"id":"phone","udid":"UDID"}],
+  "locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],
+  "output":{"raw_dir":"raw","review_dir":"review"}
+}`)
+	matrixPlan, err := LoadMatrixPlan(matrixPath)
+	if err != nil {
+		t.Fatalf("LoadMatrixPlan() error = %v", err)
+	}
+	replacementSentinel := filepath.Join(reviewDir, "replacement-sentinel")
+	result, runErr := RunMatrixWithDependencies(context.Background(), matrixPath, matrixPlan, MatrixOptions{}, MatrixDependencies{
+		RunPlan: func(_ context.Context, plan *Plan) (*RunResult, error) {
+			if err := writeMatrixPNGFile(filepath.Join(plan.App.OutputDir, "home.png")); err != nil {
+				return nil, err
+			}
+			original := reviewDir + "-original"
+			if err := os.Rename(reviewDir, original); err != nil {
+				return nil, err
+			}
+			if err := os.Mkdir(reviewDir, 0o700); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(replacementSentinel, []byte("replacement must survive"), 0o600); err != nil {
+				return nil, err
+			}
+			return &RunResult{}, nil
+		},
+		Appearance:  &matrixTestAppearance{},
+		CheckDevice: func(context.Context, MatrixDevice) error { return nil },
+	})
+	if runErr == nil {
+		t.Fatal("RunMatrixWithDependencies() error = nil, want replaced review root failure")
+	}
+	if result != nil && result.Review != nil {
+		t.Fatalf("review result = %+v, want no success report for the replacement path", result.Review)
+	}
+	if _, err := os.Stat(replacementSentinel); err != nil {
+		t.Fatalf("replacement sentinel stat error = %v, want replacement preserved", err)
+	}
+	if _, err := os.Stat(filepath.Join(reviewDir, "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement manifest stat error = %v, want no write through the replaced review path", err)
 	}
 }
 

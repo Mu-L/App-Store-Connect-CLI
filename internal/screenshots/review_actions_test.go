@@ -70,6 +70,42 @@ func TestCreateMatrixReviewBrowserSnapshotRejectsReplacementBeforeRootPin(t *tes
 	}
 }
 
+func TestOpenReviewPreservesSymlinkedLegacyHTML(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("legacy review HTML symlink fallback is a Unix path contract")
+	}
+	outputDir := t.TempDir()
+	realHTML := filepath.Join(outputDir, "legacy-real.html")
+	if err := os.WriteFile(realHTML, []byte("<html><body>legacy</body></html>"), 0o644); err != nil {
+		t.Fatalf("write real legacy HTML: %v", err)
+	}
+	htmlPath := filepath.Join(outputDir, defaultReviewHTMLName)
+	if err := os.Symlink(realHTML, htmlPath); err != nil {
+		t.Fatalf("symlink legacy HTML: %v", err)
+	}
+	previous := matrixReviewOpenPathForTest
+	var openedPath string
+	matrixReviewOpenPathForTest = func(path string) error {
+		openedPath = path
+		return nil
+	}
+	t.Cleanup(func() { matrixReviewOpenPathForTest = previous })
+	result, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: outputDir})
+	if err != nil {
+		t.Fatalf("OpenReview() error = %v, want historical open of unbound symlink HTML", err)
+	}
+	if result == nil || result.HTMLPath != htmlPath || !result.Opened || openedPath != htmlPath {
+		t.Fatalf("OpenReview() result = %+v, opened path = %q, want legacy symlink %q", result, openedPath, htmlPath)
+	}
+	dryRun, err := OpenReview(context.Background(), ReviewOpenRequest{OutputDir: outputDir, DryRun: true})
+	if err != nil {
+		t.Fatalf("OpenReview(dry-run) error = %v, want historical dry-run of unbound symlink HTML", err)
+	}
+	if dryRun == nil || dryRun.HTMLPath != htmlPath || dryRun.Opened {
+		t.Fatalf("OpenReview(dry-run) result = %+v, want unbound symlink path without opening", dryRun)
+	}
+}
+
 func TestOpenReviewKeepsLegacyHTMLPath(t *testing.T) {
 	outputDir := t.TempDir()
 	htmlPath := filepath.Join(outputDir, defaultReviewHTMLName)
