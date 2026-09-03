@@ -769,16 +769,19 @@ func reviewAppThreadsContext(ctx context.Context) (context.Context, context.Canc
 // relationship is an undocumented web-session surface, so a failure downgrades
 // to a warning instead of failing the whole command: the submission-scoped
 // review context stays useful without it.
-func loadAppThreads(ctx context.Context, client *webcore.Client, appID string) ([]webcore.ResolutionCenterThread, string) {
+func loadAppThreads(ctx context.Context, client *webcore.Client, appID string) ([]webcore.ResolutionCenterThread, string, error) {
 	threads, err := withWebSpinnerValue("Loading app resolution center threads", func() ([]webcore.ResolutionCenterThread, error) {
 		return client.ListResolutionCenterThreadsByApp(ctx, appID)
 	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, "", err
+		}
 		warning := fmt.Sprintf("app-scoped resolution center threads unavailable: %v", err)
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
-		return nil, warning
+		return nil, warning, nil
 	}
-	return threads, ""
+	return threads, "", nil
 }
 
 // appThreadsOutsideSubmission returns the app threads that the selected
@@ -1182,8 +1185,11 @@ Selection:
 			}
 			if selectedSubmission == nil {
 				appThreadsCtx, cancelAppThreads := reviewAppThreadsContext(ctx)
-				appThreads, appThreadsWarning := loadAppThreads(appThreadsCtx, client, trimmedAppID)
+				appThreads, appThreadsWarning, err := loadAppThreads(appThreadsCtx, client, trimmedAppID)
 				cancelAppThreads()
+				if err != nil {
+					return withWebAuthHint(err, "web review show")
+				}
 				payload := reviewShowOutput{
 					AppID:             trimmedAppID,
 					Selection:         selection,
@@ -1244,8 +1250,11 @@ Selection:
 			}
 
 			appThreadsCtx, cancelAppThreads := reviewAppThreadsContext(ctx)
-			appThreads, appThreadsWarning := loadAppThreads(appThreadsCtx, client, trimmedAppID)
+			appThreads, appThreadsWarning, err := loadAppThreads(appThreadsCtx, client, trimmedAppID)
 			cancelAppThreads()
+			if err != nil {
+				return withWebAuthHint(err, "web review show")
+			}
 
 			payload := reviewShowOutput{
 				AppID:             trimmedAppID,

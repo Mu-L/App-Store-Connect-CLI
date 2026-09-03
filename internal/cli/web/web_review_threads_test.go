@@ -79,6 +79,9 @@ func stubWebReviewSession(t *testing.T, bodies map[string]string) *[]string {
 		return &webcore.AuthSession{
 			Client: &http.Client{
 				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					if err := req.Context().Err(); err != nil {
+						return nil, err
+					}
 					requested = append(requested, req.URL.Path)
 					body, ok := bodies[req.URL.Path]
 					if !ok {
@@ -441,6 +444,54 @@ func TestWebReviewShowSurvivesAppThreadFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Warning:") {
 		t.Fatalf("expected a stderr warning, got %q", stderr)
+	}
+}
+
+func testWebReviewClient(t *testing.T) *webcore.Client {
+	t.Helper()
+	resolve, ok := resolveSessionFn.(func(context.Context, string, string, string) (*webcore.AuthSession, string, error))
+	if !ok {
+		t.Fatalf("resolveSessionFn type %T", resolveSessionFn)
+	}
+	session, _, err := resolve(context.Background(), "", "", "")
+	if err != nil {
+		t.Fatalf("resolve session: %v", err)
+	}
+	return webcore.NewClient(session)
+}
+
+func TestLoadAppThreadsPropagatesCancellation(t *testing.T) {
+	stubWebReviewSession(t, map[string]string{
+		"/iris/v1/apps/app-1/resolutionCenterThreads": reviewThreadsAppFixture,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, warning, err := loadAppThreads(ctx, testWebReviewClient(t), "app-1")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if warning != "" {
+		t.Fatalf("caller cancellation must not degrade to a warning, got %q", warning)
+	}
+}
+
+func TestLoadAppThreadsWarnsOnIndependentTimeout(t *testing.T) {
+	stubWebReviewSession(t, map[string]string{
+		"/iris/v1/apps/app-1/resolutionCenterThreads": reviewThreadsAppFixture,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond)
+
+	_, warning, err := loadAppThreads(ctx, testWebReviewClient(t), "app-1")
+	if err != nil {
+		t.Fatalf("independent timeout should stay warning-only, got %v", err)
+	}
+	if warning == "" {
+		t.Fatal("expected a timeout warning")
 	}
 }
 
