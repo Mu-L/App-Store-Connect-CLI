@@ -158,9 +158,7 @@ Authentication:
 			if result == nil {
 				return fmt.Errorf("web bundle-ids capabilities enable failed: missing enable result")
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
+			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutputWithRenderers(
 				result,

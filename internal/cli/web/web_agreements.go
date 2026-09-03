@@ -125,9 +125,7 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web agreements status failed: missing status result")
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
+			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
@@ -225,9 +223,7 @@ Examples:
 			if err := destination.write(download.Body, *overwrite); err != nil {
 				return fmt.Errorf("web agreements download failed: agreement %q was downloaded but saving %q failed: %w", resolvedAgreementID, outPath, err)
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
+			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutput(&asc.WebAgreementDownloadResult{
 				AgreementID:  download.AgreementID,
@@ -405,9 +401,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("web agreements accept failed: %w", err)
 			}
-			// Developer Portal bootstrap can add origin-specific cookies to the
-			// shared jar. Cache them best-effort after the operation succeeds.
-			_ = persistWebSessionFn(session)
+			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},

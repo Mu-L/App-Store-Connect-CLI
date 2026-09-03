@@ -2,6 +2,8 @@ package web
 
 import (
 	"flag"
+	"fmt"
+	"os"
 	"strings"
 
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
@@ -36,4 +38,10 @@ func newDeveloperPortalClient(session *webcore.AuthSession, flags developerPorta
 		client.SetDeveloperTeamSelector(strings.TrimSpace(*flags.developerTeam))
 	}
 	return client
+}
+
+func persistDeveloperPortalSession(session *webcore.AuthSession) {
+	if err := persistWebSessionFn(session); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to persist refreshed web session: %v\n", err)
+	}
 }

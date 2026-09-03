@@ -118,7 +118,7 @@ Example:
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups list")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,
@@ -181,7 +181,7 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web app-groups create failed: missing create result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,
@@ -248,7 +248,7 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web app-groups assign failed: missing assign result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutputWithRenderers(
 				result,
@@ -316,7 +316,7 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web app-groups unassign failed: missing unassign result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
@@ -380,7 +380,7 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web app-groups set failed: missing set result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Changed)
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
@@ -439,16 +439,10 @@ Example:
 			if result == nil {
 				return fmt.Errorf("web app-groups delete failed: missing delete result")
 			}
-			persistDeveloperAppGroupSession(session)
+			persistDeveloperPortalSession(session)
 			warnDeveloperAppGroupProfileInvalidation(result.Deleted)
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
-	}
-}
-
-func persistDeveloperAppGroupSession(session *webcore.AuthSession) {
-	if err := persistWebSessionFn(session); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to persist refreshed web session: %v\n", err)
 	}
 }
 
