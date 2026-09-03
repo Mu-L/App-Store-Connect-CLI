@@ -554,3 +554,109 @@ func TestSigningApplyRejectsSourceChangedAfterPreparation(t *testing.T) {
 		t.Fatalf("receipt after source drift = %v, want absent", statErr)
 	}
 }
+
+func TestValidateSigningArtifactAliasesRejectsProtectedSymlinkToArtifact(t *testing.T) {
+	for _, label := range []string{"plan", "receipt"} {
+		t.Run(label, func(t *testing.T) {
+			root := t.TempDir()
+			planPath := filepath.Join(root, "plan.json")
+			receiptPath := filepath.Join(root, "receipt.json")
+			target := planPath
+			if label == "receipt" {
+				target = receiptPath
+			}
+			const original = "existing artifact bytes\n"
+			if err := os.WriteFile(target, []byte(original), 0o600); err != nil {
+				t.Fatalf("WriteFile(%s) error = %v", label, err)
+			}
+			protectedPath := filepath.Join(t.TempDir(), "External.entitlements")
+			if err := os.Symlink(target, protectedPath); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			err := validateSigningArtifactAliases(planPath, receiptPath, nil, []string{protectedPath})
+			if err == nil || !strings.Contains(err.Error(), "is a symlink and cannot be aliased by an artifact") {
+				t.Fatalf("validateSigningArtifactAliases() error = %v, want protected symlink alias rejection", err)
+			}
+			var aliasErr signingArtifactAliasError
+			if !errors.As(err, &aliasErr) {
+				t.Fatalf("validateSigningArtifactAliases() error = %v, want signingArtifactAliasError classification", err)
+			}
+			if got := mustReadVersionTestFile(t, target); got != original {
+				t.Fatalf("%s changed after protected symlink rejection: %q", label, got)
+			}
+		})
+	}
+}
+
+func TestValidateSigningArtifactAliasesSurfacesProtectedInspectionIOError(t *testing.T) {
+	root := t.TempDir()
+	planPath := filepath.Join(root, "plan.json")
+	receiptPath := filepath.Join(root, "receipt.json")
+	protectedPath := filepath.Join(t.TempDir(), "External.entitlements")
+	injected := errors.New("injected protected inspection failure")
+	previousInfo := signingArtifactPathInfoFn
+	signingArtifactPathInfoFn = func(path string) (os.FileInfo, error) {
+		if filepath.Clean(path) == filepath.Clean(protectedPath) {
+			return nil, injected
+		}
+		return previousInfo(path)
+	}
+	t.Cleanup(func() { signingArtifactPathInfoFn = previousInfo })
+
+	err := validateSigningArtifactAliases(planPath, receiptPath, nil, []string{protectedPath})
+	if err == nil || !errors.Is(err, injected) {
+		t.Fatalf("validateSigningArtifactAliases() error = %v, want injected protected inspection failure", err)
+	}
+	if !strings.Contains(err.Error(), "inspect protected project input") {
+		t.Fatalf("validateSigningArtifactAliases() error = %v, want protected inspection context", err)
+	}
+	var aliasErr signingArtifactAliasError
+	if errors.As(err, &aliasErr) {
+		t.Fatalf("validateSigningArtifactAliases() error = %v, want an I/O failure rather than an alias classification", err)
+	}
+}
+
+func TestBuildSigningPlanRejectsExternalEntitlementSymlinkToArtifact(t *testing.T) {
+	for _, label := range []string{"plan", "receipt"} {
+		t.Run(label, func(t *testing.T) {
+			project := writeStructuredVersionProject(t, false)
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			planPath := filepath.Join(root, "plan.json")
+			receiptPath := filepath.Join(root, "receipt.json")
+			target := planPath
+			if label == "receipt" {
+				target = receiptPath
+			}
+			const original = "existing artifact bytes\n"
+			if err := os.WriteFile(target, []byte(original), 0o600); err != nil {
+				t.Fatalf("WriteFile(%s) error = %v", label, err)
+			}
+			externalPath := filepath.Join(t.TempDir(), "External.entitlements")
+			if err := os.Symlink(target, externalPath); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"), `CODE_SIGN_ENTITLEMENTS = "`+externalPath+`";`)
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				PlanPath: planPath, ReceiptPath: receiptPath,
+				StateDir: filepath.Join(root, "state"),
+			})
+			if plan != nil {
+				t.Fatalf("BuildSigningPlan() returned a publishable plan for a symlinked protected input: %#v", plan)
+			}
+			if err == nil || !strings.Contains(err.Error(), "is a symlink and cannot be aliased by an artifact") {
+				t.Fatalf("BuildSigningPlan() error = %v, want protected symlink alias rejection", err)
+			}
+			if got := mustReadVersionTestFile(t, target); got != original {
+				t.Fatalf("%s changed after protected symlink rejection: %q", label, got)
+			}
+		})
+	}
+}
