@@ -108,7 +108,7 @@ Examples:
 				return shared.WithDiagnostic(flag.ErrHelp, shared.DiagnosticInvalidInput, "--limit")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("testflight metrics beta-tester-usages: %w", err)
+				return shared.UsageErrorfCtx(ctx, "testflight metrics beta-tester-usages: %v", err)
 			}
 
 			periodValue, err := normalizeBetaTesterUsagePeriod(*period)

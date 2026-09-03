@@ -35,6 +35,10 @@ Use ` + "`asc web apps create`" + ` as the canonical app-creation command.
 			WebAppsDeleteCommand(),
 			WebAppsAvailabilityCommand(),
 			WebAppsCompatibilityCommand(),
+			WebAppsDistributionCommand(),
+			WebAppsLastCompatibleVersionCommand(),
+			WebAppsHistoryCommand(),
+			WebAppsDeclarationsCommand(),
 			WebAppsMedicalDeviceCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
@@ -44,6 +48,15 @@ Use ` + "`asc web apps create`" + ` as the canonical app-creation command.
 }
 
 const maxAppNameLen = 30
+
+// webAppValueOrUnknown renders an attribute App Store Connect omitted as
+// "unknown" in table output instead of an empty cell or a guessed default.
+func webAppValueOrUnknown(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
+}
 
 var (
 	newWebClientFn   = webcore.NewClient
