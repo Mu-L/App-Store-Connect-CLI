@@ -259,6 +259,46 @@ func TestWebAgreementsAcceptFailsWhenReReadOmitsAgreement(t *testing.T) {
 	}
 }
 
+func TestWebAgreementsAcceptPersistsTeamWhenAcceptResponseIsAmbiguous(t *testing.T) {
+	stubWebAgreementsSession(t)
+	origAccept := acceptAgreementsFn
+	origHistory := getAgreementHistoryFn
+	t.Cleanup(func() {
+		acceptAgreementsFn = origAccept
+		getAgreementHistoryFn = origHistory
+	})
+	acceptAgreementsFn = func(context.Context, *webcore.Client, webcore.AgreementsAcceptRequest) (*asc.WebAgreementsAcceptResult, error) {
+		return nil, errors.New("failed to parse Developer Portal agreement accept response")
+	}
+	getAgreementHistoryFn = func(context.Context, *webcore.Client) (*asc.WebAgreementsStatusResult, error) {
+		t.Fatal("verification must not run when accept itself failed")
+		return nil, errors.New("unexpected history read")
+	}
+	persistCalls := 0
+	persistWebSessionFn = func(*webcore.AuthSession) error {
+		persistCalls++
+		return nil
+	}
+
+	cmd := WebAgreementsAcceptCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || !strings.Contains(execErr.Error(), "parse Developer Portal agreement accept response") {
+		t.Fatalf("Exec() error = %v, want ambiguous accept failure", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected no receipt on stdout, got %q", stdout)
+	}
+	if persistCalls != 1 {
+		t.Fatalf("persist calls = %d, want 1 so a later status without --developer-team still inspects the team that may have accepted", persistCalls)
+	}
+}
+
 func TestWebAgreementsAcceptFailsWhenVerificationReadFails(t *testing.T) {
 	stubWebAgreementsSession(t)
 	stubWebAgreementsAccept(t, nil, errors.New("portal unavailable"))

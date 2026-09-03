@@ -374,15 +374,16 @@ Examples:
 				})
 				return acceptErr
 			})
+			// Persist after the accept attempt so a later status/retry without
+			// --developer-team still inspects the team that may have accepted,
+			// including malformed 2xx bodies that never produce a receipt.
+			persistDeveloperPortalSession(session)
 			if err != nil {
 				return withWebAuthHint(err, "web agreements accept")
 			}
 			if accepted == nil {
 				return fmt.Errorf("web agreements accept failed: missing accept result")
 			}
-			// Persist before verification so a later `agreements status` without
-			// --developer-team still inspects the team that accepted.
-			persistDeveloperPortalSession(session)
 
 			// Verify against the Developer Portal history alone; the combined
 			// status read also depends on the App Store Connect banner endpoint,

@@ -153,13 +153,16 @@ Authentication:
 				})
 				return enableErr
 			})
+			// Persist after the PATCH attempt so a later retry without
+			// --developer-team still targets the team that may have enabled
+			// the capability even when Apple's response body is unreadable.
+			persistDeveloperPortalSession(session)
 			if err != nil {
 				return withWebAuthHint(err, "web bundle-ids capabilities enable")
 			}
 			if result == nil {
 				return fmt.Errorf("web bundle-ids capabilities enable failed: missing enable result")
 			}
-			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutputWithRenderers(
 				result,

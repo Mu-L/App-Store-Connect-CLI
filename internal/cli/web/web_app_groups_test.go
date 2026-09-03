@@ -637,6 +637,34 @@ func TestWebAppGroupsWarnsWhenRefreshedSessionCannotBePersisted(t *testing.T) {
 	}
 }
 
+func TestWebAppGroupsCreatePersistsTeamWhenPortalResponseIsAmbiguous(t *testing.T) {
+	restore, cleanup := stubWebAppGroupsDependencies(t)
+	defer cleanup()
+	defer restore()
+	createDeveloperAppGroupFn = func(context.Context, *webcore.Client, webcore.DeveloperAppGroupCreateRequest) (*webcore.DeveloperAppGroup, error) {
+		return nil, errors.New("failed to parse Developer Portal App Group create response")
+	}
+	persistCalls := 0
+	persistWebSessionFn = func(*webcore.AuthSession) error {
+		persistCalls++
+		return nil
+	}
+	command := WebAppGroupsCreateCommand()
+	if err := command.FlagSet.Parse([]string{"--name", "Example Preview", "--identifier", "group.com.example.preview", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var runErr error
+	_, _ = captureWebCommandOutput(t, func() {
+		runErr = command.Exec(context.Background(), nil)
+	})
+	if runErr == nil || !strings.Contains(runErr.Error(), "parse Developer Portal App Group create response") {
+		t.Fatalf("expected the ambiguous create error to propagate, got %v", runErr)
+	}
+	if persistCalls != 1 {
+		t.Fatalf("persist calls = %d, want 1 so a later list without --developer-team still targets the team that may have registered the group", persistCalls)
+	}
+}
+
 func TestWebAppGroupsCreateAndAssignCallClient(t *testing.T) {
 	restore, cleanup := stubWebAppGroupsDependencies(t)
 	defer cleanup()

@@ -179,13 +179,16 @@ Example:
 				return withWebAuthHint(err, "web app-groups create")
 			}
 			result, err := createDeveloperAppGroupFn(requestCtx, newDeveloperPortalClient(session, portalFlags), webcore.DeveloperAppGroupCreateRequest{Name: resolvedName, Identifier: resolvedIdentifier})
+			// Persist after the create attempt so a later command without
+			// --developer-team still targets the team that may have registered
+			// the group even when Apple's 2xx body is malformed.
+			persistDeveloperPortalSession(session)
 			if err != nil {
 				return withWebAuthHint(err, "web app-groups create")
 			}
 			if result == nil {
 				return fmt.Errorf("web app-groups create failed: missing create result")
 			}
-			persistDeveloperPortalSession(session)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,
