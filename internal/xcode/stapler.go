@@ -238,20 +238,19 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 	}
 	if stapleErr != nil {
-		if isStaplerOperationAttemptedCancellation(stapleErr) || isStaplerOperationAttemptedSignal(stapleErr) {
-			return nil, &StaplerPartialMutationError{
-				Operation:   StaplerOperationStaple,
-				Interrupted: true,
-				Err:         stapleErr,
-			}
+		// Every failure that reaches this point comes from a staple child that
+		// was started, because a child that never started returned above. A
+		// started child can fail after it has already written part of the
+		// artifact, and the post-stage verifier recaptures the resulting state as
+		// the next baseline instead of comparing it with the pre-staple evidence,
+		// so a successful post-stage check cannot prove the target is untouched.
+		// Keep the unverified-mutation warning while preserving the child's
+		// status and cause for the caller.
+		return nil, &StaplerPartialMutationError{
+			Operation:   StaplerOperationStaple,
+			Interrupted: isStaplerOperationAttemptedCancellation(stapleErr) || isStaplerOperationAttemptedSignal(stapleErr),
+			Err:         stapleErr,
 		}
-		if isStaplerDiagnosticOutputError(stapleErr) {
-			return nil, &StaplerPartialMutationError{
-				Operation: StaplerOperationStaple,
-				Err:       stapleErr,
-			}
-		}
-		return nil, stapleErr
 	}
 	if err := verifyStaplerStage(verifier, StaplerOperationValidate, true); err != nil {
 		return nil, &StaplerPartialMutationError{

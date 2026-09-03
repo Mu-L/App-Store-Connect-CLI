@@ -849,6 +849,44 @@ func TestStapleStopsBeforeValidationWhenStapleFails(t *testing.T) {
 	})
 }
 
+func TestStapleWithVerifierMarksFailedStapleChildAsPossibleMutation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_STAPLE_EXIT_CODE", "66")
+
+	// A post-staple verifier that recaptures a new baseline cannot prove that a
+	// failed staple child left the artifact untouched, so the runner must keep
+	// the unverified-mutation classification.
+	result, err := StapleWithVerifier(context.Background(), target, nil, func(StaplerOperation, bool) error {
+		return nil
+	})
+	if result != nil {
+		t.Fatalf("StapleWithVerifier() result = %#v, want nil on staple failure", result)
+	}
+	var partialErr *StaplerPartialMutationError
+	if !errors.As(err, &partialErr) {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want partial mutation for a started staple child", err, err)
+	}
+	if partialErr.Interrupted {
+		t.Fatalf("StapleWithVerifier() error = %v, must not report an ordinary child failure as interrupted", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("StapleWithVerifier() error = %T %v, want preserved child command error", err, err)
+	}
+	if commandErr.Operation != string(StaplerOperationStaple) || commandErr.ExitCode != 66 {
+		t.Fatalf("StapleWithVerifier() command error = %#v, want staple/66", commandErr)
+	}
+	assertStaplerCommands(t, logPath, []string{
+		"xcrun|--find|stapler",
+		"xcrun|stapler|staple|" + target,
+	})
+}
+
 func TestStaplePreservesChildExitWhenContextCancelsAfterWait(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

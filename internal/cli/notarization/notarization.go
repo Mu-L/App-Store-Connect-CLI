@@ -1257,6 +1257,12 @@ func reportStaplerFailure(command string, err error) error {
 				// the missing-exit-status message would misreport a working child.
 				return shared.NewReportedError(err)
 			}
+			if staplerStapleChildFailure(err) {
+				// The staple child ran and failed without an ordinary status. The
+				// partial-mutation warning above already names that stage, so the
+				// generic missing-status line would only repeat it.
+				return shared.NewReportedError(err)
+			}
 		}
 		if commandErr.ExitCode > 0 {
 			if command == "staple" && commandErr.Operation == string(localxcode.StaplerOperationValidate) && !partialMutation {
@@ -1319,7 +1325,21 @@ func reportStaplerPartialMutation(err *localxcode.StaplerPartialMutationError) {
 		fmt.Fprintln(os.Stderr, "Error: notarization staple ran, but its diagnostic output could not be written and follow-up validation was not attempted; the artifact may have been modified but was not verified")
 		return
 	}
+	if staplerChildFailure {
+		// The staple child itself failed without an ordinary exit status, so no
+		// follow-up validation ran. Name the stage that failed instead of
+		// claiming a completed staple with a failed validation.
+		fmt.Fprintln(os.Stderr, "Error: notarization staple failed during staple before a usable exit status was available; the artifact may have been modified but was not verified")
+		return
+	}
 	fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+}
+
+// staplerStapleChildFailure reports whether err carries a stapler child failure
+// from the staple stage itself rather than from the follow-up validation.
+func staplerStapleChildFailure(err error) bool {
+	var commandErr *localxcode.StaplerCommandError
+	return errors.As(err, &commandErr) && commandErr.Operation == string(localxcode.StaplerOperationStaple)
 }
 
 func reportStaplerTargetFilesystemFailure(command string) error {

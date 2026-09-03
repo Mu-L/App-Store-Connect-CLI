@@ -121,10 +121,19 @@ produce a success result.
 
 When a stapling child exits non-zero, the runner preserves its status in a
 typed error. The CLI converts a real child status to the repository's private
-process-exit marker after writing one concise stage diagnostic. A successful
-staple followed by a failed validation is reported specifically as an
-unverified mutation and returns the validation child status. Lookup, platform,
-and cancellation failures retain the ordinary generic runtime mapping. A start
+process-exit marker after writing one concise stage diagnostic. Because a
+staple child that was started can fail after it has already written part of
+the artifact, and the post-stage check recaptures the resulting state as the
+next baseline rather than comparing it with the pre-staple evidence, every
+failure from a started staple child is classified as a possible partial
+mutation: the CLI names the failing stage, warns that the artifact may have
+been modified without being verified, and still returns the child status. A
+failure before the child starts stays an ordinary error. A successful staple
+followed by a failed validation is reported specifically as an unverified
+mutation and returns the validation child status. Lookup, platform, and
+cancellation failures retain the ordinary generic runtime mapping, except that
+a concrete resolver launch failure observed together with a late cancellation
+keeps its resolution-stage classification alongside the context error. A start
 or signal failure represented by the typed runner error keeps its underlying
 cause for internal classification but emits only a stable stage diagnostic, so
 an executable or temporary path from the operating system is not exposed.
