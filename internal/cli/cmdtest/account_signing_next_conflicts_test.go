@@ -64,8 +64,10 @@ func TestAccountSigningListsRejectNextQueryFlagsBeforeAuth(t *testing.T) {
 func TestAccountSigningListsValidateNextBeforeQueryConflicts(t *testing.T) {
 	const invalidNext = "http://api.appstoreconnect.apple.com/v1/resources?cursor=next"
 	// wantCode is ExitUsage for the groups whose pre-request validation
-	// already routes through shared.UsageError and ExitError for the ones
-	// still returning a plain error. The --next diagnostic must come first
+	// already routes through shared.UsageError. `certificates` still wraps
+	// its --next validation in fmt.Errorf and therefore still exits
+	// ExitError; pinning that here keeps the remaining gap visible until the
+	// certificates group is migrated. The --next diagnostic must come first
 	// either way.
 	tests := []struct {
 		name     string

@@ -163,9 +163,7 @@ func TestAgreementsTerritoriesListRejectsInvalidNextURL(t *testing.T) {
 			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
 				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
 			}
-			if !strings.Contains(stderr, "Error: "+test.wantErr) {
-				t.Fatalf("expected usage error on stderr, got %q", stderr)
-			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -275,9 +273,7 @@ func TestNominationsListRejectsInvalidNextURL(t *testing.T) {
 			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
 				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
 			}
-			if !strings.Contains(stderr, "Error: "+test.wantErr) {
-				t.Fatalf("expected usage error on stderr, got %q", stderr)
-			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
