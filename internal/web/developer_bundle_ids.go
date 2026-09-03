@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -552,6 +553,10 @@ func developerBundleIDCapabilityEnabled(resource developerResource) (bool, error
 }
 
 func setDeveloperCapabilityEnabled(raw json.RawMessage) (json.RawMessage, error) {
+	return setDeveloperCapabilityEnabledValue(raw, true)
+}
+
+func setDeveloperCapabilityEnabledValue(raw json.RawMessage, enabled bool) (json.RawMessage, error) {
 	var attributes map[string]json.RawMessage
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &attributes); err != nil {
@@ -561,7 +566,7 @@ func setDeveloperCapabilityEnabled(raw json.RawMessage) (json.RawMessage, error)
 	if attributes == nil {
 		attributes = make(map[string]json.RawMessage)
 	}
-	attributes["enabled"] = json.RawMessage("true")
+	attributes["enabled"] = json.RawMessage(strconv.FormatBool(enabled))
 	if _, ok := attributes["settings"]; !ok {
 		attributes["settings"] = json.RawMessage("[]")
 	}
