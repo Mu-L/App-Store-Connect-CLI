@@ -756,6 +756,7 @@ type matrixPrivateAttemptRoot struct {
 	parentID          os.FileInfo
 	identity          os.FileInfo
 	namespaceID       os.FileInfo
+	namespacePath     string
 	output            *rootfs.Root
 	parentLocked      bool
 	childLocked       bool
@@ -1118,7 +1119,7 @@ func createMatrixPrivateAttemptRoot() (matrixPrivateAttemptRoot, error) {
 	return matrixPrivateAttemptRoot{
 		root: root, path: path, grandparent: grandparent,
 		parent: parent, pinned: pinned, child: anchoredChild, parentID: parentID, identity: identity,
-		namespaceID:  namespaceID,
+		namespaceID: namespaceID, namespacePath: grandparent.Name(),
 		parentLocked: true, grandparentLocked: true,
 	}, nil
 }
@@ -1266,20 +1267,7 @@ func (attempt matrixPrivateAttemptRoot) cleanup() error {
 	if !empty {
 		return nil
 	}
-	if err := removeMatrixExpectedEntry(attempt.grandparent, attempt.parentID, nil); err != nil {
-		return err
-	}
-	empty, err = matrixPrivateAttemptDirectoryEmpty(attempt.grandparent)
-	if err != nil || !empty || attempt.namespaceID == nil {
-		return err
-	}
-	namespacePath := attempt.grandparent.Name()
-	tempRoot, err := os.OpenRoot(filepath.Dir(namespacePath))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tempRoot.Close() }()
-	return removeMatrixExpectedEntry(tempRoot, attempt.namespaceID, nil)
+	return removeMatrixExpectedEntry(attempt.grandparent, attempt.parentID, nil)
 }
 
 func (attempt matrixPrivateAttemptRoot) close() error {
@@ -1297,7 +1285,61 @@ func (attempt matrixPrivateAttemptRoot) close() error {
 	if attempt.grandparent != nil {
 		closeErr = errors.Join(closeErr, attempt.grandparent.Close())
 	}
+	if nsErr := removeEmptyMatrixPrivateAttemptNamespace(attempt.namespacePath, attempt.namespaceID); nsErr != nil && !errors.Is(nsErr, os.ErrPermission) {
+		// An empty leftover namespace is host-temp cleanup, not a failed
+		// matrix cell. Windows can still see a sharing violation immediately
+		// after the last handle is closed.
+		if !isMatrixPrivateNamespaceBusy(nsErr) {
+			closeErr = errors.Join(closeErr, nsErr)
+		}
+	}
 	return closeErr
+}
+
+func isMatrixPrivateNamespaceBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "being used by another process") || strings.Contains(message, "resource busy")
+}
+
+func removeEmptyMatrixPrivateAttemptNamespace(path string, identity os.FileInfo) error {
+	if strings.TrimSpace(path) == "" || identity == nil {
+		return nil
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !os.SameFile(identity, current) {
+		return nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if len(entries) != 0 {
+		return nil
+	}
+	var removeErr error
+	for pass := 0; pass < 5; pass++ {
+		removeErr = os.Remove(path)
+		if removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+			return nil
+		}
+		if !isMatrixPrivateNamespaceBusy(removeErr) {
+			return removeErr
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return removeErr
 }
 
 func cleanupMatrixPrivateAttemptForExecution(attempt matrixPrivateAttemptRoot) error {

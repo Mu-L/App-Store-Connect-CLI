@@ -2084,15 +2084,19 @@ func TestRunMatrix_BoundsConcurrencyAndWritesPartialSafeResult(t *testing.T) {
 	t.Cleanup(func() { matrixGlobalLockBaseDirForTest = previousLockBase })
 	basePath := filepath.Join(dir, "base.json")
 	matrixPath := filepath.Join(dir, "matrix.json")
-	udidA := "UDID-A-" + filepath.Base(dir)
-	udidB := "UDID-B-" + filepath.Base(dir)
+	udidPrefix := "UDID-" + filepath.Base(dir)
 	writeMatrixTestFile(t, basePath, `{"version":1,"app":{"bundle_id":"com.example.app"},"steps":[{"action":"launch"},{"action":"screenshot","name":"home"}]}`)
 	writeMatrixTestFile(t, matrixPath, fmt.Sprintf(`{
   "version":1,"base_plan":"base.json",
-  "devices":[{"id":"phone-a","udid":%q},{"id":"phone-b","udid":%q}],
-  "locales":["en-US","ja-JP"],"appearances":["light"],"content_variants":[{"id":"default"}],
+  "devices":[
+    {"id":"phone-a","udid":%q},
+    {"id":"phone-b","udid":%q},
+    {"id":"phone-c","udid":%q},
+    {"id":"phone-d","udid":%q}
+  ],
+  "locales":["en-US"],"appearances":["light"],"content_variants":[{"id":"default"}],
   "output":{"raw_dir":"raw","review_dir":"review"}
-}`, udidA, udidB))
+}`, udidPrefix+"-a", udidPrefix+"-b", udidPrefix+"-c", udidPrefix+"-d"))
 	matrixPlan, err := LoadMatrixPlan(matrixPath)
 	if err != nil {
 		t.Fatalf("LoadMatrixPlan() error = %v", err)
