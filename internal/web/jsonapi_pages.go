@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -41,6 +42,16 @@ func (c *Client) fetchJSONAPIPagesFrom(ctx context.Context, baseURL, path, respo
 		responseBody, err := c.doJSONAPIRequest(ctx, baseURL, http.MethodGet, nextPath)
 		if err != nil {
 			return jsonAPIListPayload{}, err
+		}
+		var envelope struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(responseBody, &envelope); err != nil {
+			return jsonAPIListPayload{}, fmt.Errorf("failed to parse %s response: %w", responseName, err)
+		}
+		trimmedData := bytes.TrimSpace(envelope.Data)
+		if len(trimmedData) == 0 || bytes.Equal(trimmedData, []byte("null")) {
+			return jsonAPIListPayload{}, fmt.Errorf("%s response missing non-null data", responseName)
 		}
 
 		var payload jsonAPIListPayload

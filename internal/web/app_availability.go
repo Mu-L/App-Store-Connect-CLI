@@ -21,6 +21,24 @@ type AppAvailability struct {
 	AvailableInNewTerritoriesKnown bool     `json:"-"`
 }
 
+type appAvailabilityRelatedReadError struct {
+	err error
+}
+
+func (e *appAvailabilityRelatedReadError) Error() string {
+	if e == nil || e.err == nil {
+		return "could not read territoryAvailabilities"
+	}
+	return e.err.Error()
+}
+
+func (e *appAvailabilityRelatedReadError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
 // AppAvailabilityCreateAttributes defines inputs for creating initial app availability.
 type AppAvailabilityCreateAttributes struct {
 	AppID                     string   `json:"-"`
@@ -30,6 +48,10 @@ type AppAvailabilityCreateAttributes struct {
 
 // IsNotFound reports whether the internal web API returned a not-found response.
 func IsNotFound(err error) bool {
+	var relatedErr *appAvailabilityRelatedReadError
+	if errors.As(err, &relatedErr) {
+		return false
+	}
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound
 }
@@ -129,7 +151,9 @@ func (c *Client) GetAppAvailability(ctx context.Context, appID string) (*AppAvai
 
 	territories, err := c.listAppTerritoryAvailabilities(ctx, availability.ID)
 	if err != nil {
-		return nil, fmt.Errorf("could not read territoryAvailabilities for app availability %q: %w", availability.ID, err)
+		return nil, &appAvailabilityRelatedReadError{
+			err: fmt.Errorf("could not read territoryAvailabilities for app availability %q: %w", availability.ID, err),
+		}
 	}
 	availability.AvailableTerritories = territories
 	availability.AvailableTerritoriesLoaded = true

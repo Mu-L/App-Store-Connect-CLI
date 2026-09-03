@@ -423,6 +423,105 @@ func TestGetAppAvailabilityFailsWhenTerritoryAvailabilityOmitsAvailable(t *testi
 	}
 }
 
+func TestGetAppAvailabilityFailsWhenTerritoryAvailabilitiesDataMissing(t *testing.T) {
+	tests := map[string]string{
+		"field omitted": `{}`,
+		"null":          `{"data":null}`,
+	}
+	for name, relatedResponse := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := handlertest.New(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/apps/app-123/appAvailabilityV2":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{
+						"data": {
+							"id": "avail-123",
+							"type": "appAvailabilities",
+							"attributes": {"availableInNewTerritories": false},
+							"relationships": {
+								"territoryAvailabilities": {
+									"links": {"related": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/avail-123/territoryAvailabilities"}
+								}
+							}
+						}
+					}`))
+				case "/iris/v2/appAvailabilities/avail-123/territoryAvailabilities":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(relatedResponse))
+				default:
+					fixture.Respond(w, "unexpected path: %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			_, err := testWebClient(server).GetAppAvailability(context.Background(), "app-123")
+			if err == nil {
+				t.Fatal("expected missing territoryAvailabilities data to fail closed")
+			}
+			if !strings.Contains(err.Error(), "data") {
+				t.Fatalf("expected error to name missing data, got %v", err)
+			}
+		})
+	}
+}
+
+func TestGetAppAvailabilityDoesNotTreatRelatedNotFoundAsMissing(t *testing.T) {
+	fixture := handlertest.New(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apps/app-123/appAvailabilityV2":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"data": {
+					"id": "avail-123",
+					"type": "appAvailabilities",
+					"attributes": {"availableInNewTerritories": false},
+					"relationships": {
+						"territoryAvailabilities": {
+							"links": {"related": "https://appstoreconnect.apple.com/iris/v2/appAvailabilities/avail-123/territoryAvailabilities"}
+						}
+					}
+				}
+			}`))
+		case "/iris/v2/appAvailabilities/avail-123/territoryAvailabilities":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"404","code":"NOT_FOUND","title":"not found"}]}`))
+		default:
+			fixture.Respond(w, "unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	_, err := testWebClient(server).GetAppAvailability(context.Background(), "app-123")
+	if err == nil {
+		t.Fatal("expected related collection read to fail")
+	}
+	if IsNotFound(err) {
+		t.Fatalf("related collection 404 must not be treated as missing app availability: %v", err)
+	}
+}
+
+func TestGetAppAvailabilityPrimaryNotFoundRemainsNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apps/app-123/appAvailabilityV2" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"errors":[{"status":"404","code":"NOT_FOUND","title":"not found"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := testWebClient(server).GetAppAvailability(context.Background(), "app-123")
+	if err == nil {
+		t.Fatal("expected primary availability read to fail")
+	}
+	if !IsNotFound(err) {
+		t.Fatalf("primary availability 404 must remain not found: %v", err)
+	}
+}
+
 func TestIsNotFound(t *testing.T) {
 	if !IsNotFound(&APIError{Status: http.StatusNotFound}) {
 		t.Fatal("expected 404 APIError to be treated as not found")
