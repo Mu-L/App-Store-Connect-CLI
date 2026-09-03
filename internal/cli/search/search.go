@@ -90,7 +90,14 @@ var canonicalIntentRules = []canonicalIntentRule{
 
 // metadataStatusSiblingLeaves names the metadata commands that must win over
 // the generic metadata status fallback when a query asks for them by name.
-var metadataStatusSiblingLeaves = []string{"approve", "validate", "plan", "apply", "pull", "push", "keywords", "init"}
+// Nested leaves are spelled with their full path so that a query naming the
+// keyword subtree resolves to the executable child instead of the flat sibling
+// that happens to share the action word.
+var metadataStatusSiblingLeaves = []string{
+	"approve", "validate", "plan", "apply", "pull", "push", "keywords", "init",
+	"keywords import", "keywords audit", "keywords plan", "keywords diff",
+	"keywords localize", "keywords apply", "keywords push", "keywords sync",
+}
 
 // analyticsDashboardLeaves names the analytics pages that must win over the
 // generic overview dashboard when a query asks for one of them by name.
@@ -605,7 +612,15 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 	}
 	if tokenContains(queryTokens, "cancel") && tokenContainsAny(queryTokens, []string{"submission", "submit"}) {
-		return "asc submit cancel", "canonical:submission-cancel", true
+		if !testFlightScopedQuery(queryTokens) {
+			return "asc submit cancel", "canonical:submission-cancel", true
+		}
+		// App Store Connect exposes no TestFlight review submission
+		// cancellation, so a beta-scoped request must stay on the TestFlight
+		// review submission surface instead of the App Store submit lifecycle.
+		if target, reason, ok := testFlightReviewSubmissionIntent(queryTokens); ok {
+			return target, reason, true
+		}
 	}
 	if tokenContains(queryTokens, "telemetry") {
 		if compoundTokenContains(queryTokens, "reset-id") {
@@ -679,18 +694,14 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		return "asc system-status", "canonical:system-status", true
 	}
 	if tokenContains(queryTokens, "metadata") {
-		for _, leaf := range metadataStatusSiblingLeaves {
-			if tokenContains(queryTokens, leaf) {
-				return "asc metadata " + leaf, "canonical:metadata-" + leaf, true
-			}
+		if leaf, ok := mostSpecificNamedLeaf(queryTokens, metadataStatusSiblingLeaves); ok {
+			return "asc metadata " + leaf, "canonical:metadata-" + namedLeafReason(leaf), true
 		}
 		return "asc metadata status", "canonical:metadata-status", true
 	}
 	if tokenContains(queryTokens, "analytics") && tokenContainsAny(queryTokens, []string{"overview", "dashboard"}) {
-		for _, leaf := range analyticsDashboardLeaves {
-			if tokenContains(queryTokens, leaf) {
-				return "asc web analytics " + leaf, "canonical:analytics-" + leaf, true
-			}
+		if leaf, ok := mostSpecificNamedLeaf(queryTokens, analyticsDashboardLeaves); ok {
+			return "asc web analytics " + leaf, "canonical:analytics-" + namedLeafReason(leaf), true
 		}
 		return "asc web analytics overview", "canonical:analytics-overview", true
 	}
@@ -706,15 +717,8 @@ func scopedCanonicalIntent(queryTokens []string) (string, string, bool) {
 		}
 		return "asc app-clips domain-status", "canonical:app-clip-domain-status", true
 	}
-	if tokenContainsAny(queryTokens, []string{"testflight", "beta"}) &&
-		tokenContains(queryTokens, "review") && tokenContains(queryTokens, "submission") {
-		if tokenContains(queryTokens, "list") {
-			return "asc testflight review submissions list", "canonical:testflight-review-submissions-list", true
-		}
-		if tokenContains(queryTokens, "build") {
-			return "asc testflight review submissions build", "canonical:testflight-review-submission-build", true
-		}
-		return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
+	if target, reason, ok := testFlightReviewSubmissionIntent(queryTokens); ok {
+		return target, reason, true
 	}
 	if tokenContainsAny(queryTokens, []string{"testflight", "beta"}) && tokenContains(queryTokens, "review") &&
 		tokenContains(queryTokens, "app") && tokenContains(queryTokens, "view") {
@@ -753,15 +757,83 @@ func scopedAuthActionIntent(queryTokens []string) (string, string, bool) {
 	return "", "", false
 }
 
+// testFlightReviewSubmissionIntent resolves a TestFlight review submission
+// query to its executable leaf. It is shared by the status route and by the
+// cancellation route, which has no TestFlight counterpart of its own.
+func testFlightReviewSubmissionIntent(queryTokens []string) (string, string, bool) {
+	if !testFlightContext(queryTokens) ||
+		!tokenContains(queryTokens, "review") || !tokenContains(queryTokens, "submission") {
+		return "", "", false
+	}
+	if tokenContains(queryTokens, "list") {
+		return "asc testflight review submissions list", "canonical:testflight-review-submissions-list", true
+	}
+	if tokenContains(queryTokens, "build") {
+		return "asc testflight review submissions build", "canonical:testflight-review-submission-build", true
+	}
+	return "asc testflight review submissions view", "canonical:testflight-review-submission-status", true
+}
+
+// testFlightScopedQuery reports whether the query names the TestFlight surface
+// without also naming the App Store review surface, so a cross-surface query
+// keeps its App Store route.
+func testFlightScopedQuery(queryTokens []string) bool {
+	return testFlightContext(queryTokens) && !appStoreContext(queryTokens)
+}
+
+func testFlightContext(queryTokens []string) bool {
+	return tokenContainsAny(queryTokens, []string{"testflight", "beta"})
+}
+
+func appStoreContext(queryTokens []string) bool {
+	return tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
+		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
+}
+
+// mostSpecificNamedLeaf returns the named leaf whose every word appears in the
+// query and that names the most words, so a nested leaf such as
+// "keywords plan" wins over the flat sibling "plan" and a compound leaf such as
+// "product-pages" matches the split wording a natural-language query produces.
+func mostSpecificNamedLeaf(queryTokens, leaves []string) (string, bool) {
+	best := ""
+	bestSpecificity := 0
+	for _, leaf := range leaves {
+		if !namedLeafMatches(queryTokens, leaf) {
+			continue
+		}
+		if specificity := namedLeafSpecificity(leaf); specificity > bestSpecificity {
+			best = leaf
+			bestSpecificity = specificity
+		}
+	}
+	return best, best != ""
+}
+
+func namedLeafMatches(queryTokens []string, leaf string) bool {
+	for _, segment := range strings.Fields(leaf) {
+		if !compoundTokenContains(queryTokens, segment) {
+			return false
+		}
+	}
+	return true
+}
+
+func namedLeafSpecificity(leaf string) int {
+	return len(strings.FieldsFunc(leaf, func(r rune) bool {
+		return r == ' ' || r == '-'
+	}))
+}
+
+func namedLeafReason(leaf string) string {
+	return strings.ReplaceAll(leaf, " ", "-")
+}
+
 func releaseDashboardIntent(queryTokens []string) bool {
 	if !statusQueryIntent(queryTokens) || unambiguousMutationQueryIntent(queryTokens) {
 		return false
 	}
 
-	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta"})
-	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
-		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
-	hasCrossSurfaceContext := hasTestFlightContext && hasAppStoreContext
+	hasCrossSurfaceContext := testFlightContext(queryTokens) && appStoreContext(queryTokens)
 	hasExplicitDashboardContext := explicitReleaseDashboardIntent(queryTokens)
 	hasScopedReleaseContext := tokenContains(queryTokens, "phased") ||
 		(tokenContains(queryTokens, "beta") && tokenContains(queryTokens, "review"))
@@ -775,11 +847,9 @@ func releaseDashboardIntent(queryTokens []string) bool {
 }
 
 func explicitReleaseDashboardIntent(queryTokens []string) bool {
-	hasTestFlightContext := tokenContainsAny(queryTokens, []string{"testflight", "beta"})
-	hasAppStoreContext := tokenContainsAny(queryTokens, []string{"appstore", "store"}) ||
-		(tokenContains(queryTokens, "app") && tokenContainsAny(queryTokens, []string{"review", "submission"}))
 	return tokenContainsAny(queryTokens, []string{"pipeline", "dashboard", "overview"}) &&
-		(tokenContains(queryTokens, "release") || (hasTestFlightContext && hasAppStoreContext))
+		(tokenContains(queryTokens, "release") ||
+			(testFlightContext(queryTokens) && appStoreContext(queryTokens)))
 }
 
 func statusQueryIntent(queryTokens []string) bool {

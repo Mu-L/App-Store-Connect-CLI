@@ -206,3 +206,37 @@ func TestScopedAuthActionIntentPrefersEverySupportedActionOverStatus(t *testing.
 		})
 	}
 }
+
+func TestScopedCanonicalIntentPrefersMostSpecificNamedLeaf(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    []string
+		expected string
+	}{
+		{name: "metadata flat sibling", query: []string{"metadata", "plan", "status"}, expected: "asc metadata plan"},
+		{name: "metadata nested keywords plan", query: []string{"metadata", "keywords", "plan", "status"}, expected: "asc metadata keywords plan"},
+		{name: "metadata nested keywords apply", query: []string{"metadata", "keywords", "apply", "status"}, expected: "asc metadata keywords apply"},
+		{name: "metadata nested keywords push", query: []string{"metadata", "keywords", "push", "status"}, expected: "asc metadata keywords push"},
+		{name: "metadata nested keywords audit", query: []string{"metadata", "keywords", "audit", "status"}, expected: "asc metadata keywords audit"},
+		{name: "metadata keywords group", query: []string{"metadata", "keywords", "status"}, expected: "asc metadata keywords"},
+		{name: "analytics compound split", query: []string{"product", "pages", "analytics", "dashboard"}, expected: "asc web analytics product-pages"},
+		{name: "analytics compound hyphenated", query: []string{"product-pages", "analytics", "dashboard"}, expected: "asc web analytics product-pages"},
+		{name: "analytics in app events split", query: []string{"in", "app", "events", "analytics", "dashboard"}, expected: "asc web analytics in-app-events"},
+		{name: "analytics app clips split", query: []string{"app", "clips", "analytics", "dashboard"}, expected: "asc web analytics app-clips"},
+		{name: "analytics overview fallback", query: []string{"analytics", "overview"}, expected: "asc web analytics overview"},
+		{name: "beta cancellation stays on TestFlight", query: []string{"cancel", "beta", "review", "submission", "status"}, expected: "asc testflight review submissions view"},
+		{name: "cross-surface cancellation stays on App Store", query: []string{"cancel", "testflight", "app", "store", "submission", "status"}, expected: "asc submit cancel"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target, _, ok := scopedCanonicalIntent(test.query)
+			if !ok {
+				t.Fatalf("expected scoped intent for %v", test.query)
+			}
+			if target != test.expected {
+				t.Fatalf("expected %q, got %q", test.expected, target)
+			}
+		})
+	}
+}

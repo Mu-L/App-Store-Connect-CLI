@@ -1110,6 +1110,26 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc submit cancel",
 		},
 		{
+			name:     "cancel App Store submission status",
+			query:    []string{"cancel", "App", "Store", "submission", "status"},
+			expected: "asc submit cancel",
+		},
+		{
+			name:     "cancel TestFlight review submission status",
+			query:    []string{"cancel", "TestFlight", "review", "submission", "status"},
+			expected: "asc testflight review submissions view",
+		},
+		{
+			name:     "cancel beta review submission status",
+			query:    []string{"cancel", "beta", "review", "submission", "status"},
+			expected: "asc testflight review submissions view",
+		},
+		{
+			name:     "cancel TestFlight review submission for build status",
+			query:    []string{"cancel", "TestFlight", "review", "submission", "for", "build", "status"},
+			expected: "asc testflight review submissions build",
+		},
+		{
 			name:     "view Xcode Cloud build run",
 			query:    []string{"view", "Xcode", "Cloud", "build", "run"},
 			expected: "asc xcode-cloud build-runs view",
@@ -1130,9 +1150,44 @@ func TestSearchRoutesExplicitActionsAheadOfStatusQueries(t *testing.T) {
 			expected: "asc metadata validate",
 		},
 		{
+			name:     "metadata keywords plan status",
+			query:    []string{"metadata", "keywords", "plan", "status"},
+			expected: "asc metadata keywords plan",
+		},
+		{
+			name:     "metadata keywords apply status",
+			query:    []string{"metadata", "keywords", "apply", "status"},
+			expected: "asc metadata keywords apply",
+		},
+		{
+			name:     "metadata keywords push status",
+			query:    []string{"metadata", "keywords", "push", "status"},
+			expected: "asc metadata keywords push",
+		},
+		{
+			name:     "metadata keywords audit status",
+			query:    []string{"metadata", "keywords", "audit", "status"},
+			expected: "asc metadata keywords audit",
+		},
+		{
 			name:     "subscriptions analytics dashboard",
 			query:    []string{"subscriptions", "analytics", "dashboard"},
 			expected: "asc web analytics subscriptions",
+		},
+		{
+			name:     "product pages analytics dashboard",
+			query:    []string{"product", "pages", "analytics", "dashboard"},
+			expected: "asc web analytics product-pages",
+		},
+		{
+			name:     "in app events analytics dashboard",
+			query:    []string{"in", "app", "events", "analytics", "dashboard"},
+			expected: "asc web analytics in-app-events",
+		},
+		{
+			name:     "app clips analytics dashboard",
+			query:    []string{"app", "clips", "analytics", "dashboard"},
+			expected: "asc web analytics app-clips",
 		},
 		{
 			name:     "TestFlight App Store analytics overview",
