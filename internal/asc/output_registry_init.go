@@ -164,6 +164,7 @@ func registerAllOutputRenderers() {
 		}
 		return nil
 	})
+	registerRows(signingResignResultRows)
 	registerRows(subscriptionAvailabilityRows)
 	registerRowsWithSingleResourceAdapter(subscriptionPlanAvailabilitiesRows)
 	registerDirect(func(v *SubscriptionPlanAvailabilitySetResult, render func([]string, [][]string)) error {
