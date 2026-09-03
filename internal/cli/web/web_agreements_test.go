@@ -747,6 +747,42 @@ func TestWebAgreementsDownloadRejectsExistingDirectory(t *testing.T) {
 	}
 }
 
+func TestWebAgreementsDownloadPersistsTeamBeforeSaveFailure(t *testing.T) {
+	stubWebAgreementsSession(t)
+	outPath := filepath.Join(t.TempDir(), "agreement.pdf")
+	origDownload := downloadAgreementFn
+	t.Cleanup(func() { downloadAgreementFn = origDownload })
+	downloadAgreementFn = func(ctx context.Context, client *webcore.Client, agreementID string) (*webcore.AgreementDownload, error) {
+		if err := os.WriteFile(outPath, []byte("stolen destination"), 0o600); err != nil {
+			t.Fatalf("seed destination: %v", err)
+		}
+		return sampleAgreementDownload(), nil
+	}
+	persistCalls := 0
+	persistWebSessionFn = func(*webcore.AuthSession) error {
+		persistCalls++
+		return nil
+	}
+
+	cmd := WebAgreementsDownloadCommand()
+	if err := cmd.FlagSet.Parse([]string{"--agreement-id", "XG8DNV4HYY", "--out", outPath}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	var execErr error
+	stdout, _ := captureWebCommandOutput(t, func() {
+		execErr = cmd.Exec(context.Background(), nil)
+	})
+	if execErr == nil || !strings.Contains(execErr.Error(), "downloaded but saving") {
+		t.Fatalf("Exec() error = %v, want local save failure after download", execErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected no receipt on stdout, got %q", stdout)
+	}
+	if persistCalls != 1 {
+		t.Fatalf("persist calls = %d, want 1 so a later retry without --developer-team still targets the team that produced the download", persistCalls)
+	}
+}
+
 func TestWebAgreementsDownloadSurfacesClientErrorWithoutFile(t *testing.T) {
 	stubWebAgreementsSession(t)
 	stubWebAgreementsDownload(t, nil, errors.New("agreement download was redirected to cdn.example.test instead of the Developer Portal"))

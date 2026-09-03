@@ -221,11 +221,13 @@ Examples:
 			if download == nil {
 				return fmt.Errorf("web agreements download failed: missing download result")
 			}
+			// Persist before the local save so a later retry without
+			// --developer-team still targets the team that produced this download.
+			persistDeveloperPortalSession(session)
 
 			if err := destination.write(download.Body, *overwrite); err != nil {
 				return fmt.Errorf("web agreements download failed: agreement %q was downloaded but saving %q failed: %w", resolvedAgreementID, outPath, err)
 			}
-			persistDeveloperPortalSession(session)
 
 			return shared.PrintOutput(&asc.WebAgreementDownloadResult{
 				AgreementID:  download.AgreementID,
