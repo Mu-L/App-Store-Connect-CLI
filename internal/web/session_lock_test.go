@@ -147,8 +147,8 @@ func withShortSessionLockWait(t *testing.T, wait time.Duration) {
 	t.Cleanup(func() { sessionLockWaitTimeout = prev })
 }
 
-// A process killed mid-transaction leaves its lock file behind. The next one
-// must break it instead of refusing to touch the cache forever.
+// A process killed mid-transaction leaves its persistent lock file behind.
+// Descriptor release makes it harmless and enables the next acquisition.
 func TestWithSessionEntryLockWaitsForDescriptorRelease(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "web-cache")
 	t.Setenv(webSessionCacheDirEnv, dir)
