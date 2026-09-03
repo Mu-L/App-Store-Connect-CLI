@@ -166,6 +166,7 @@ type webAuthStatus struct {
 	TeamID           string `json:"teamId,omitempty"`
 	ProviderID       int64  `json:"providerId,omitempty"`
 	PublicProviderID string `json:"publicProviderId,omitempty"`
+	DeveloperTeamID  string `json:"developerTeamId,omitempty"`
 }
 
 func signalProcessInterrupt() error {
@@ -995,6 +996,7 @@ Examples:
 				TeamID:           session.TeamID,
 				ProviderID:       session.ProviderID,
 				PublicProviderID: session.PublicProviderID,
+				DeveloperTeamID:  session.DeveloperTeamID,
 			}
 			return shared.PrintOutput(status, *output.Output, *output.Pretty)
 		},
@@ -1067,6 +1069,7 @@ If --apple-id is not provided, this checks the last cached session.
 				TeamID:           session.TeamID,
 				ProviderID:       session.ProviderID,
 				PublicProviderID: session.PublicProviderID,
+				DeveloperTeamID:  session.DeveloperTeamID,
 			}, *output.Output, *output.Pretty)
 		},
 	}

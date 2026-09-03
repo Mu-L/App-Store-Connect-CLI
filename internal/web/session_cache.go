@@ -55,10 +55,11 @@ type backendSelection struct {
 }
 
 type persistedSession struct {
-	Version   int                  `json:"version"`
-	UpdatedAt time.Time            `json:"updated_at"`
-	UserEmail string               `json:"user_email,omitempty"`
-	Cookies   map[string][]pCookie `json:"cookies"`
+	Version         int                  `json:"version"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+	UserEmail       string               `json:"user_email,omitempty"`
+	DeveloperTeamID string               `json:"developer_team_id,omitempty"`
+	Cookies         map[string][]pCookie `json:"cookies"`
 }
 
 type persistedSessionStore struct {
@@ -1073,6 +1074,7 @@ func resumeFromPersistedSession(ctx context.Context, sess persistedSession) (*Au
 	}
 	session := &AuthSession{Client: client}
 	applySessionInfo(session, info)
+	session.DeveloperTeamID = strings.TrimSpace(sess.DeveloperTeamID)
 	return session, true, nil
 }
 
@@ -1099,6 +1101,7 @@ func resumeFromPersistedSessionReadOnly(ctx context.Context, sess persistedSessi
 	}
 	session := &AuthSession{Client: client, UserEmail: strings.TrimSpace(sess.UserEmail)}
 	applySessionInfo(session, info)
+	session.DeveloperTeamID = strings.TrimSpace(sess.DeveloperTeamID)
 	return session, true, nil
 }
 
@@ -1123,8 +1126,9 @@ func loadSessionFromPersistedSession(sess persistedSession) (*AuthSession, bool,
 		return nil, false, nil
 	}
 	return &AuthSession{
-		Client:    newWebHTTPClient(jar),
-		UserEmail: strings.TrimSpace(sess.UserEmail),
+		Client:          newWebHTTPClient(jar),
+		UserEmail:       strings.TrimSpace(sess.UserEmail),
+		DeveloperTeamID: strings.TrimSpace(sess.DeveloperTeamID),
 	}, true, nil
 }
 
@@ -1145,6 +1149,7 @@ func PersistSession(session *AuthSession) error {
 
 	key := webSessionCacheKey(username)
 	serialized := serializeCookieJar(session.Client.Jar, username)
+	serialized.DeveloperTeamID = strings.TrimSpace(session.DeveloperTeamID)
 	return persistSessionBySelection(selection, key, serialized)
 }
 

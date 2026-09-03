@@ -959,6 +959,40 @@ func TestPersistAndResumeSessionFromKeychain(t *testing.T) {
 	}
 }
 
+func TestPersistSessionRoundTripsDeveloperTeamID(t *testing.T) {
+	withSessionInfoStub(t)
+	t.Setenv(webSessionBackendEnv, "file")
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionCacheDirEnv, t.TempDir())
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: "token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	if err := PersistSession(&AuthSession{
+		Client:          &http.Client{Jar: jar},
+		UserEmail:       "user@example.com",
+		DeveloperTeamID: "TEAMTWO456",
+	}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+
+	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
+	if err != nil {
+		t.Fatalf("TryResumeSession error: %v", err)
+	}
+	if !ok || resumed == nil {
+		t.Fatal("expected resumed session")
+	}
+	if resumed.DeveloperTeamID != "TEAMTWO456" {
+		t.Fatalf("DeveloperTeamID = %q, want TEAMTWO456", resumed.DeveloperTeamID)
+	}
+}
+
 func TestTryResumeSessionPersistsRefreshedCookies(t *testing.T) {
 	withArraySessionKeyring(t)
 	t.Setenv(webSessionBackendEnv, "keychain")

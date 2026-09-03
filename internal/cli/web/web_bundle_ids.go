@@ -83,6 +83,7 @@ func WebBundleIDCapabilitiesEnableCommand() *ffcli.Command {
 	capability := fs.String("capability", "", "Developer Portal capability ID (supported: PRIVATE_CLOUD_COMPUTE)")
 	confirm := fs.Bool("confirm", false, "Confirm enabling this Bundle ID capability")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -140,7 +141,7 @@ Authentication:
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var result *webcore.DeveloperBundleIDCapabilityEnableResult
 			err = withWebSpinner("Enabling Developer Portal Bundle ID capability", func() error {

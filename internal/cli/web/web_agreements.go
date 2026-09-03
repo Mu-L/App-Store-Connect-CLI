@@ -74,6 +74,7 @@ func WebAgreementsStatusCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web agreements status", flag.ExitOnError)
 
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlagsExperimental(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -110,7 +111,7 @@ Example:
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var result *asc.WebAgreementsStatusResult
 			err = withWebSpinner("Fetching Apple Developer Program agreement status", func() error {
@@ -141,6 +142,7 @@ func WebAgreementsDownloadCommand() *ffcli.Command {
 	out := fs.String("out", "", "[experimental] Destination file path for the agreement content")
 	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing file at --out")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlagsExperimental(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -205,7 +207,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var download *webcore.AgreementDownload
 			err = withWebSpinner("Downloading Apple Developer Program agreement", func() error {
@@ -311,6 +313,7 @@ func WebAgreementsAcceptCommand() *ffcli.Command {
 	fs.Var(&agreementIDs, "agreement-id", "[experimental] Developer Portal agreement ID to accept (from `asc web agreements status`; repeatable)")
 	confirm := fs.Bool("confirm", false, "[experimental] Confirm accepting the agreements on behalf of the Account Holder")
 	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlagsExperimental(fs)
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -362,7 +365,7 @@ Examples:
 			if err != nil {
 				return err
 			}
-			client := newWebClientFn(session)
+			client := newDeveloperPortalClient(session, portalFlags)
 
 			var accepted *asc.WebAgreementsAcceptResult
 			err = withWebSpinner("Accepting Apple Developer Program agreements", func() error {
