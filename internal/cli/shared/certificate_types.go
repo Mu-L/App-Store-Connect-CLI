@@ -42,20 +42,25 @@ func CertificateTypeList() []string {
 	return values
 }
 
-// IsCertificateType reports whether value is a supported certificate type. The
-// value is normalized before lookup so callers may pass raw flag input.
-func IsCertificateType(value string) bool {
-	_, ok := certificateTypeSet[NormalizeEnumToken(value)]
-	return ok
+// CanonicalCertificateType normalizes value and returns the matching App Store
+// Connect certificate type. Callers must use the returned value rather than the
+// raw flag input: App Store Connect matches the enum exactly, so a normalized
+// spelling such as "ios-distribution" has to reach the API as "IOS_DISTRIBUTION".
+func CanonicalCertificateType(value string) (string, bool) {
+	normalized := NormalizeEnumToken(value)
+	if _, ok := certificateTypeSet[normalized]; !ok {
+		return "", false
+	}
+	return normalized, true
 }
 
-// ValidateCertificateType returns a usage-class error when value is not a
-// supported certificate type.
-func ValidateCertificateType(flagName, value string) error {
-	if IsCertificateType(value) {
-		return nil
+// ValidateCertificateType returns the canonical certificate type for value, or a
+// usage-class error when value is not a supported certificate type.
+func ValidateCertificateType(flagName, value string) (string, error) {
+	if canonical, ok := CanonicalCertificateType(value); ok {
+		return canonical, nil
 	}
-	return UsageErrorf(
+	return "", UsageErrorf(
 		"%s must be one of: %s (got %q)",
 		flagName,
 		strings.Join(certificateTypeValues, ", "),

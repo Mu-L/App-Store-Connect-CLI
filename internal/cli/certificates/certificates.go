@@ -317,9 +317,11 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --certificate-type is required")
 				return shared.MissingRequiredUsageError("--certificate-type")
 			}
-			if err := shared.ValidateCertificateType("--certificate-type", certificateValue); err != nil {
+			canonicalCertificateType, err := shared.ValidateCertificateType("--certificate-type", certificateValue)
+			if err != nil {
 				return err
 			}
+			certificateValue = canonicalCertificateType
 			passTypeIDValue := strings.TrimSpace(*passTypeID)
 			isPassTypeCertificate := certificateValue == "PASS_TYPE_ID" || certificateValue == "PASS_TYPE_ID_WITH_NFC"
 			if isPassTypeCertificate && passTypeIDValue == "" {

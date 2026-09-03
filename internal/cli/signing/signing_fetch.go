@@ -435,10 +435,12 @@ func resolveSigningCertificateTypes(profileType, raw string) (string, error) {
 		certificateTypes = shared.SplitCSVUpper(inferred)
 	}
 
-	for _, certificateType := range certificateTypes {
-		if !shared.IsCertificateType(certificateType) {
+	for index, certificateType := range certificateTypes {
+		canonical, ok := shared.CanonicalCertificateType(certificateType)
+		if !ok {
 			return "", fmt.Errorf("unsupported certificate type %s", certificateType)
 		}
+		certificateTypes[index] = canonical
 	}
 	return strings.Join(certificateTypes, ","), nil
 }

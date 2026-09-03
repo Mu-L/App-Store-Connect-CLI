@@ -123,6 +123,21 @@ asc certificates list --certificate-type MAC_INSTALLER_DISTRIBUTION
 * `DEVELOPER_ID_KEXT_G2` - Kernel extensions (G2 signing identity)
 * `PASS_TYPE_ID` - Wallet passes and Apple Pay
 * `PASS_TYPE_ID_WITH_NFC` - Wallet passes with NFC
+* `IDENTITY_ACCESS` - Identity access
+
+### Apple Pay Certificate Types
+
+* `APPLE_PAY` - Apple Pay payment processing
+* `APPLE_PAY_MERCHANT_IDENTITY` - Apple Pay merchant identity
+* `APPLE_PAY_PSP_IDENTITY` - Apple Pay payment service provider identity
+* `APPLE_PAY_RSA` - Apple Pay payment processing (RSA)
+
+<Note>
+  Apple Pay certificates are created against a merchant ID. `asc certificates create`
+  sends only the `passTypeId` relationship, so use `asc merchant-ids certificates list`
+  to inspect existing Apple Pay certificates and create new ones in the Apple Developer
+  portal.
+</Note>
 
 ## Create Certificate
 
