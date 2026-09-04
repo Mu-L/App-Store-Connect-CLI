@@ -2229,7 +2229,7 @@ func TestRun_UnknownFlagSuggestsOnlyCanonicalSetupFlags(t *testing.T) {
 	}
 }
 
-func TestRun_UnknownFlagDoesNotSuggestMixedCaseDeprecatedFlag(t *testing.T) {
+func TestRun_UnknownFlagSuggestsTwoFactorCodeCommand(t *testing.T) {
 	resetReportFlags(t)
 
 	stdout, stderr := captureCommandOutput(t, func() {
