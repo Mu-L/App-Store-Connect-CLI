@@ -1901,7 +1901,7 @@ func commitVersionWritesWithCreateChecks(
 	// descriptor must be retained through publication and rollback rather than
 	// reopening the path (which permits unlink-and-recreate identity reuse).
 	for index := range writes {
-		if writes[index].createOnly || !writes[index].strictIdentity || writes[index].originalIdentity != nil {
+		if writes[index].createOnly || !writes[index].strictIdentity || writes[index].originalIdentity != nil || bytes.Equal(writes[index].original, writes[index].updated) {
 			continue
 		}
 		if _, _, err := readRegularVersionFile(&writes[index]); err != nil {

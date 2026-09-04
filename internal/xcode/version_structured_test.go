@@ -1738,6 +1738,23 @@ func TestStructuredVersion_CommitCapturesSourceIdentityBeforePublication(t *test
 	}
 }
 
+func TestStructuredVersion_CommitNoOpSkipsSourceIdentityCapture(t *testing.T) {
+	requireStrictVersionMutationPlatform(t)
+	dir := t.TempDir()
+	fileRoot, err := rootfs.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	const contents = "unchanged"
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: filepath.Join(dir, "missing.xcconfig"), root: fileRoot, name: "missing.xcconfig", original: []byte(contents), updated: []byte(contents), strictIdentity: true},
+	})
+	if err != nil {
+		t.Fatalf("no-op commit unexpectedly failed: %v", err)
+	}
+}
+
 func TestSetVersionKeepsProvenWindowsCaseDistinctXCConfigsSeparate(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
