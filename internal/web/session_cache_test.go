@@ -2668,6 +2668,41 @@ func TestSerializeCookieJarAssignsUniqueGeneration(t *testing.T) {
 	}
 }
 
+func TestPersistSessionConcurrentDifferentAppleIDsPreservesBothKeychainEntries(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, tc := range []struct{ email, token string }{
+		{email: "first@example.com", token: "first-token"},
+		{email: "second@example.com", token: "second-token"},
+	} {
+		tc := tc
+		go func() {
+			<-start
+			errs <- PersistSession(&AuthSession{Client: &http.Client{Jar: webTestSessionJar(t, tc.token)}, UserEmail: tc.email})
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent PersistSession error: %v", err)
+		}
+	}
+	for _, email := range []string{"first@example.com", "second@example.com"} {
+		stored, ok, err := readSessionFromKeychain(webSessionCacheKey(email))
+		if err != nil || !ok {
+			t.Fatalf("expected %s to survive, ok=%v error=%v", email, ok, err)
+		}
+		if stored.UserEmail != email {
+			t.Fatalf("stored wrong identity %q for %s", stored.UserEmail, email)
+		}
+	}
+}
+
 func TestSamePersistedSessionIdentityRejectsDifferentGenerationSameTimestamp(t *testing.T) {
 	now := time.Now().UTC()
 	loaded := &AuthSession{cachedUpdatedAt: now, cachedGeneration: "old"}
