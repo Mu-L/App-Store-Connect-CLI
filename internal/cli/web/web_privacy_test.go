@@ -526,45 +526,31 @@ func TestPlanFromDesiredAndRemoteIncludesDeleteForMalformedRemoteUsage(t *testin
 	}
 }
 
-func TestPlanFromDesiredAndRemotePairsAddDeleteIntoUpdate(t *testing.T) {
-	desired := map[string]privacyTuple{
-		privacyTupleKey(privacyTuple{
-			Category:       "EMAIL_ADDRESS",
-			Purpose:        "APP_FUNCTIONALITY",
-			DataProtection: dataProtectionNotLinked,
-		}): {
-			Category:       "EMAIL_ADDRESS",
-			Purpose:        "APP_FUNCTIONALITY",
-			DataProtection: dataProtectionNotLinked,
-		},
-	}
-	remote := map[string]privacyRemoteState{
-		privacyTupleKey(privacyTuple{
-			Category:       "EMAIL_ADDRESS",
-			Purpose:        "APP_FUNCTIONALITY",
-			DataProtection: dataProtectionLinked,
-		}): {
-			Tuple: privacyTuple{
-				Category:       "EMAIL_ADDRESS",
-				Purpose:        "APP_FUNCTIONALITY",
-				DataProtection: dataProtectionLinked,
-			},
-			UsageIDs: []string{"usage-1"},
-		},
-	}
-
-	plan := planFromDesiredAndRemote("123", "./privacy.json", desired, remote)
-	if len(plan.Updates) != 1 {
-		t.Fatalf("expected one update, got %#v", plan.Updates)
-	}
-	if len(plan.Adds) != 0 || len(plan.Deletes) != 0 {
-		t.Fatalf("expected no adds/deletes after pairing, got adds=%#v deletes=%#v", plan.Adds, plan.Deletes)
-	}
-	if plan.Updates[0].UsageID != "usage-1" || plan.Updates[0].DataProtection != dataProtectionNotLinked {
-		t.Fatalf("unexpected update payload: %#v", plan.Updates[0])
-	}
-	if len(plan.APICalls) != 1 || plan.APICalls[0].Operation != "update_data_usage" || plan.APICalls[0].Count != 1 {
-		t.Fatalf("unexpected api calls: %#v", plan.APICalls)
+func TestPlanFromDesiredAndRemotePairsOnlySameScopeIdentityFlipIntoUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name, remoteProtection, desiredProtection string
+	}{
+		{name: "linked-to-not-linked", remoteProtection: dataProtectionLinked, desiredProtection: dataProtectionNotLinked},
+		{name: "not-linked-to-linked", remoteProtection: dataProtectionNotLinked, desiredProtection: dataProtectionLinked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desiredTuple := privacyTuple{Category: "EMAIL_ADDRESS", Purpose: "APP_FUNCTIONALITY", DataProtection: tc.desiredProtection}
+			remoteTuple := privacyTuple{Category: "EMAIL_ADDRESS", Purpose: "APP_FUNCTIONALITY", DataProtection: tc.remoteProtection}
+			plan := planFromDesiredAndRemote("123", "./privacy.json", map[string]privacyTuple{
+				privacyTupleKey(desiredTuple): desiredTuple,
+			}, map[string]privacyRemoteState{
+				privacyTupleKey(remoteTuple): {Tuple: remoteTuple, UsageIDs: []string{"usage-1"}},
+			})
+			if len(plan.Updates) != 1 || len(plan.Adds) != 0 || len(plan.Deletes) != 0 {
+				t.Fatalf("expected one update and no adds/deletes, got updates=%#v adds=%#v deletes=%#v", plan.Updates, plan.Adds, plan.Deletes)
+			}
+			if plan.Updates[0].UsageID != "usage-1" || plan.Updates[0].DataProtection != tc.desiredProtection {
+				t.Fatalf("unexpected update payload: %#v", plan.Updates[0])
+			}
+			if len(plan.APICalls) != 1 || plan.APICalls[0].Operation != "update_data_usage" || plan.APICalls[0].Count != 1 {
+				t.Fatalf("unexpected api calls: %#v", plan.APICalls)
+			}
+		})
 	}
 }
 
