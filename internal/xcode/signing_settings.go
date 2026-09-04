@@ -1424,6 +1424,11 @@ func (resolver *signingSettingResolver) resolveInheritedSettingValue(
 	if err == nil {
 		return inherited, nil
 	}
+	if errors.Is(err, errVersionSettingNotFound) {
+		if implicit, ok := signingImplicitSettingValue(resolver.project, expansionConfiguration, setting); ok {
+			return implicit, nil
+		}
+	}
 	if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil && fallback != configuration {
 		for _, key := range matchingBuildSettingKeys(fallback.buildSettings, setting) {
 			literal, ok := fallback.buildSettings[key].(string)

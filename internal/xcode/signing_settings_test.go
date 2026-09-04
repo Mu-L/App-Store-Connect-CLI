@@ -103,6 +103,34 @@ func TestBuildAndApplySigningPlanForDirectSettings(t *testing.T) {
 	}
 }
 
+func TestSigningSettingResolverUsesImplicitBaseForPBXInherited(t *testing.T) {
+	root := t.TempDir()
+	configuration := &versionConfiguration{
+		target: "App",
+		name:   "Debug",
+		buildSettings: serialized.Object{
+			"PROJECT_DIR": "$(inherited)/Sub",
+		},
+	}
+	project := &structuredVersionProject{
+		rootDir:        root,
+		configurations: []*versionConfiguration{configuration},
+	}
+	resolver := newSigningSettingResolver(project, nil, false, nil)
+	got, _, err := resolver.resolveSettingReferenceWithContext(
+		configuration,
+		configuration,
+		"PROJECT_DIR",
+		map[string]bool{"PROJECT_DIR": true},
+	)
+	if err != nil {
+		t.Fatalf("resolveSettingReferenceWithContext() error = %v", err)
+	}
+	if want := filepath.Join(root, "Sub"); got != want {
+		t.Fatalf("PROJECT_DIR = %q, want implicit base %q", got, want)
+	}
+}
+
 func TestSigningApplyDoesNotUseStablePortableWriteFallback(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()
@@ -6372,6 +6400,52 @@ func TestSigningPlanResolvesImplicitProjectLocationVariables(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSigningPlanResolvesImplicitXCConfigEntitlement(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	projectRoot := filepath.Dir(project)
+	appXCConfig := filepath.Join(projectRoot, "Configs", "App.xcconfig")
+	contents := mustReadVersionTestFile(t, appXCConfig) +
+		"CODE_SIGN_ENTITLEMENTS = $(PROJECT_DIR)/App.entitlements\n"
+	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
+		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
+	}
+	writeSigningTestEntitlements(t, projectRoot, "App.entitlements")
+	writeSigningTestEntitlements(t, projectRoot, "Renamed.entitlements")
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"DEVELOPMENT_TEAM": "ABCDE12345",
+			"CODE_SIGN_ENTITLEMENTS": "Renamed.entitlements"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got blockers %#v", plan.Blockers)
+	}
+	for index := range plan.Changes {
+		if plan.Changes[index].Setting != "CODE_SIGN_ENTITLEMENTS" {
+			continue
+		}
+		if plan.Changes[index].OldValue == nil {
+			t.Fatalf("CODE_SIGN_ENTITLEMENTS old value = nil, want the expanded path")
+		}
+		if want := filepath.Join(projectRoot, "App.entitlements"); *plan.Changes[index].OldValue != want {
+			t.Fatalf("CODE_SIGN_ENTITLEMENTS old value = %q, want %q", *plan.Changes[index].OldValue, want)
+		}
+		return
+	}
+	t.Fatalf("no CODE_SIGN_ENTITLEMENTS change in %#v", plan.Changes)
 }
 
 // TestSigningPlanFailsClosedForImplicitVariableEscapingProjectRoot proves an

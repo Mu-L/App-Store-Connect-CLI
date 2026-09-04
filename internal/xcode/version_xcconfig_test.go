@@ -25,10 +25,30 @@ func TestXCConfigImplicitLookupShadowsConditionalDefault(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if resolved.value != tc.want {
-				t.Fatalf("resolved = %#v, want implicit %q", resolved, tc.want)
+			if !resolved.found || !resolved.exact || resolved.value != tc.want {
+				t.Fatalf("resolved = %#v, want an exact implicit value %q", resolved, tc.want)
 			}
 		})
+	}
+}
+
+func TestXCConfigImplicitLookupPreservesExplicitConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR[sdk=iphoneos*] = /special\nPROJECT_DIR = $(inherited)/Sub\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(string) (string, bool) { return "/project", true },
+	)
+	if err == nil || !strings.Contains(err.Error(), "differing conditional") {
+		t.Fatalf("resolve implicit value error = %v, want divergent explicit conditional error", err)
 	}
 }
 
