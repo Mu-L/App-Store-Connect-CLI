@@ -105,7 +105,13 @@ asc builds info --app 123456789 --latest --version 1.2.0 --platform IOS
 </ParamField>
 
 <ParamField path="--build-number" type="string">
-  Filter or target a specific build number (`CFBundleVersion`)
+  Filter or target a specific build number (`CFBundleVersion`). App-scoped
+  selectors that use `--build-number` must also pass `--platform`.
+</ParamField>
+
+<ParamField path="--platform" type="string">
+  Platform for app-scoped selectors: `IOS`, `MAC_OS`, `TV_OS`, `VISION_OS`.
+  Required with `--build-number`; there is no implicit default.
 </ParamField>
 
 <ParamField path="--processing-state" type="string">

@@ -633,6 +633,31 @@ func resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
 	return resolved, nil
 }
 
+// expandXCConfigLookupReferences expands only references supplied by lookup.
+// Unsupported or unresolved references stay intact so divergence checks remain
+// conservative rather than guessing a build-context value.
+func expandXCConfigLookupReferences(value string, lookup func(string) (string, bool)) string {
+	if lookup == nil {
+		return value
+	}
+	for iteration := 0; iteration < 32; iteration++ {
+		match := signingReferencePattern.FindStringSubmatchIndex(value)
+		if match == nil || match[4] >= 0 || match[8] >= 0 {
+			return value
+		}
+		nameStart, nameEnd := match[2], match[3]
+		if nameStart < 0 {
+			nameStart, nameEnd = match[6], match[7]
+		}
+		replacement, ok := lookup(value[nameStart:nameEnd])
+		if !ok {
+			return value
+		}
+		value = value[:match[0]] + replacement + value[match[1]:]
+	}
+	return value
+}
+
 // xcconfigAssignmentObserver receives each matching assignment in the same
 // include/event order used by the resolver, including assignments that the
 // resolver later skips because a lower or earlier value wins. Security-
@@ -801,8 +826,10 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 			}
 			conditionalValue := assignment.value
 			if resolved.found {
-				conditionalValue = strings.ReplaceAll(conditionalValue, "$(inherited)", inheritedValue)
-				conditionalValue = strings.ReplaceAll(conditionalValue, "${inherited}", inheritedValue)
+				if strings.Contains(conditionalValue, "$(inherited)") || strings.Contains(conditionalValue, "${inherited}") {
+					conditionalValue = strings.ReplaceAll(conditionalValue, "$(inherited)", inheritedValue)
+					conditionalValue = strings.ReplaceAll(conditionalValue, "${inherited}", inheritedValue)
+				}
 				conditionalValue = expandXCConfigLookupReferences(conditionalValue, lookup)
 			}
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
@@ -850,28 +877,6 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		}
 	}
 	return resolved, len(resolved.conditionals) > 0, nil
-}
-
-func expandXCConfigLookupReferences(value string, lookup func(string) (string, bool)) string {
-	if lookup == nil {
-		return value
-	}
-	for iteration := 0; iteration < 32; iteration++ {
-		match := signingReferencePattern.FindStringSubmatchIndex(value)
-		if match == nil || match[4] >= 0 || match[8] >= 0 {
-			return value
-		}
-		nameStart, nameEnd := match[2], match[3]
-		if nameStart < 0 {
-			nameStart, nameEnd = match[6], match[7]
-		}
-		replacement, ok := lookup(value[nameStart:nameEnd])
-		if !ok {
-			return value
-		}
-		value = value[:match[0]] + replacement + value[match[1]:]
-	}
-	return value
 }
 
 func editXCConfig(data []byte, setting, value string) ([]byte, []string, bool, error) {
