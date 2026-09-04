@@ -2636,6 +2636,7 @@ func TestDeleteSessionIfMatchesRemovesAMirrorCarryingTheSameStamp(t *testing.T) 
 
 	key := webSessionCacheKey("user@example.com")
 	mirror := webTestPersistedSession(t, "stale-token", loaded.cachedUpdatedAt)
+	mirror.Generation = loaded.cachedGeneration
 	if err := writeSessionToFile(key, mirror); err != nil {
 		t.Fatalf("writeSessionToFile error: %v", err)
 	}

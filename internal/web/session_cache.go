@@ -1483,7 +1483,7 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 			sessionCompareDeleteBarrier()
 		}
 		deleted = true
-		return deleteMatchedSessionEntryLocked(selection, key, origin, current.UpdatedAt)
+		return deleteMatchedSessionEntryLocked(selection, key, origin, current.UpdatedAt, current.Generation)
 	})
 	return deleted, err
 }
@@ -1500,7 +1500,7 @@ func samePersistedSessionIdentity(current persistedSession, loaded *AuthSession)
 // that one carries the same stamp and is therefore the same proven-stale
 // session. Legacy artifacts are always cleared: nothing writes them any more,
 // so they can only hold a session at least as stale as the matched one.
-func deleteMatchedSessionEntryLocked(selection backendSelection, key string, origin sessionEntryOrigin, stamp time.Time) error {
+func deleteMatchedSessionEntryLocked(selection backendSelection, key string, origin sessionEntryOrigin, stamp time.Time, generation string) error {
 	var err error
 	switch origin {
 	case sessionEntryOriginFile:
@@ -1509,14 +1509,14 @@ func deleteMatchedSessionEntryLocked(selection backendSelection, key string, ori
 		} else {
 			err = clearLastKeyInFileIfMatches(key)
 		}
-		if sessionMirrorEnabled(selection) && keychainSessionCarriesStamp(key, stamp) {
+		if sessionMirrorEnabled(selection) && keychainSessionCarriesIdentity(key, stamp, generation) {
 			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteSessionFromKeychain(key)))
 		}
 	case sessionEntryOriginKeychain:
 		if deleteErr := deleteSessionFromKeychain(key); deleteErr != nil && (!selection.fallbackFile || !isKeyringUnavailable(deleteErr)) {
 			err = deleteErr
 		}
-		if sessionMirrorEnabled(selection) && fileSessionCarriesStamp(key, stamp) {
+		if sessionMirrorEnabled(selection) && fileSessionCarriesIdentity(key, stamp, generation) {
 			err = joinDeleteErrors(err, deleteMirroredSessionFromFile(key))
 		}
 	default:
@@ -1542,23 +1542,30 @@ func sessionMirrorEnabled(selection backendSelection) bool {
 // the matched one. An unreadable entry counts: it cannot be the valid
 // replacement this guard exists to protect, and leaving a corrupt file behind
 // only makes the next invocation fall back to a staler backend.
-func fileSessionCarriesStamp(key string, stamp time.Time) bool {
+func fileSessionCarriesIdentity(key string, stamp time.Time, generation string) bool {
 	sess, ok, err := readSessionFromFile(key)
 	if err != nil {
-		return true
+		return false
 	}
-	return ok && sess.UpdatedAt.Equal(stamp)
+	return ok && persistedSessionIdentityMatches(sess, stamp, generation)
 }
 
 // keychainSessionCarriesStamp reports whether the keychain entry is the same
 // session as the matched one. A keychain that cannot be read is left alone
 // rather than cleared blindly: unavailability says nothing about the entry.
-func keychainSessionCarriesStamp(key string, stamp time.Time) bool {
+func keychainSessionCarriesIdentity(key string, stamp time.Time, generation string) bool {
 	sess, ok, err := readSessionFromKeychain(key)
 	if err != nil {
 		return false
 	}
-	return ok && sess.UpdatedAt.Equal(stamp)
+	return ok && persistedSessionIdentityMatches(sess, stamp, generation)
+}
+
+func persistedSessionIdentityMatches(sess persistedSession, stamp time.Time, generation string) bool {
+	if generation != "" || sess.Generation != "" {
+		return generation != "" && sess.Generation != "" && generation == sess.Generation
+	}
+	return sess.UpdatedAt.Equal(stamp)
 }
 
 // DeleteAllSessions removes all cached web sessions.
