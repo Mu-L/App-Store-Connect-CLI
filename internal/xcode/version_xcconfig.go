@@ -780,7 +780,25 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		value := assignment.value
 		if !resolved.found && lookup != nil {
 			if implicit, ok := lookup(setting); ok {
-				resolved = xcconfigResolvedValue{value: implicit, path: "<implicit>", found: true, exact: true}
+				// An implicit value is a lower-layer value, not a replacement
+				// for the conditional assignments already seen in this file.
+				// Keep explicit conditionals so the caller can reject a
+				// divergent SDK-specific value, while a conditional default
+				// remains shadowed by the implicit value just like ?= would be
+				// by any other lower-layer assignment.
+				conditionals := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
+				for _, conditional := range resolved.conditionals {
+					if conditional.operator != "?=" {
+						conditionals = append(conditionals, conditional)
+					}
+				}
+				resolved = xcconfigResolvedValue{
+					value:        implicit,
+					path:         "<implicit>",
+					found:        true,
+					exact:        true,
+					conditionals: conditionals,
+				}
 			}
 		}
 		hadLowerValue := resolved.found
