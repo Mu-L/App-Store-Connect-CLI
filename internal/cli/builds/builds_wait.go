@@ -59,7 +59,7 @@ Examples:
   asc builds wait --build-id "BUILD_ID" --timeout 20m --poll-interval 15s
   asc builds wait --app "1500196580" --latest
   asc builds wait --app "1500196580" --latest --since "2026-03-02T18:00:00Z"
-  asc builds wait --app "1500196580" --build-number "2" --version "2.4.0"
+  asc builds wait --app "1500196580" --build-number "2" --platform IOS --version "2.4.0"
   asc builds wait --app "123456789" --build-number "42" --platform MAC_OS --fail-on-invalid`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,

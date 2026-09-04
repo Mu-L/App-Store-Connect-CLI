@@ -2,8 +2,12 @@ package web
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -11,6 +15,7 @@ import (
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
+	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 func webXcodeCloudNextBuildNumberCommand() *ffcli.Command {
@@ -120,7 +125,8 @@ func webNextBuildNumberSet() *ffcli.Command {
 
 Set the persistent next build number for an Xcode Cloud product. The new value
 must exceed the current value. The command reads the setting again after the
-update and succeeds only when the requested value is confirmed.
+update and succeeds only when the requested value is confirmed. Changing this
+setting requires the App Store Connect Admin or App Manager role.
 
 
 
@@ -164,16 +170,33 @@ Example:
 			if *value <= current.NextBuildNumber {
 				return fmt.Errorf("next build number must be greater than current value %d", current.NextBuildNumber)
 			}
-			if err := client.SetCINextBuildNumber(requestCtx, teamID, pid, *value); err != nil {
-				return withWebAuthHint(err, "xcode-cloud settings next-build-number set")
+			writeErr := client.SetCINextBuildNumber(requestCtx, teamID, pid, *value)
+			if writeErr != nil && !isAmbiguousNextBuildNumberWriteFailure(writeErr) {
+				return withNextBuildNumberSetHint(writeErr)
 			}
 
-			updated, err := client.GetCINextBuildNumber(requestCtx, teamID, pid)
+			verifyCtx := requestCtx
+			verifyCancel := func() {}
+			if writeErr != nil {
+				verifyCtx, verifyCancel = newWebRequestContext(ctx)
+			}
+			defer verifyCancel()
+
+			updated, err := client.GetCINextBuildNumber(verifyCtx, teamID, pid)
 			if err != nil {
+				if writeErr != nil {
+					return fmt.Errorf("xcode-cloud settings next-build-number set may have succeeded but reconciliation failed: write error: %w; re-read error: %w", writeErr, err)
+				}
 				verifyErr := withWebAuthHint(err, "xcode-cloud settings next-build-number verification")
 				return fmt.Errorf("xcode-cloud settings next-build-number set may have succeeded but verification failed: %w", verifyErr)
 			}
 			if updated.NextBuildNumber != *value {
+				if writeErr != nil {
+					if updated.NextBuildNumber == current.NextBuildNumber {
+						return fmt.Errorf("xcode-cloud settings next-build-number set failed: remote still reports %d; the write was not applied: %w", updated.NextBuildNumber, writeErr)
+					}
+					return fmt.Errorf("xcode-cloud settings next-build-number set is unverified: remote reports %d, which is neither the previous value %d nor the requested value %d: %w", updated.NextBuildNumber, current.NextBuildNumber, *value, writeErr)
+				}
 				return fmt.Errorf("xcode-cloud settings next-build-number set verification failed: got %d, expected %d", updated.NextBuildNumber, *value)
 			}
 
@@ -193,4 +216,30 @@ Example:
 			)
 		},
 	}
+}
+
+// isAmbiguousNextBuildNumberWriteFailure reports failures where the request was
+// handed to the transport but no response established whether Apple applied it.
+func isAmbiguousNextBuildNumberWriteFailure(err error) bool {
+	var apiErr *webcore.APIError
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var urlErr *url.Error
+	return errors.As(err, &urlErr) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled)
+}
+
+func withNextBuildNumberSetHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *webcore.APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden {
+		return fmt.Errorf("xcode-cloud settings next-build-number set failed: changing the next build number requires the App Store Connect Admin or App Manager role: %w", err)
+	}
+	return withWebAuthHint(err, "xcode-cloud settings next-build-number set")
 }

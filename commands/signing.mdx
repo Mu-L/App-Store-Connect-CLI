@@ -737,6 +737,42 @@ following symlinks. The mapping must contain exactly one entry for each
 discovered target. Profiles must be valid Apple-signed development, ad-hoc,
 or App Store profiles that match their target and the supplied identity.
 
+Cross-team claim rebasing is opt-in:
+
+```bash  theme={null}
+asc signing resign \
+  --ipa ./build/App.ipa \
+  --output ./build/App-resigned.ipa \
+  --identity ./signing/distribution.p12 \
+  --profiles-manifest ./signing/profiles.json \
+  --rebase-team-claims \
+  --format json
+```
+
+Without `--rebase-team-claims`, existing claims whose source prefix is not
+authorized by the replacement profile continue to fail closed. The opt-in
+mode is deliberately limited to concrete keychain groups and one whole-IPA
+ubiquity key-value-store mapping. An exact existing KVS value is preserved when
+authorized; otherwise one exact replacement-profile KVS value with the same
+validated suffix must be available. A wildcard can authorize that exact value
+but never chooses the destination. KVS prefixes come from the KVS claim itself
+and may differ from application-ID prefixes. Changing the KVS value selects a
+different namespace and can make existing KVS data inaccessible. Repeated old KVS values and
+keychain groups must each resolve to one planned value across the IPA, and
+distinct old values may not collapse into one destination. A concrete
+third-prefix value is preserved only when the replacement profile authorizes
+it. App Clip parent and associated-identifier relationship claims are rewritten
+only together for one proven reciprocal main-app/App-Clip pair; if pairing is
+ambiguous or cannot be proven, each existing claim is preserved only when
+already authorized unchanged. The mode substitutes the signed source
+`ApplicationIdentifierPrefix` with the replacement profile prefix for keychain
+groups, never `TeamID`, preserves list order and duplicates, and proves each
+resulting value against the replacement profile. Wildcards are authorization
+patterns only; they are never written into signed entitlements. Other
+entitlement values are never generically rewritten. JSON includes a
+deterministic `entitlementRewrites` list with one flattened entry per changed
+scalar or array element, including an optional array index.
+
 The archive is validated before signing: unsafe paths, duplicate or
 colliding entries, symlinks, encrypted members, oversized expansion, and
 unsupported target metadata fail without creating the output parent. A valid
@@ -760,8 +796,13 @@ failure after no-replace publication is reported as an ambiguous publication;
 the artifact is retained for inspection and must not be blindly retried.
 Errors expose only a stable phase/code; temporary paths, keychain names,
 profile source paths, passwords, and child-process diagnostics are kept out
-of stderr and all output formats. JSON, table, and Markdown outputs contain
-only the documented receipt fields and never raw profile data.
+of stderr and all output formats. The exception is an app-like target
+entitlement-remediation refusal during generated-entitlement preparation,
+when the replacement profile does not authorize an existing claim: that
+actionable detail names the target bundle identifier and includes only bounded
+entitlement names and values. Nested-code entitlement and Mach-O failures
+remain classified by stable phase/code. JSON, table, and Markdown outputs
+contain only the documented receipt fields and never raw profile data.
 
 ## Rotation and expiry
 

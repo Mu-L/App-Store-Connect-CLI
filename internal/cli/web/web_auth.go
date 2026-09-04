@@ -1136,6 +1136,8 @@ Manage Apple web-session authentication used by "asc web" commands.
 			WebAuthLoginCommand(),
 			WebAuthStatusCommand(),
 			WebAuthCapabilitiesCommand(),
+			WebAuthExportCommand(),
+			WebAuthImportCommand(),
 			WebAuthLogoutCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
