@@ -153,6 +153,43 @@ type CIWorkflowListResponse struct {
 	Items []CIWorkflow `json:"items"`
 }
 
+// CINextBuildNumber is the next build number configured for an Xcode Cloud product.
+type CINextBuildNumber struct {
+	NextBuildNumber int    `json:"next_build_number"`
+	TestFlightURL   string `json:"testflight_url,omitempty"`
+}
+
+func (c *Client) GetCINextBuildNumber(ctx context.Context, teamID, productID string) (*CINextBuildNumber, error) {
+	teamID = strings.TrimSpace(teamID)
+	productID = strings.TrimSpace(productID)
+	if teamID == "" || productID == "" {
+		return nil, fmt.Errorf("team id and product id are required")
+	}
+	body, err := c.doRequest(ctx, "GET", "/teams/"+url.PathEscape(teamID)+"/products/"+url.PathEscape(productID)+"/next-build-number", nil)
+	if err != nil {
+		return nil, err
+	}
+	var result CINextBuildNumber
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode ci next build number: %w", err)
+	}
+	return &result, nil
+}
+
+func (c *Client) SetCINextBuildNumber(ctx context.Context, teamID, productID string, value int) error {
+	teamID = strings.TrimSpace(teamID)
+	productID = strings.TrimSpace(productID)
+	if teamID == "" || productID == "" {
+		return fmt.Errorf("team id and product id are required")
+	}
+	if value <= 0 {
+		return fmt.Errorf("next build number must be greater than 0")
+	}
+	path := "/teams/" + url.PathEscape(teamID) + "/products/" + url.PathEscape(productID) + "/next-build-number?next_build_number=" + strconv.Itoa(value)
+	_, err := c.doRequest(ctx, "PUT", path, nil)
+	return err
+}
+
 func (m *CIMonthUsage) UnmarshalJSON(data []byte) error {
 	type alias struct {
 		Month          int  `json:"month"`

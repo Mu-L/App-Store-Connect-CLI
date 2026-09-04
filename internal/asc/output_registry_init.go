@@ -22,6 +22,7 @@ func registerAllOutputRenderers() {
 	registerRows(webMedicalDeviceDeclarationStateRows)
 	registerRows(webMedicalDeviceDeclarationResultRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
+	registerRows(webXcodeCloudNextBuildNumberRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
 	registerRows(webAppGroupDeleteRows)
 	registerRows(webAppGroupUnassignRows)
