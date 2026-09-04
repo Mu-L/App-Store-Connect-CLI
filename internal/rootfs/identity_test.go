@@ -1047,6 +1047,43 @@ func TestReplaceFileIfSamePreservesHardLinkAndMetadata(t *testing.T) {
 	}
 }
 
+func TestReplaceFileIfSamePreservesSpecialBits(t *testing.T) {
+	requireStrictIdentityPlatform(t)
+	if runtime.GOOS == "darwin" {
+		t.Skip("macOS clears setuid/setgid during rooted replacement; Linux CI covers special-bit preservation")
+	}
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	t.Cleanup(func() { _ = root.Close() })
+	path := filepath.Join(dir, "special.txt")
+	want := os.FileMode(0o755) | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+	if err := os.WriteFile(path, []byte("original"), want); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mask := os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+	if initial.Mode()&mask != want {
+		t.Skipf("filesystem does not preserve special mode bits: got %v", initial.Mode()&mask)
+	}
+	identity, err := root.CaptureFile("special.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.ReplaceFileIfSame("special.txt", identity, []byte("replacement"), 0o600, true); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode() & mask; got != want {
+		t.Fatalf("mode = %v, want %v", got, want)
+	}
+}
+
 func TestReplaceFileIfSameRejectsHardLinkAddedAfterCapture(t *testing.T) {
 	requireStrictIdentityPlatform(t)
 	dir := t.TempDir()
