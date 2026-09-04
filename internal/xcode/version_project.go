@@ -1813,7 +1813,10 @@ func readRegularVersionFileCompatibility(target *preparedVersionWrite) (os.FileI
 	return info, data, nil
 }
 
-var atomicWriteVersionFileFn = atomicWritePreparedVersionFile
+var (
+	atomicWriteVersionFileFn    = atomicWritePreparedVersionFile
+	afterVersionSourceCaptureFn func([]preparedVersionWrite) error
+)
 
 var atomicWriteVersionFileInfoFn = atomicWritePreparedVersionFileInfo
 
@@ -1906,6 +1909,11 @@ func commitVersionWritesWithCreateChecks(
 		}
 		if _, _, err := readRegularVersionFile(&writes[index]); err != nil {
 			return fmt.Errorf("verify source before commit: %w", err)
+		}
+	}
+	if afterVersionSourceCaptureFn != nil {
+		if err := afterVersionSourceCaptureFn(writes); err != nil {
+			return err
 		}
 	}
 	var committed []preparedVersionWrite

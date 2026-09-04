@@ -1738,6 +1738,43 @@ func TestStructuredVersion_CommitCapturesSourceIdentityBeforePublication(t *test
 	}
 }
 
+func TestStructuredVersion_CommitRejectsReplacementAfterIdentityCapture(t *testing.T) {
+	requireStrictVersionMutationPlatform(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.xcconfig")
+	original := []byte("old")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileRoot, err := rootfs.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	previous := afterVersionSourceCaptureFn
+	t.Cleanup(func() { afterVersionSourceCaptureFn = previous })
+	afterVersionSourceCaptureFn = func([]preparedVersionWrite) error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		return os.WriteFile(path, original, 0o644)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{{
+		path: path, root: fileRoot, name: filepath.Base(path), original: original,
+		updated: []byte("new"), mode: 0o644, strictIdentity: true,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "file identity changed") {
+		t.Fatalf("commit error = %v, want replacement rejection", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("replacement contents = %q, want original", got)
+	}
+}
+
 func TestStructuredVersion_CommitNoOpSkipsSourceIdentityCapture(t *testing.T) {
 	requireStrictVersionMutationPlatform(t)
 	dir := t.TempDir()
