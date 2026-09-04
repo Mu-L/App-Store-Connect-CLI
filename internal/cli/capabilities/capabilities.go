@@ -450,12 +450,17 @@ func capabilityRows() []Capability {
 		{
 			Area:       "monetization",
 			Capability: "App and In-App Purchase tax category",
-			Status:     statusNotPublicAPI,
-			Notes: []string{
-				"Apple's published App Store Connect OpenAPI spec has no tax-category endpoint, and no tax-category attribute on apps, appInfos, or inAppPurchases.",
-				"The App Store Connect web endpoints behind the App Information and In-App Purchase tax category pickers have not been captured, so no web-session command is exposed either.",
+			Status:     statusPartial,
+			Commands: []string{
+				"asc web apps tax-category list",
+				"asc web apps tax-category view",
+				"asc web apps tax-category set",
 			},
-			NextAction: "Set the tax category in App Store Connect under App Information, or in the In-App Purchase settings.",
+			Notes: []string{
+				"App Information tax category is available through experimental web-session commands; the public OpenAPI snapshot has no tax-category resource.",
+				"In-App Purchase tax category remains unimplemented because its web-session read/write contract is not captured. The application setter validates the captured catalog, requires --confirm, clears conditions when --condition is omitted, and does not automatically retry an ambiguous write; provider acceptance has not been live-verified.",
+			},
+			NextAction: "Use asc web apps tax-category list/view/set for App Information; use App Store Connect web UI for In-App Purchase tax category.",
 		},
 		{
 			Area:       "testflight",

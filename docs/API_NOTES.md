@@ -50,12 +50,35 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 
 ## Tax Categories and Transaction Tax Reports
 
-Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec version 4.4.1):
+Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` and
+the App Store Connect web-client source captured for issue #2299:
 
-- There is no tax-category endpoint, and no tax-category attribute on `apps`, `appInfos`, or `inAppPurchases`. The App Store Connect UI is the only way to read or set an app or in-app purchase tax category.
-- `GET /v1/financeReports` accepts only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and `GET /v1/salesReports` has no tax report type, so Transaction Tax reports cannot be generated or downloaded through the public API.
-- Both surfaces still need a live web-session endpoint capture before any `asc web` command can be shipped: the request method, path, headers, request body, and response body for the App Information tax category read and write, and for the Payments and Financial Reports "Create Reports" Transaction Tax generate, poll, and download calls. See issue #2299.
-- `asc capabilities --area monetization` reports the tax category gap, and `asc capabilities --status not-public-api` reports both gaps.
+- The public API still has no tax-category resource or tax-category attribute
+  on `apps`, `appInfos`, or `inAppPurchases`.
+- App Information tax categories are available through the experimental
+  web-session commands `asc web apps tax-category list`,
+  `asc web apps tax-category view --app APP_ID`, and
+  `asc web apps tax-category set --app APP_ID --category CATEGORY_ID
+  [--condition CONDITION_ID ...] --confirm`. The catalog read is
+  `GET /iris/v1/taxCategories?filter[productType]=APPLICATION&include=subcategories,conditions&limit[subcategories]=100&limit[conditions]=100`.
+  The app read is `GET /iris/v1/appTaxCategories/{appId}?include=category,enabledConditions&limit[enabledConditions]=100`.
+- A missing app tax resource is an unconfigured selection; the captured App
+  Store Connect UI default is App Store Software. `set` validates category and
+  condition IDs against the catalog, sends a complete desired condition set,
+  and re-reads the result. Omitting `--condition` sends
+  `enabledConditions.data=[]` to clear stale conditions. The command requires
+  `--confirm` and does not automatically retry an ambiguous write.
+- The request and response shapes are source-backed, but no live tax write was
+  performed in this audit. Provider acceptance and the legal correctness of a
+  selected classification remain operator responsibilities.
+- In-App Purchase tax-category read/write is still unavailable because its
+  web-session contract has not been captured. `GET /v1/financeReports` accepts
+  only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and
+  `GET /v1/salesReports` has no tax report type, so Transaction Tax reports
+  cannot be generated or downloaded through the public API or this CLI.
+- `asc capabilities --area monetization` reports the application tax path as
+  partial coverage and keeps In-App Purchase tax selection in the remaining
+  web-only gap.
 
 ## Sandbox Testers
 
