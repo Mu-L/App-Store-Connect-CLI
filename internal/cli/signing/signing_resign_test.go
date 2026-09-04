@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -3236,5 +3237,135 @@ func TestDiscoverSigningResignArchiveStillRejectsNestedBundleDirectories(t *test
 				t.Fatalf("discoverSigningResignArchive() error = %v, want unsupported nested target rejection", err)
 			}
 		})
+	}
+}
+
+func TestPreflightSigningResignArchiveRejectsOversizedCentralDirectoryInventory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.ipa")
+	data := make([]byte, 22)
+	binary.LittleEndian.PutUint32(data[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(data[10:12], signingResignMaxArchiveEntries+1)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err == nil || !strings.Contains(err.Error(), "too many archive entries") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveRejectsOversizedDirectoryBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.ipa")
+	data := make([]byte, 22)
+	binary.LittleEndian.PutUint32(data[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint32(data[12:16], uint32(signingResignMaxCentralDirectoryBytes+1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err == nil || !strings.Contains(err.Error(), "central directory exceeds") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveIgnoresFakeEOCDInComment(t *testing.T) {
+	data := make([]byte, 22+4)
+	binary.LittleEndian.PutUint32(data[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(data[20:22], 4)
+	binary.LittleEndian.PutUint32(data[22:26], 0x06054b50)
+	path := filepath.Join(t.TempDir(), "fake-comment.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err != nil {
+		t.Fatalf("valid EOCD with comment rejected: %v", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveRejectsZIP64DirectoryOffsetSentinel(t *testing.T) {
+	data := make([]byte, 22)
+	binary.LittleEndian.PutUint32(data[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint32(data[16:20], 0xffffffff)
+	path := filepath.Join(t.TempDir(), "zip64-offset.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err == nil || !strings.Contains(err.Error(), "ZIP64") {
+		t.Fatalf("error = %v, want ZIP64 rejection", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveAcceptsBoundedZIP64Directory(t *testing.T) {
+	data := make([]byte, 56+20+22)
+	binary.LittleEndian.PutUint32(data[0:4], 0x06064b50)
+	binary.LittleEndian.PutUint64(data[4:12], 44)
+	binary.LittleEndian.PutUint32(data[56:60], 0x07064b50)
+	binary.LittleEndian.PutUint64(data[64:72], 0)
+	binary.LittleEndian.PutUint32(data[72:76], 1)
+	eocd := data[76:]
+	binary.LittleEndian.PutUint32(eocd[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocd[8:10], 0xffff)
+	binary.LittleEndian.PutUint16(eocd[10:12], 0xffff)
+	binary.LittleEndian.PutUint32(eocd[12:16], 0xffffffff)
+	binary.LittleEndian.PutUint32(eocd[16:20], 0xffffffff)
+
+	path := filepath.Join(t.TempDir(), "bounded-zip64.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err != nil {
+		t.Fatalf("bounded ZIP64 directory rejected: %v", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveRejectsOversizedZIP64Inventory(t *testing.T) {
+	data := make([]byte, 56+20+22)
+	binary.LittleEndian.PutUint32(data[0:4], 0x06064b50)
+	binary.LittleEndian.PutUint64(data[4:12], 44)
+	binary.LittleEndian.PutUint64(data[24:32], signingResignMaxArchiveEntries+1)
+	binary.LittleEndian.PutUint64(data[32:40], signingResignMaxArchiveEntries+1)
+	binary.LittleEndian.PutUint32(data[56:60], 0x07064b50)
+	binary.LittleEndian.PutUint32(data[72:76], 1)
+	eocd := data[76:]
+	binary.LittleEndian.PutUint32(eocd[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocd[8:10], 0xffff)
+	binary.LittleEndian.PutUint16(eocd[10:12], 0xffff)
+	binary.LittleEndian.PutUint32(eocd[12:16], 0xffffffff)
+	binary.LittleEndian.PutUint32(eocd[16:20], 0xffffffff)
+
+	path := filepath.Join(t.TempDir(), "oversized-zip64.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err == nil || !strings.Contains(err.Error(), "too many archive entries") {
+		t.Fatalf("error = %v, want ZIP64 entry-count rejection", err)
 	}
 }

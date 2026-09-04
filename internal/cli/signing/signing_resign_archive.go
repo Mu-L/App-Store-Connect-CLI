@@ -26,12 +26,13 @@ import (
 )
 
 const (
-	signingResignMaxArchiveEntries              = 20_000
-	signingResignMaxArchiveMemberNameLen        = 4096
-	signingResignMaxExpandedBytes        uint64 = 16 << 30
-	signingResignMaxIPABytes             int64  = 8 << 30
-	signingResignSwiftSupportMaxBytes    int64  = 1 << 30
-	signingResignMaxTargetCount                 = 256
+	signingResignMaxArchiveEntries               = 20_000
+	signingResignMaxArchiveMemberNameLen         = 4096
+	signingResignMaxExpandedBytes         uint64 = 16 << 30
+	signingResignMaxIPABytes              int64  = 8 << 30
+	signingResignSwiftSupportMaxBytes     int64  = 1 << 30
+	signingResignMaxTargetCount                  = 256
+	signingResignMaxCentralDirectoryBytes int64  = 1 << 30
 )
 
 type signingResignTarget struct {
@@ -48,6 +49,80 @@ type signingResignTarget struct {
 type signingResignArchive struct {
 	MainPath string
 	Targets  []signingResignTarget
+}
+
+// preflightSigningResignArchive bounds the central-directory inventory before
+// archive/zip allocates one *zip.File per declared entry.
+func preflightSigningResignArchive(ctx context.Context, file *os.File, size int64) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if file == nil || size < 22 {
+		return fmt.Errorf("IPA archive is missing or truncated")
+	}
+	const tailSize int64 = 22 + 65535
+	readSize := size
+	if readSize > tailSize {
+		readSize = tailSize
+	}
+	buf := make([]byte, readSize)
+	if _, err := file.ReadAt(buf, size-readSize); err != nil && err != io.EOF {
+		return fmt.Errorf("read IPA directory trailer: %w", err)
+	}
+	for i := len(buf) - 22; i >= 0; i-- {
+		if binary.LittleEndian.Uint32(buf[i:i+4]) != 0x06054b50 {
+			continue
+		}
+		commentLength := int(binary.LittleEndian.Uint16(buf[i+20 : i+22]))
+		if i+22+commentLength != len(buf) {
+			continue
+		}
+		entries := uint64(binary.LittleEndian.Uint16(buf[i+10 : i+12]))
+		directoryBytes := uint64(binary.LittleEndian.Uint32(buf[i+12 : i+16]))
+		directoryOffset := uint64(binary.LittleEndian.Uint32(buf[i+16 : i+20]))
+		if entries == 0xffff || directoryBytes == 0xffffffff || directoryOffset == 0xffffffff {
+			eocdOffset := size - readSize + int64(i)
+			if eocdOffset < 20 {
+				return fmt.Errorf("IPA ZIP64 locator is missing")
+			}
+			locator := make([]byte, 20)
+			if _, err := file.ReadAt(locator, eocdOffset-20); err != nil {
+				return fmt.Errorf("read IPA ZIP64 locator: %w", err)
+			}
+			if binary.LittleEndian.Uint32(locator[0:4]) != 0x07064b50 {
+				return fmt.Errorf("IPA ZIP64 locator is malformed")
+			}
+			recordOffset := int64(binary.LittleEndian.Uint64(locator[8:16]))
+			if recordOffset < 0 || recordOffset > size-56 {
+				return fmt.Errorf("IPA ZIP64 EOCD offset is out of bounds")
+			}
+			record := make([]byte, 56)
+			if _, err := file.ReadAt(record, recordOffset); err != nil {
+				return fmt.Errorf("read IPA ZIP64 EOCD: %w", err)
+			}
+			if binary.LittleEndian.Uint32(record[0:4]) != 0x06064b50 {
+				return fmt.Errorf("IPA ZIP64 EOCD is malformed")
+			}
+			recordSize := binary.LittleEndian.Uint64(record[4:12])
+			if recordSize < 44 || recordSize > uint64(size-recordOffset-12) {
+				return fmt.Errorf("IPA ZIP64 EOCD size is invalid")
+			}
+			entries = binary.LittleEndian.Uint64(record[32:40])
+			directoryBytes = binary.LittleEndian.Uint64(record[40:48])
+			directoryOffset = binary.LittleEndian.Uint64(record[48:56])
+		}
+		if entries > signingResignMaxArchiveEntries {
+			return fmt.Errorf("IPA contains too many archive entries")
+		}
+		if directoryBytes > uint64(signingResignMaxCentralDirectoryBytes) {
+			return fmt.Errorf("IPA central directory exceeds %d bytes", signingResignMaxCentralDirectoryBytes)
+		}
+		if directoryOffset > uint64(size) || directoryBytes > uint64(size)-directoryOffset {
+			return fmt.Errorf("IPA central directory is out of bounds")
+		}
+		return nil
+	}
+	return fmt.Errorf("IPA archive is missing the end-of-central-directory record")
 }
 
 func snapshotSigningResignIPA(ctx context.Context, source *os.File, size int64, destination *os.Root) (*os.File, string, error) {
