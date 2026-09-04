@@ -303,7 +303,7 @@ func TestWebVersionAliasUpdateRejectsInvalidEffectiveValuesBeforePut(t *testing.
 		{
 			name:      "existing build blank",
 			aliasJSON: versionAliasJSON("alias-1", "Stable", false, "", ""),
-			wantError: "existing version alias build must not be blank",
+			wantError: "existing version alias build must be a nonempty string; pass --build to replace it",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -333,6 +333,94 @@ func TestWebVersionAliasUpdateRejectsInvalidEffectiveValuesBeforePut(t *testing.
 				t.Fatalf("methods = %q, want only pre-read GET", got)
 			}
 		})
+	}
+}
+
+func TestWebVersionAliasUpdateRejectsUnsupportedStoredBuildBeforePut(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		build string
+	}{
+		{name: "object", build: `{"id":"build-1"}`},
+		{name: "number", build: `42`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var methods []string
+			stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+				methods = append(methods, req.Method)
+				if req.Method != http.MethodGet {
+					t.Fatalf("unexpected method %s", req.Method)
+				}
+				body := `{"id":"alias-1","name":"Stable","type":"xcode_version","locked":true,"build":` + tt.build + `,"build_name":"42","related_workflow_summaries":[],"build_supported":true}`
+				return nextBuildNumberResponse(req, http.StatusOK, body), nil
+			})
+
+			cmd := webVersionAliasUpdate()
+			if err := cmd.FlagSet.Parse([]string{"--product-id", "product", "--id", "alias-1", "--locked=true", "--confirm"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			_, stderr := captureOutput(t, func() {
+				err := cmd.Exec(context.Background(), nil)
+				if err == nil || !errors.Is(err, flag.ErrHelp) {
+					t.Fatalf("error = %v", err)
+				}
+			})
+			if !strings.Contains(stderr, "existing version alias build must be a nonempty string; pass --build to replace it") {
+				t.Fatalf("stderr = %q", stderr)
+			}
+			if got := strings.Join(methods, ","); got != "GET" {
+				t.Fatalf("methods = %q, want only pre-read GET", got)
+			}
+		})
+	}
+}
+
+func TestWebVersionAliasUpdateExplicitBuildReplacesUnsupportedStoredBuild(t *testing.T) {
+	getCount := 0
+	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+		switch req.Method {
+		case http.MethodGet:
+			getCount++
+			if getCount == 1 {
+				return nextBuildNumberResponse(req, http.StatusOK, `{"id":"alias-1","name":"Stable","type":"xcode_version","locked":true,"build":{"id":"build-old"},"build_name":"42","related_workflow_summaries":[],"build_supported":true}`), nil
+			}
+			return nextBuildNumberResponse(req, http.StatusOK, versionAliasJSON("alias-1", "Stable", true, "build-new", "43")), nil
+		case http.MethodPut:
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read PUT body: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(body, &fields); err != nil {
+				t.Fatalf("decode PUT body %q: %v", body, err)
+			}
+			if len(fields) != 4 || string(fields["name"]) != `"Stable"` || string(fields["type"]) != `"xcode_version"` || string(fields["build"]) != `"build-new"` || string(fields["locked"]) != `true` {
+				t.Fatalf("unexpected PUT body: %s", body)
+			}
+			return nextBuildNumberResponse(req, http.StatusOK, versionAliasJSON("alias-1", "Stable", true, "build-new", "43")), nil
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+			return nil, nil
+		}
+	})
+
+	cmd := webVersionAliasUpdate()
+	if err := cmd.FlagSet.Parse([]string{"--product-id", "product", "--id", "alias-1", "--build", "build-new", "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error = %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if getCount != 2 {
+		t.Fatalf("GET count = %d, want pre-read plus verification", getCount)
+	}
+	if !strings.Contains(stdout, `"action":"updated"`) || !strings.Contains(stdout, `"name":"Stable"`) {
+		t.Fatalf("unexpected update output: %q", stdout)
 	}
 }
 

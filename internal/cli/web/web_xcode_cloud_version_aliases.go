@@ -185,7 +185,7 @@ func webVersionAliasBuildPresent(value json.RawMessage) bool {
 	if json.Unmarshal(trimmed, &stringValue) == nil {
 		return stringValue != ""
 	}
-	return true
+	return false
 }
 
 func webVersionAliasEffectiveValues(request webcore.CIVersionAliasRequest) (string, error) {
@@ -194,7 +194,7 @@ func webVersionAliasEffectiveValues(request webcore.CIVersionAliasRequest) (stri
 		return "", fmt.Errorf("existing version alias name %w", err)
 	}
 	if !webVersionAliasBuildPresent(request.Build) {
-		return "", fmt.Errorf("existing version alias build must not be blank")
+		return "", fmt.Errorf("existing version alias build must be a nonempty string; pass --build to replace it")
 	}
 	return name, nil
 }

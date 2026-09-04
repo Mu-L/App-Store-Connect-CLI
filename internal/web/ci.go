@@ -171,9 +171,7 @@ type CIVersionAliasListResponse struct {
 }
 
 // CIVersionAliasRequest is the exact four-field payload accepted by the
-// Xcode Cloud version-alias save endpoint. Build is kept as raw JSON because
-// the web response may represent it as either a scalar or an object, and an
-// update must preserve the value returned by Apple when --build is omitted.
+// Xcode Cloud version-alias save endpoint.
 type CIVersionAliasRequest struct {
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
