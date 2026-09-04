@@ -824,6 +824,9 @@ func signingResignContainerEntitlementsPath(treePath, container string, plans []
 	if err != nil {
 		return ""
 	}
+	if err := infoplist.ValidateStructure(infoData); err != nil {
+		return ""
+	}
 	var info struct {
 		Executable string `plist:"CFBundleExecutable"`
 	}

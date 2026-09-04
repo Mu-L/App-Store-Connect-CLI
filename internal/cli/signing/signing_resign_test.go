@@ -23,6 +23,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"howett.net/plist"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
@@ -3163,6 +3164,28 @@ func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
 	versionPlans[0].EntitlementsPath = versionEntitlements
 	if got := signingResignContainerEntitlementsPath(treePath, versioned, versionPlans); got != versionEntitlements {
 		t.Fatalf("versioned container entitlements path = %q, want %q", got, versionEntitlements)
+	}
+}
+
+func TestSigningResignContainerEntitlementsRejectAmplifiedInfoPlist(t *testing.T) {
+	treePath := t.TempDir()
+	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var info strings.Builder
+	info.WriteString(`<?xml version="1.0"?><plist><dict><key>CFBundleExecutable</key><string>Feature</string><key>Padding</key><array>`)
+	for range infoplist.MaxObjects {
+		info.WriteString(`<true/>`)
+	}
+	info.WriteString(`</array></dict></plist>`)
+	if err := os.WriteFile(filepath.Join(container, "Info.plist"), []byte(info.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entitlements := filepath.Join(t.TempDir(), "feature.plist")
+	plans := []signingResignCodePlan{{Path: filepath.Join(container, "Feature"), EntitlementsPath: entitlements}}
+	if got := signingResignContainerEntitlementsPath(treePath, container, plans); got != "" {
+		t.Fatalf("amplified container Info.plist selected entitlements path %q, want empty", got)
 	}
 }
 
