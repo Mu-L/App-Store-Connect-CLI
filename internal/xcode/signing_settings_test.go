@@ -4002,11 +4002,45 @@ func TestSigningPlanRemovalOnlyUsesFallbackAfterRemoval(t *testing.T) {
 	if !plan.Ready {
 		t.Fatalf("removal-only plan blocked: %#v", plan.Blockers)
 	}
+	var removal *SigningSettingChange
+	for index := range plan.Changes {
+		if plan.Changes[index].Setting == "PROVISIONING_PROFILE_SPECIFIER" {
+			removal = &plan.Changes[index]
+			break
+		}
+	}
+	if removal == nil || removal.Operation != "remove" {
+		t.Fatalf("plan changes = %#v, want provisioning-profile removal", plan.Changes)
+	}
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback, _, err := updated.resolveSetting(configuration, "PROVISIONING_PROFILE_SPECIFIER")
+	if err != nil || fallback != "base-profile" {
+		t.Fatalf("effective fallback = %q, err=%v; want base-profile", fallback, err)
+	}
 }
 
 func TestSigningRemovalFallbackChangedDetectsMissingToPresent(t *testing.T) {
 	if !signingRemovalFallbackChanged("staged", nil, "", errVersionSettingNotFound) {
 		t.Fatal("missing baseline with staged value must be treated as a fallback collision")
+	}
+}
+
+func TestSigningRemovalFallbackChangedDetectsErrorToEmpty(t *testing.T) {
+	if !signingRemovalFallbackChanged("", nil, "", errors.New("baseline resolution failed")) {
+		t.Fatal("successful empty staged value after failed baseline must be treated as changed")
 	}
 }
 

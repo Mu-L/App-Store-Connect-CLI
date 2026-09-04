@@ -1972,10 +1972,13 @@ func reclassifySigningNoOps(
 }
 
 func signingRemovalFallbackChanged(staged string, stagedErr error, baseline string, baselineErr error) bool {
-	if stagedErr != nil || baselineErr == nil && staged == baseline {
+	if stagedErr != nil {
 		return false
 	}
-	return stagedErr == nil && (errors.Is(baselineErr, errVersionSettingNotFound) || staged != baseline)
+	if baselineErr != nil {
+		return true
+	}
+	return staged != baseline
 }
 
 func cloneSigningStructuredVersionProject(project *structuredVersionProject) *structuredVersionProject {
