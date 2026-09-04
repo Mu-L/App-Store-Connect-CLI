@@ -140,12 +140,14 @@ Examples:
 // first so a missing --overwrite fails before the destination is touched.
 func writeWebSessionBundle(path string, payload []byte, overwrite bool) (bool, error) {
 	write := func(replace bool) error {
-		_, err := shared.SafeWriteFileNoSymlink(
+		_, err := shared.SafeWriteFileNoSymlinkWithPreparationAndCreator(
 			path,
 			webSessionBundleFileMode,
 			replace,
 			webSessionBundleTempPattern,
 			webSessionBundleBackupPattern,
+			prepareWebSessionBundleOutput,
+			createWebSessionBundleStagingFile,
 			func(file *os.File) (int64, error) {
 				written, writeErr := file.Write(payload)
 				return int64(written), writeErr
