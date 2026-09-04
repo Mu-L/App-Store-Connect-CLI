@@ -3,6 +3,7 @@ package signing
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"unicode"
@@ -193,10 +194,14 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 				continue
 			}
 		}
-		if graph != nil && key == signingResignAssociatedAppClipEntitlement {
-			if _, err := signingResignConcreteStringList(value, key); err != nil {
-				return nil, nil, err
+		if graph != nil {
+			if key == signingResignAssociatedAppClipEntitlement {
+				if _, err := signingResignConcreteStringList(value, key); err != nil {
+					return nil, nil, err
+				}
 			}
+			// Rebasing is opt-in and must validate the complete profile
+			// authorization grammar; the legacy no-flag path remains unchanged.
 			permitted = permitted && signingResignStrictEntitlementValuePermits(profileValue, value)
 		} else {
 			permitted = permitted && signingResignEntitlementValuePermits(profileValue, value)
@@ -383,10 +388,22 @@ func signingResignStrictPrefixedConcreteString(value string) bool {
 // before matching any candidate. This prevents an invalid array entry from
 // being skipped just because another entry happens to authorize the value.
 func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) bool {
+	// Exact equality is the strongest authorization boundary. This preserves
+	// literal wildcard strings and structured arrays without interpreting them
+	// as patterns.
+	if reflect.DeepEqual(profileValue, signedValue) {
+		return true
+	}
 	profileString, profileIsString := profileValue.(string)
 	signedString, signedIsString := signedValue.(string)
 	if profileIsString || signedIsString {
-		if !profileIsString || !signedIsString || !signingResignStrictProfileString(profileString) || !signingResignStrictConcreteString(signedString) {
+		if !profileIsString || !signedIsString {
+			return false
+		}
+		if profileString == signedString {
+			return true
+		}
+		if !signingResignStrictProfileString(profileString) || !signingResignStrictConcreteString(signedString) {
 			return false
 		}
 		if strings.ContainsRune(profileString, '*') {
@@ -395,6 +412,14 @@ func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) b
 		}
 		return signedString == profileString
 	}
+	// Non-string scalar claims retain exact authorization semantics. Only
+	// string/list claims use the wildcard grammar below; do not reject valid
+	// boolean or dictionary entitlement values merely because they are not
+	// rebasable strings.
+	if _, profileIsList := signingResignEntitlementList(profileValue); !profileIsList {
+		_, signedIsList := signingResignEntitlementList(signedValue)
+		return !signedIsList && reflect.DeepEqual(profileValue, signedValue)
+	}
 	profileList, profileIsList := signingResignEntitlementList(profileValue)
 	signedList, signedIsList := signingResignEntitlementList(signedValue)
 	if !profileIsList || !signedIsList || len(profileList) == 0 || len(signedList) == 0 {
@@ -402,7 +427,10 @@ func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) b
 	}
 	for _, profileItem := range profileList {
 		profileText, ok := profileItem.(string)
-		if !ok || !signingResignStrictProfileString(profileText) {
+		if !ok {
+			return reflect.DeepEqual(profileValue, signedValue)
+		}
+		if !signingResignStrictProfileString(profileText) {
 			return false
 		}
 	}

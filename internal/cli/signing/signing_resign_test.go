@@ -36,6 +36,38 @@ func TestSigningCommandExposesResign(t *testing.T) {
 	t.Fatal("signing command does not expose resign")
 }
 
+func TestSigningResignEntitlementValuePermitsRejectsMalformedProfilePatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile any
+		signed  string
+	}{
+		{name: "bare wildcard", profile: "*", signed: "OLD.value"},
+		{name: "wildcard without dotted prefix", profile: "TEAM*", signed: "TEAM.value"},
+		{name: "malformed array entry", profile: []any{"TEAM.*", 42}, signed: "TEAM.value"},
+		{name: "mixed types", profile: []any{"TEAM.*"}, signed: "TEAM.value"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if signingResignStrictEntitlementValuePermits(test.profile, test.signed) {
+				t.Fatal("malformed profile authorization was accepted")
+			}
+		})
+	}
+}
+
+func TestSigningResignEntitlementValuePermitsAcceptsBoundedWildcard(t *testing.T) {
+	if !signingResignStrictEntitlementValuePermits("TEAM.*", "TEAM.value") {
+		t.Fatal("bounded dotted wildcard was rejected")
+	}
+}
+
+func TestSigningResignEntitlementValuePermitsLegacyKeepsBareWildcardCompatibility(t *testing.T) {
+	if !signingResignEntitlementValuePermits("*", "OLD.value") {
+		t.Fatal("legacy matcher no longer accepts bare wildcard")
+	}
+}
+
 func TestSigningResignHelpMarksCommandSpecificFlagsExperimental(t *testing.T) {
 	command := SigningResignCommand()
 	for _, name := range []string{"ipa", "output", "identity", "identity-password-file", "profiles-manifest", "rebase-team-claims"} {
@@ -651,6 +683,12 @@ func TestBuildSigningResignEntitlementsReplacesIdentity(t *testing.T) {
 	}
 	if !signingResignEntitlementValuePermits(profile["com.apple.security.application-groups"], got["com.apple.security.application-groups"]) {
 		t.Fatalf("capability entitlement was not preserved: %#v", got)
+	}
+}
+
+func TestSigningResignEntitlementValuePermitsRejectsNonStringProfileListEntries(t *testing.T) {
+	if signingResignEntitlementValuePermits([]any{123}, []any{123}) {
+		t.Fatal("non-string profile list entry must not authorize a signed value")
 	}
 }
 
