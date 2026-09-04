@@ -197,6 +197,125 @@ func TestWebNextBuildNumberSetReportsVerificationMismatch(t *testing.T) {
 	}
 }
 
+func TestWebNextBuildNumberSetReconcilesAmbiguousWrite(t *testing.T) {
+	var calls []string
+	var firstReadContext context.Context
+	getCount := 0
+	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.Method)
+		switch req.Method {
+		case http.MethodGet:
+			getCount++
+			if getCount == 1 {
+				firstReadContext = req.Context()
+				return nextBuildNumberResponse(req, http.StatusOK, `{"next_build_number":101}`), nil
+			}
+			if req.Context() == firstReadContext {
+				t.Fatal("reconciliation must use a fresh request context")
+			}
+			return nextBuildNumberResponse(req, http.StatusOK, `{"next_build_number":102}`), nil
+		case http.MethodPut:
+			return nil, io.ErrUnexpectedEOF
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+			return nil, nil
+		}
+	})
+
+	cmd := webNextBuildNumberSet()
+	if err := cmd.FlagSet.Parse([]string{"--product-id", "product-uuid", "--value", "102", "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stdout, _ := captureOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error = %v", err)
+		}
+	})
+	if got := strings.Join(calls, ","); got != "GET,PUT,GET" {
+		t.Fatalf("call order = %q", got)
+	}
+	if !strings.Contains(stdout, `"nextBuildNumber":102`) || !strings.Contains(stdout, `"updated":true`) {
+		t.Fatalf("reconciled output = %q", stdout)
+	}
+}
+
+func TestWebNextBuildNumberSetReportsAmbiguousWriteOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		recheckBody string
+		recheckErr  error
+		want        string
+	}{
+		{
+			name:        "unchanged state is retry safe",
+			recheckBody: `{"next_build_number":101}`,
+			want:        "remote still reports 101; the write was not applied",
+		},
+		{
+			name:       "failed reconciliation remains unverified",
+			recheckErr: io.ErrUnexpectedEOF,
+			want:       "may have succeeded but reconciliation failed",
+		},
+		{
+			name:        "divergent state remains unverified",
+			recheckBody: `{"next_build_number":103}`,
+			want:        "reports 103, which is neither the previous value 101 nor the requested value 102",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getCount := 0
+			stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+				switch req.Method {
+				case http.MethodGet:
+					getCount++
+					if getCount == 1 {
+						return nextBuildNumberResponse(req, http.StatusOK, `{"next_build_number":101}`), nil
+					}
+					if tt.recheckErr != nil {
+						return nil, tt.recheckErr
+					}
+					return nextBuildNumberResponse(req, http.StatusOK, tt.recheckBody), nil
+				case http.MethodPut:
+					return nil, io.ErrUnexpectedEOF
+				default:
+					t.Fatalf("unexpected method %s", req.Method)
+					return nil, nil
+				}
+			})
+
+			cmd := webNextBuildNumberSet()
+			if err := cmd.FlagSet.Parse([]string{"--product-id", "product-uuid", "--value", "102", "--confirm"}); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if err := cmd.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestWebNextBuildNumberSetReportsRequiredRole(t *testing.T) {
+	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return nextBuildNumberResponse(req, http.StatusOK, `{"next_build_number":101}`), nil
+		}
+		return nextBuildNumberResponse(req, http.StatusForbidden, `{"errors":[{"status":"403"}]}`), nil
+	})
+
+	cmd := webNextBuildNumberSet()
+	if err := cmd.FlagSet.Parse([]string{"--product-id", "product-uuid", "--value", "102", "--confirm"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err := cmd.Exec(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "requires the App Store Connect Admin or App Manager role") {
+		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(err.Error(), "run 'asc web auth login'") {
+		t.Fatalf("role failure must not recommend re-authentication: %v", err)
+	}
+}
+
 func stubNextBuildNumberSession(t *testing.T, transport roundTripFunc) {
 	t.Helper()
 	original := resolveSessionFn

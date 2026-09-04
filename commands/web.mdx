@@ -476,7 +476,7 @@ asc web analytics sales --app "123456789" --start 2026-01-01 --end 2026-03-31 --
 
 ### `asc web xcode-cloud`
 
-Xcode Cloud usage, workflow, and environment-variable management.
+Xcode Cloud usage, workflow, environment-variable, and product-setting management.
 
 Available command groups:
 
@@ -484,6 +484,7 @@ Available command groups:
 * `asc web xcode-cloud products` - list Xcode Cloud products
 * `asc web xcode-cloud workflows` - list, describe, create, edit, enable, and disable workflows
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
+* `asc web xcode-cloud settings` - inspect and change product settings such as the next build number
 
 `asc web xcode-cloud workflows list --product-id PRODUCT_ID` returns workflow ID, name, and description for a product. The web CI list payload does not include enabled state, branch/trigger summary, or last-modified; use `workflows describe` for full configuration.
 
@@ -493,7 +494,11 @@ Example:
 asc web xcode-cloud usage summary --apple-id "user@example.com"
 asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.com"
 asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json --apple-id "user@example.com"
+asc web xcode-cloud settings next-build-number show --product-id "UUID" --apple-id "user@example.com"
+asc web xcode-cloud settings next-build-number set --product-id "UUID" --value 102 --confirm --apple-id "user@example.com"
 ```
+
+Changing the persistent next build number requires the App Store Connect Admin or App Manager role. The set command reads the value before and after the update, and reports an unverified outcome instead of inviting an unsafe retry when a transport failure leaves Apple's result unclear.
 
 ## Session upkeep
 
