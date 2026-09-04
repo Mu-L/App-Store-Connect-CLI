@@ -13,6 +13,7 @@ func TestXCConfigImplicitLookupShadowsConditionalDefault(t *testing.T) {
 		name, setting, contents, implicit, want string
 	}{
 		{"conditional", "PROJECT_DIR", "PROJECT_DIR ?= /fallback\n", "/project", "/project"},
+		{"conditional selector", "PROJECT_DIR", "PROJECT_DIR[sdk=iphoneos*] ?= /fallback\n", "/project", "/project"},
 		{"inherited", "PROJECT_DIR", "PROJECT_DIR = $(inherited)/Sub\n", "/project", "/project/Sub"},
 		{"append", "PROJECT_NAME", "PROJECT_NAME += Suffix\n", "App", "App Suffix"},
 	} {

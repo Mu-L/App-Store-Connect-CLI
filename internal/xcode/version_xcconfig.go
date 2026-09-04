@@ -754,6 +754,29 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		if observe != nil {
 			observe(path, *assignment)
 		}
+		if !resolved.found && lookup != nil {
+			if implicit, ok := lookup(setting); ok {
+				// An implicit value is a lower-layer value, not a replacement
+				// for the conditional assignments already seen in this file.
+				// Keep explicit conditionals so the caller can reject a
+				// divergent SDK-specific value, while a conditional default
+				// remains shadowed by the implicit value just like ?= would be
+				// by any other lower-layer assignment.
+				conditionals := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
+				for _, conditional := range resolved.conditionals {
+					if conditional.operator != "?=" {
+						conditionals = append(conditionals, conditional)
+					}
+				}
+				resolved = xcconfigResolvedValue{
+					value:        implicit,
+					path:         "<implicit>",
+					found:        true,
+					exact:        true,
+					conditionals: conditionals,
+				}
+			}
+		}
 		if assignment.key != setting {
 			if assignment.operator == "?=" && resolved.found {
 				continue
@@ -778,29 +801,6 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 			continue
 		}
 		value := assignment.value
-		if !resolved.found && lookup != nil {
-			if implicit, ok := lookup(setting); ok {
-				// An implicit value is a lower-layer value, not a replacement
-				// for the conditional assignments already seen in this file.
-				// Keep explicit conditionals so the caller can reject a
-				// divergent SDK-specific value, while a conditional default
-				// remains shadowed by the implicit value just like ?= would be
-				// by any other lower-layer assignment.
-				conditionals := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
-				for _, conditional := range resolved.conditionals {
-					if conditional.operator != "?=" {
-						conditionals = append(conditionals, conditional)
-					}
-				}
-				resolved = xcconfigResolvedValue{
-					value:        implicit,
-					path:         "<implicit>",
-					found:        true,
-					exact:        true,
-					conditionals: conditionals,
-				}
-			}
-		}
 		hadLowerValue := resolved.found
 		hasInherited := strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}")
 		value = strings.ReplaceAll(value, "$(inherited)", resolved.value)

@@ -6684,6 +6684,7 @@ func TestSigningPlanResolvesImplicitXCConfigEntitlement(t *testing.T) {
 	projectRoot := filepath.Dir(project)
 	appXCConfig := filepath.Join(projectRoot, "Configs", "App.xcconfig")
 	contents := mustReadVersionTestFile(t, appXCConfig) +
+		"PROJECT_DIR[sdk=iphoneos*] ?= /fallback\n" +
 		"CODE_SIGN_ENTITLEMENTS = $(PROJECT_DIR)/App.entitlements\n"
 	if err := os.WriteFile(appXCConfig, []byte(contents), 0o644); err != nil {
 		t.Fatalf("WriteFile(App.xcconfig) error = %v", err)
