@@ -43,6 +43,17 @@ type WebAPIKeyGetResult struct {
 	RevokingDate   string   `json:"revokingDate,omitempty"`
 }
 
+// WebAPIKeyRevokeResult is the receipt for a verified API-key revocation.
+// Changed is false when the selected key was already inactive and no write was
+// sent.
+type WebAPIKeyRevokeResult struct {
+	KeyID   string `json:"keyId"`
+	Kind    string `json:"kind"`
+	Changed bool   `json:"changed"`
+	Active  bool   `json:"active"`
+	Status  string `json:"status"`
+}
+
 func webAPIKeysListRows(result *WebAPIKeysListResult) ([]string, [][]string) {
 	headers := []string{"Key ID", "Name", "Kind", "Roles", "Active"}
 	if result == nil {
@@ -71,5 +82,19 @@ func webAPIKeyGetRows(result *WebAPIKeyGetResult) ([]string, [][]string) {
 		result.IssuerID,
 		strings.Join(result.Roles, ", "),
 		fmt.Sprintf("%t", result.Active),
+	}}
+}
+
+func webAPIKeyRevokeRows(result *WebAPIKeyRevokeResult) ([]string, [][]string) {
+	headers := []string{"Key ID", "Kind", "Changed", "Active", "Status"}
+	if result == nil {
+		return headers, nil
+	}
+	return headers, [][]string{{
+		result.KeyID,
+		result.Kind,
+		fmt.Sprintf("%t", result.Changed),
+		fmt.Sprintf("%t", result.Active),
+		result.Status,
 	}}
 }
