@@ -831,6 +831,66 @@ func TestImportSessionBundleDropsCookiesDeletedDuringValidation(t *testing.T) {
 	}
 }
 
+func TestImportSessionBundleNoOverwritePreservesSessionWrittenDuringValidation(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	validator := func(_ context.Context, _ *http.Client) (string, error) {
+		persistTestSession(t, bundle.AppleID, &http.Cookie{
+			Name:    "myacinfo",
+			Value:   "newer-token",
+			Path:    "/",
+			Expires: time.Now().Add(2 * time.Hour),
+		})
+		return bundle.AppleID, nil
+	}
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("importSessionBundleWithValidator() error = %v, want an atomic no-overwrite conflict", err)
+	}
+	loaded, ok, err := LoadCachedSession(bundle.AppleID)
+	if err != nil || !ok || loaded == nil {
+		t.Fatalf("LoadCachedSession() = (%v, %v, %v), want the session written during validation", loaded, ok, err)
+	}
+	target, _ := url.Parse("https://appstoreconnect.apple.com/")
+	cookies := loaded.Client.Jar.Cookies(target)
+	if len(cookies) != 1 || cookies[0].Value != "newer-token" {
+		t.Fatalf("cached cookies = %#v, want newer-token to survive", cookies)
+	}
+}
+
+func TestImportSessionBundleNoOverwriteDoesNotReplaceKeychainSession(t *testing.T) {
+	withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	old := persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-keychain-token", Path: "/"}},
+		},
+	}
+	if err := writeSessionToKeychain(key, old); err != nil {
+		t.Fatalf("writeSessionToKeychain() error = %v", err)
+	}
+
+	if _, err := ImportSessionBundleWithOptions(bundle, false); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("ImportSessionBundleWithOptions() error = %v, want an atomic no-overwrite conflict", err)
+	}
+	loaded, ok, err := readSessionFromKeychain(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromKeychain() = (%v, %v), want the original session", ok, err)
+	}
+	if got := loaded.Cookies["https://appstoreconnect.apple.com/"][0].Value; got != "old-keychain-token" {
+		t.Fatalf("cached keychain cookie = %q, want old-keychain-token", got)
+	}
+}
+
 func TestImportSessionBundleOverwriteRemovesFileFallbackOnKeychainBackend(t *testing.T) {
 	withArraySessionKeyring(t)
 	withSessionInfoStub(t)

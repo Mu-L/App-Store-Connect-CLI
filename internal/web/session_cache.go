@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -499,6 +500,34 @@ func writeSessionToKeychain(key string, sess persistedSession) error {
 	return writeSessionToKeychainWithRecovery(key, sess, false)
 }
 
+// writeSessionToKeychainIfAbsent performs the no-overwrite check in the same
+// critical section as the aggregate write. The caller holds the per-entry
+// session lock, which supplies the create-only boundary that keyring.Set does
+// not expose for its read/modify/write aggregate.
+func writeSessionToKeychainIfAbsent(key string, sess persistedSession) error {
+	kr, err := sessionKeyringOpen()
+	if err != nil {
+		return err
+	}
+	store, ok, err := readSessionStoreFromKeyring(kr)
+	if err != nil {
+		// Do not recover malformed or unreadable state on a no-overwrite import:
+		// treating it as absent could destroy an existing account or store.
+		return err
+	}
+	if ok {
+		if _, exists := store.Sessions[key]; exists {
+			return cachedSessionAlreadyExistsError(key)
+		}
+	} else {
+		store = newPersistedSessionStore()
+	}
+	store = normalizePersistedSessionStore(store)
+	store.Sessions[key] = sess
+	store.LastKey = key
+	return writeSessionStoreToKeyring(kr, store)
+}
+
 func writeSessionToKeychainWithRecovery(key string, sess persistedSession, recoverMalformed bool) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
@@ -522,6 +551,34 @@ func writeSessionToKeychainWithRecovery(key string, sess persistedSession, recov
 	store.Sessions[key] = sess
 	store.LastKey = key
 	return writeSessionStoreToKeyring(kr, store)
+}
+
+// keychainSessionEntryCollision checks the fallback backend before an import
+// chooses the file path. An unavailable keychain is not a collision because
+// the caller is explicitly allowed to fall back to the file backend; any
+// other read error is returned instead of risking an overwrite based on an
+// unproven absence.
+func keychainSessionEntryCollision(key string) error {
+	kr, err := sessionKeyringOpen()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect keychain session: %w", err)
+	}
+	store, ok, err := readSessionStoreFromKeyring(kr)
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect keychain session: %w", err)
+	}
+	if ok {
+		if _, exists := store.Sessions[key]; exists {
+			return cachedSessionAlreadyExistsError(key)
+		}
+	}
+	return nil
 }
 
 func readSessionFromKeychain(key string) (persistedSession, bool, error) {
@@ -676,6 +733,88 @@ func writeSessionToFile(key string, sess persistedSession) error {
 		return rollback(fmt.Errorf("failed to finalize last session pointer: %w", err))
 	}
 	return nil
+}
+
+// writeSessionToFileIfAbsent creates a file-backed session without replacing
+// an entry that appeared after import validation. O_EXCL is the persistence
+// boundary: a preceding existence check alone would leave a TOCTOU window.
+func writeSessionToFileIfAbsent(key string, sess persistedSession) error {
+	dir, err := webSessionCacheDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("failed to create session cache dir: %w", err)
+	}
+
+	raw, err := json.Marshal(sess)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session: %w", err)
+	}
+	state, err := captureFileSessionState(key)
+	if err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		if rollbackErr := state.restore(); rollbackErr != nil {
+			return errors.Join(cause, fmt.Errorf("failed to roll back session cache: %w", rollbackErr))
+		}
+		return cause
+	}
+
+	file, err := os.OpenFile(state.sessionPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return cachedSessionAlreadyExistsError(key)
+		}
+		return fmt.Errorf("failed to create session cache: %w", err)
+	}
+	if n, writeErr := file.Write(raw); writeErr != nil {
+		_ = file.Close()
+		return rollback(fmt.Errorf("failed to write session cache: %w", writeErr))
+	} else if n != len(raw) {
+		_ = file.Close()
+		return rollback(fmt.Errorf("failed to write session cache: %w", io.ErrShortWrite))
+	}
+	if err := file.Close(); err != nil {
+		return rollback(fmt.Errorf("failed to finalize session cache: %w", err))
+	}
+
+	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
+	if err != nil {
+		return rollback(fmt.Errorf("failed to marshal last session pointer: %w", err))
+	}
+	tmpLastPath := state.lastPath + ".tmp"
+	if err := sessionFileWrite(tmpLastPath, lastRaw, 0o600); err != nil {
+		_ = os.Remove(tmpLastPath)
+		return rollback(fmt.Errorf("failed to write last session pointer: %w", err))
+	}
+	if err := os.Rename(tmpLastPath, state.lastPath); err != nil {
+		_ = os.Remove(tmpLastPath)
+		return rollback(fmt.Errorf("failed to finalize last session pointer: %w", err))
+	}
+	return nil
+}
+
+func cachedSessionAlreadyExistsError(key string) error {
+	return fmt.Errorf("cached web session already exists for %s: %w", key, os.ErrExist)
+}
+
+// fileSessionEntryCollision reports whether any file artifact already
+// occupies the target path. Lstat intentionally counts a malformed file or a
+// symlink as occupied: no-overwrite must not guess that either is absent.
+func fileSessionEntryCollision(key string) error {
+	path, err := webSessionFilePath(key)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect session cache: %w", err)
+	}
+	return cachedSessionAlreadyExistsError(key)
 }
 
 func readSessionFromFile(key string) (persistedSession, bool, error) {
@@ -899,6 +1038,18 @@ func migrateLegacyIrisLastSession(ctx context.Context, selection backendSelectio
 }
 
 func persistSessionBySelection(selection backendSelection, key string, sess persistedSession) error {
+	if selection.backend == sessionBackendOff {
+		return nil
+	}
+	// Serialize login/refresh persistence with imports and conditional cache
+	// deletion. The file writer still uses atomic replacement; the lock also
+	// protects the keychain aggregate's read/modify/write sequence.
+	return withSessionEntryLock(key, func() error {
+		return persistSessionBySelectionLocked(selection, key, sess)
+	})
+}
+
+func persistSessionBySelectionLocked(selection backendSelection, key string, sess persistedSession) error {
 	switch selection.backend {
 	case sessionBackendOff:
 		return nil
@@ -1020,11 +1171,28 @@ func (state importedSessionState) restore() error {
 // a failed replacement restores the selected session, its mirror, and the
 // last-session pointer exactly as they were found.
 func persistImportedSessionBySelection(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
+	if selection.backend == sessionBackendOff {
+		return nil
+	}
+	// A validated import may have spent time talking to Apple. Require the
+	// entry lock at the final persistence boundary so a no-overwrite decision
+	// cannot race a login or refresh that wrote a newer session meanwhile.
+	return withRequiredSessionEntryLock(key, func() error {
+		return persistImportedSessionBySelectionLocked(selection, key, sess, overwrite)
+	})
+}
+
+func persistImportedSessionBySelectionLocked(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
 	switch selection.backend {
 	case sessionBackendOff:
 		return nil
 	case sessionBackendKeychain:
 		if !overwrite {
+			if selection.fallbackFile {
+				if err := fileSessionEntryCollision(key); err != nil {
+					return err
+				}
+			}
 			return writeImportedSessionToKeychain(selection, key, sess, false)
 		}
 		state, err := captureImportedSessionState(selection, key)
@@ -1042,7 +1210,12 @@ func persistImportedSessionBySelection(selection backendSelection, key string, s
 		return nil
 	case sessionBackendFile:
 		if !overwrite {
-			return writeSessionToFile(key, sess)
+			if selection.fallbackKeychain {
+				if err := keychainSessionEntryCollision(key); err != nil {
+					return err
+				}
+			}
+			return writeSessionToFileIfAbsent(key, sess)
 		}
 		state, err := captureImportedSessionState(selection, key)
 		if err != nil {
@@ -1063,6 +1236,15 @@ func persistImportedSessionBySelection(selection backendSelection, key string, s
 }
 
 func writeImportedSessionToKeychain(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
+	if !overwrite {
+		if err := writeSessionToKeychainIfAbsent(key, sess); err != nil {
+			if selection.fallbackFile && isKeyringUnavailable(err) {
+				return writeSessionToFileIfAbsent(key, sess)
+			}
+			return err
+		}
+		return nil
+	}
 	if err := writeSessionToKeychainWithRecovery(key, sess, overwrite); err != nil {
 		if selection.fallbackFile && isKeyringUnavailable(err) {
 			return writeSessionToFile(key, sess)
