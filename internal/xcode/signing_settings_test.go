@@ -5987,6 +5987,274 @@ func TestSigningPlanProtectsTargetConditionalInheritedEntitlementComposition(t *
 	}
 }
 
+func TestSigningPlanProtectsDivergentInheritedProjectEntitlementSeeds(t *testing.T) {
+	project := writeDivergentInheritedProjectEntitlementFixture(t,
+		`CODE_SIGN_ENTITLEMENTS = "$(inherited)Suffix";`, "")
+	projectRoot := filepath.Dir(project)
+	seedBytes := map[string]string{
+		"BaseSuffix":  "existing conditional project seed bytes\n",
+		"OtherSuffix": "existing unconditional project seed bytes\n",
+	}
+	for name, contents := range seedBytes {
+		if err := os.WriteFile(filepath.Join(projectRoot, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+
+	tests := []struct {
+		name      string
+		seed      string
+		configure func(*SigningPlanOptions, string)
+	}{
+		{
+			name: "plan aliases conditional project seed",
+			seed: "BaseSuffix",
+			configure: func(opts *SigningPlanOptions, path string) {
+				opts.PlanPath = path
+			},
+		},
+		{
+			name: "receipt aliases unconditional project seed",
+			seed: "OtherSuffix",
+			configure: func(opts *SigningPlanOptions, path string) {
+				opts.ReceiptPath = path
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+
+			opts := SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				StateDir: filepath.Join(root, "state"),
+			}
+			test.configure(&opts, filepath.Join(projectRoot, test.seed))
+			plan, err := BuildSigningPlan(opts)
+			if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+				t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want %s alias rejection", plan, err, test.seed)
+			}
+			for name, contents := range seedBytes {
+				if got := mustReadVersionTestFile(t, filepath.Join(projectRoot, name)); got != contents {
+					t.Fatalf("project entitlement seed %s changed while validating %s: %q", name, test.seed, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSigningPlanProtectsReferencedDivergentInheritedProjectEntitlementSeeds(t *testing.T) {
+	project := writeReferencedDivergentInheritedProjectEntitlementFixture(t,
+		`CODE_SIGN_ENTITLEMENTS = "$(inherited)Suffix";`, "")
+	protectedPath := filepath.Join(filepath.Dir(project), "WidgetSuffix")
+	const existingEntitlements = "existing referenced entitlement seed bytes\n"
+	if err := os.WriteFile(protectedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(referenced entitlement) error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		configure func(*SigningPlanOptions, string)
+	}{
+		{
+			name: "plan aliases referenced project seed",
+			configure: func(opts *SigningPlanOptions, path string) {
+				opts.PlanPath = path
+			},
+		},
+		{
+			name: "receipt aliases referenced project seed",
+			configure: func(opts *SigningPlanOptions, path string) {
+				opts.ReceiptPath = path
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+
+			opts := SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				StateDir: filepath.Join(root, "state"),
+			}
+			test.configure(&opts, protectedPath)
+			plan, err := BuildSigningPlan(opts)
+			if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+				t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want referenced project seed alias rejection", plan, err)
+			}
+			if got := mustReadVersionTestFile(t, protectedPath); got != existingEntitlements {
+				t.Fatalf("referenced entitlement seed changed while validating %s: %q", test.name, got)
+			}
+		})
+	}
+}
+
+func TestSigningPlanProtectsProjectSeedBelowConditionalTargetXCConfig(t *testing.T) {
+	project := writeDivergentInheritedProjectEntitlementFixture(t,
+		`CODE_SIGN_ENTITLEMENTS = "$(inherited)Suffix";`,
+		"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*] = Target\n")
+	protectedPath := filepath.Join(filepath.Dir(project), "BaseSuffix")
+	const existingEntitlements = "existing conditional target xcconfig fallback bytes\n"
+	if err := os.WriteFile(protectedPath, []byte(existingEntitlements), 0o600); err != nil {
+		t.Fatalf("WriteFile(conditional target xcconfig fallback) error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		configure func(*SigningPlanOptions, string)
+	}{
+		{
+			name: "plan aliases project fallback",
+			configure: func(opts *SigningPlanOptions, path string) {
+				opts.PlanPath = path
+			},
+		},
+		{
+			name: "receipt aliases project fallback",
+			configure: func(opts *SigningPlanOptions, path string) {
+				opts.ReceiptPath = path
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+
+			opts := SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				StateDir: filepath.Join(root, "state"),
+			}
+			test.configure(&opts, protectedPath)
+			plan, err := BuildSigningPlan(opts)
+			if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+				t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want project fallback alias rejection", plan, err)
+			}
+			if got := mustReadVersionTestFile(t, protectedPath); got != existingEntitlements {
+				t.Fatalf("project fallback entitlement changed while validating %s: %q", test.name, got)
+			}
+		})
+	}
+}
+
+func TestSigningPlanDoesNotCrossComposeDivergentProjectEntitlementSeeds(t *testing.T) {
+	tests := []struct {
+		name           string
+		widgetSettings string
+		widgetXCConfig string
+		actualSeed     string
+	}{
+		{
+			name:           "target xcconfig override",
+			widgetSettings: `CODE_SIGN_ENTITLEMENTS = "$(inherited)Suffix";`,
+			widgetXCConfig: "CODE_SIGN_ENTITLEMENTS = Target\n",
+			actualSeed:     "TargetSuffix",
+		},
+		{
+			name:           "target conditional inherits local slot",
+			widgetSettings: `CODE_SIGN_ENTITLEMENTS = Local; "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(inherited)Suffix";`,
+			actualSeed:     "LocalSuffix",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			project := writeDivergentInheritedProjectEntitlementFixture(t, test.widgetSettings, test.widgetXCConfig)
+			projectRoot := filepath.Dir(project)
+			actualPath := filepath.Join(projectRoot, test.actualSeed)
+			const existingActual = "existing live entitlement seed bytes\n"
+			if err := os.WriteFile(actualPath, []byte(existingActual), 0o600); err != nil {
+				t.Fatalf("WriteFile(%s) error = %v", test.actualSeed, err)
+			}
+
+			root := t.TempDir()
+			settingsPath := filepath.Join(root, "settings.json")
+			writeSigningSettingsTestFile(t, settingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+			phantomPath := filepath.Join(projectRoot, "BaseSuffix")
+			plan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: settingsPath,
+				PlanPath: phantomPath, StateDir: filepath.Join(root, "state"),
+			})
+			if err != nil {
+				t.Fatalf("BuildSigningPlan() for phantom project seed = plan=%#v, error=%v; want no alias rejection", plan, err)
+			}
+			if plan == nil {
+				t.Fatal("BuildSigningPlan() returned nil plan for phantom project seed")
+			}
+			if strings.Contains(strings.Join(plan.Blockers, "\n"), "aliases project input") || strings.Contains(strings.Join(plan.Blockers, "\n"), "protected project input") {
+				t.Fatalf("phantom project seed became an artifact alias blocker: %#v", plan.Blockers)
+			}
+
+			actualRoot := t.TempDir()
+			actualSettingsPath := filepath.Join(actualRoot, "settings.json")
+			writeSigningSettingsTestFile(t, actualSettingsPath, `{
+				"schemaVersion": 1,
+				"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+			}`)
+			actualPlan, err := BuildSigningPlan(SigningPlanOptions{
+				ProjectPath: project, SettingsFilePath: actualSettingsPath,
+				PlanPath: actualPath, StateDir: filepath.Join(actualRoot, "state"),
+			})
+			if err == nil || (!strings.Contains(err.Error(), "aliases project input") && !strings.Contains(err.Error(), "protected project input")) {
+				t.Fatalf("BuildSigningPlan() for live project seed = plan=%#v, error=%v; want actual entitlement alias rejection", actualPlan, err)
+			}
+			if got := mustReadVersionTestFile(t, actualPath); got != existingActual {
+				t.Fatalf("live entitlement seed changed during alias validation: %q", got)
+			}
+		})
+	}
+}
+
+func writeDivergentInheritedProjectEntitlementFixture(t *testing.T, widgetSettings, widgetXCConfig string) string {
+	return writeInheritedProjectEntitlementFixture(t,
+		`CODE_SIGN_ENTITLEMENTS = Other; "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Base;`,
+		widgetSettings, widgetXCConfig)
+}
+
+func writeReferencedDivergentInheritedProjectEntitlementFixture(t *testing.T, widgetSettings, widgetXCConfig string) string {
+	project := writeInheritedProjectEntitlementFixture(t,
+		`CODE_SIGN_ENTITLEMENTS = Other; "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "$(PRODUCT_NAME)";`,
+		widgetSettings, widgetXCConfig)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993", `PRODUCT_NAME = App;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995", `PRODUCT_NAME = Widget;`)
+	return project
+}
+
+func writeInheritedProjectEntitlementFixture(t *testing.T, projectSettings, widgetSettings, widgetXCConfig string) string {
+	t.Helper()
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991", projectSettings)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999993",
+		`CODE_SIGN_ENTITLEMENTS = App.entitlements;`)
+	if widgetXCConfig != "" {
+		attachSigningWidgetXCConfig(t, project, widgetXCConfig)
+	}
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995", widgetSettings)
+	projectRoot := filepath.Dir(project)
+	if err := os.WriteFile(filepath.Join(projectRoot, "App.entitlements"), []byte("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(App.entitlements) error = %v", err)
+	}
+	return project
+}
+
 // TestSigningPlanProtectsIdenticalConditionalInheritedEntitlementComposition
 // pins Xcode's build-setting evaluation for a conditional assignment whose text
 // matches the object's unconditional assignment. Xcode resolves $(inherited) to
