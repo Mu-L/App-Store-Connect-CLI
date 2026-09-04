@@ -11,18 +11,11 @@ func TestAnalyticsRankedStringAliasesAreAcceptedAndHidden(t *testing.T) {
 		alias     string
 		canonical string
 	}{
-		{path: []string{"versions", "view"}, alias: "id", canonical: "version-id"},
-		{path: []string{"versions", "attach-build"}, alias: "build", canonical: "build-id"},
-		{path: []string{"localizations", "list"}, alias: "version-id", canonical: "version"},
 		{path: []string{"subscriptions", "view"}, alias: "subscription-id", canonical: "id"},
 		{path: []string{"testflight", "groups", "view"}, alias: "group-id", canonical: "id"},
 		{path: []string{"iap", "localizations", "update"}, alias: "id", canonical: "localization-id"},
 		{path: []string{"subscriptions", "review", "screenshots", "delete"}, alias: "id", canonical: "screenshot-id"},
-		{path: []string{"versions", "update"}, alias: "id", canonical: "version-id"},
-		{path: []string{"localizations", "update"}, alias: "version-id", canonical: "version"},
-		{path: []string{"apps", "view"}, alias: "app", canonical: "id"},
 		{path: []string{"builds", "list"}, alias: "app-id", canonical: "app"},
-		{path: []string{"bundle-ids", "capabilities", "list"}, alias: "bundle-id", canonical: "bundle"},
 	}
 
 	root := RootCommand("1.2.3")

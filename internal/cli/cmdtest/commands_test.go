@@ -2868,7 +2868,7 @@ func TestEncryptionValidationErrors(t *testing.T) {
 		},
 		{
 			name:     "encryption declarations assign-builds missing id",
-			args:     []string{"encryption", "declarations", "assign-builds", "--build", "BUILD_ID"},
+			args:     []string{"encryption", "declarations", "assign-builds", "--build-id", "BUILD_ID"},
 			wantErr:  "--id is required",
 			wantHelp: true,
 		},
@@ -4201,7 +4201,7 @@ func TestVersionsValidationErrors(t *testing.T) {
 		},
 		{
 			name:    "attach missing version id",
-			args:    []string{"versions", "attach-build", "--build", "BUILD_123"},
+			args:    []string{"versions", "attach-build", "--build-id", "BUILD_123"},
 			wantErr: "Error: --version-id is required",
 		},
 		{

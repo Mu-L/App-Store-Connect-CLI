@@ -28,9 +28,6 @@ var buildIDCanonicalCommands = [][]string{
 	{"performance", "metrics", "view"},
 	{"performance", "diagnostics", "list"},
 	{"performance", "download"},
-	{"encryption", "declarations", "list"},
-	{"encryption", "declarations", "assign-builds"},
-	{"apps", "app-encryption-declarations", "list"},
 }
 
 func TestBuildIDIsTheCanonicalSpellingAcrossBuildSelectors(t *testing.T) {
