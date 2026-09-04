@@ -241,42 +241,6 @@ func TestWebBundleIDsViewPrintsRawJSONEnvelope(t *testing.T) {
 	}
 }
 
-func TestWebBundleIDsGetCompatibilityAliasDispatchesToView(t *testing.T) {
-	restore := stubWebBundleIDReadDependencies(t)
-	defer restore()
-
-	getDeveloperBundleIDFn = func(_ context.Context, _ *webcore.Client, bundleID string) (*webcore.DeveloperBundleIDGetResult, error) {
-		return &webcore.DeveloperBundleIDGetResult{Data: webcore.DeveloperBundleID{
-			ID:   bundleID,
-			Type: "bundleIds",
-			Attributes: map[string]any{
-				"name":       "Example App",
-				"identifier": "com.example.app",
-			},
-		}}, nil
-	}
-
-	command := WebBundleIDsCommand()
-	if err := command.FlagSet.Parse([]string{"get", "--bundle-id", "bundle-1", "--output", "json"}); err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-	stdout, stderr := captureWebCommandOutput(t, func() {
-		if err := command.Exec(context.Background(), command.FlagSet.Args()); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-	if !strings.Contains(stderr, "compatibility alias") || !strings.Contains(stderr, "bundle-ids view") {
-		t.Fatalf("expected compatibility warning, got %q", stderr)
-	}
-	var result webcore.DeveloperBundleIDGetResult
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("decode JSON output %q: %v", stdout, err)
-	}
-	if result.Data.ID != "bundle-1" || result.Data.Attributes["identifier"] != "com.example.app" {
-		t.Fatalf("unexpected alias result: %+v", result)
-	}
-}
-
 func stubWebBundleIDReadDependencies(t *testing.T) func() {
 	t.Helper()
 	origResolveSession := resolveSessionFn

@@ -109,11 +109,15 @@ func (r *DeveloperBundleIDsListResult) GetMeta() json.RawMessage {
 }
 
 func developerBundleIDLinkString(links map[string]any, key string) string {
-	value, ok := links[key].(string)
-	if !ok {
+	switch value := links[key].(type) {
+	case string:
+		return value
+	case map[string]any:
+		href, _ := value["href"].(string)
+		return href
+	default:
 		return ""
 	}
-	return value
 }
 
 // MarshalJSON preserves Apple's full collection envelope for JSON output.

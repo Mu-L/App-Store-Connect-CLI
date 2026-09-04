@@ -228,6 +228,20 @@ func TestDeveloperBundleIDReadResultsPreserveRawJSONAPIEnvelopes(t *testing.T) {
 	assertCompactJSONEqual(t, encodedGet, getBody)
 }
 
+func TestDeveloperBundleIDListReadsObjectValuedContinuationLink(t *testing.T) {
+	result, err := parseDeveloperBundleIDsListResponse([]byte(`{
+		"data":[{"type":"bundleIds","id":"bundle-1"}],
+		"links":{"next":{"href":"/bundleIds?cursor=page-2","meta":{"cursor":"page-2"}}}
+	}`))
+	if err != nil {
+		t.Fatalf("parseDeveloperBundleIDsListResponse() error: %v", err)
+	}
+	links := result.GetLinks()
+	if links == nil || links.Next != "/bundleIds?cursor=page-2" {
+		t.Fatalf("pagination links = %#v, want object href", links)
+	}
+}
+
 func mustReadBody(t *testing.T, r *http.Request) []byte {
 	t.Helper()
 	body, err := io.ReadAll(r.Body)

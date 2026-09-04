@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -55,22 +54,6 @@ Manage Bundle ID operations that are only available through Apple web-session en
 			WebBundleIDCapabilitiesCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
-			// Keep the former `get` spelling working without advertising it as a
-			// visible leaf. The command tree uses `view` as the canonical read
-			// verb, while this path protects existing scripts during the rename.
-			if len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "get") {
-				view := newWebBundleIDsViewCommand(flag.ContinueOnError)
-				view.FlagSet.SetOutput(io.Discard)
-				if err := view.FlagSet.Parse(args[1:]); err != nil {
-					if errors.Is(err, flag.ErrHelp) {
-						fmt.Fprint(os.Stdout, view.UsageFunc(view))
-						return nil
-					}
-					return shared.UsageError(err.Error())
-				}
-				fmt.Fprintln(os.Stderr, "Warning: `asc web bundle-ids get` is a compatibility alias; use `asc web bundle-ids view`.")
-				return view.Exec(ctx, view.FlagSet.Args())
-			}
 			return flag.ErrHelp
 		},
 	}
@@ -154,13 +137,6 @@ Examples:
 // and the capability graph returned by Apple's detail endpoint.
 func WebBundleIDsViewCommand() *ffcli.Command {
 	return newWebBundleIDsViewCommand(flag.ExitOnError)
-}
-
-// WebBundleIDsGetCommand is retained as a Go-level compatibility constructor.
-// The command it returns uses the canonical `view` verb; the former CLI
-// spelling is handled by WebBundleIDsCommand's compatibility dispatcher.
-func WebBundleIDsGetCommand() *ffcli.Command {
-	return WebBundleIDsViewCommand()
 }
 
 func newWebBundleIDsViewCommand(errorHandling flag.ErrorHandling) *ffcli.Command {
