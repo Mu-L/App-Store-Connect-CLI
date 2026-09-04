@@ -611,7 +611,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			operationBlockers = append(operationBlockers, fmt.Sprintf("stage signing plan: %v", stageErr))
 			break
 		}
-		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, stagedProject, stagedResolver, baselineResolver)
+		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, project, stagedProject, stagedResolver, baselineResolver)
 		if len(resolutionBlockers) > 0 {
 			operationBlockers = append(operationBlockers, resolutionBlockers...)
 			break
@@ -1877,6 +1877,7 @@ func stageSigningPlan(
 // keeps the public plan's old-value and resolution fields stable.
 func reclassifySigningNoOps(
 	candidates []signingCandidate,
+	originalProject *structuredVersionProject,
 	stagedProject *structuredVersionProject,
 	resolver *signingSettingResolver,
 	baselineResolver *signingSettingResolver,
@@ -1909,7 +1910,7 @@ func reclassifySigningNoOps(
 			if err != nil && !errors.Is(err, errVersionSettingNotFound) {
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, err))
 			} else if err == nil && baselineResolver != nil {
-				baselineProject := cloneSigningStructuredVersionProject(stagedProject)
+				baselineProject := cloneSigningStructuredVersionProject(originalProject)
 				var baselineConfiguration *versionConfiguration
 				for _, candidateConfiguration := range baselineProject.configurations {
 					if candidateConfiguration != nil && candidateConfiguration.id == candidate.configuration.id {

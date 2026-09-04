@@ -25,7 +25,7 @@ func requireStrictSigningPlatform(t *testing.T) {
 
 func TestBuildAndApplySigningPlanForDirectSettings(t *testing.T) {
 	requireStrictSigningPlatform(t)
-	project := writeStructuredVersionProject(t, false)
+	project := writeStructuredVersionProject(t, true)
 	root := t.TempDir()
 	settingsPath := filepath.Join(root, "settings.json")
 	stateDir := filepath.Join(root, "state")
@@ -3982,6 +3982,25 @@ func TestSigningPlanBlocksRemovalWhenSiblingWriteChangesSharedFallback(t *testin
 	}
 	if plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "differs from value after removal alone") {
 		t.Fatalf("plan = ready=%t blockers=%#v, want shared fallback collision blocker", plan.Ready, plan.Blockers)
+	}
+}
+
+func TestSigningPlanRemovalOnlyUsesFallbackAfterRemoval(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	if err := os.WriteFile(sharedPath, []byte("PROVISIONING_PROFILE_SPECIFIER = base-profile\r\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"), `PROVISIONING_PROFILE_SPECIFIER = debug-profile;`)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{"schemaVersion":1,"targets":[{"name":"App","configurations":[{"name":"Debug","settings":{"PROVISIONING_PROFILE_SPECIFIER":null}}]}]}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Ready {
+		t.Fatalf("removal-only plan blocked: %#v", plan.Blockers)
 	}
 }
 
