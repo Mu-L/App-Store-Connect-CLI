@@ -6030,6 +6030,25 @@ func TestSigningPlanKeepsSuccessfulInheritedXCConfigEntitlementReady(t *testing.
 	}
 }
 
+func TestSigningInheritedXCConfigSourceBypassesDivergentPBXSlot(t *testing.T) {
+	projectConfiguration := &versionConfiguration{projectLevel: true, name: "Debug", buildSettings: map[string]any{
+		"CODE_SIGN_ENTITLEMENTS": "Base",
+	}}
+	configuration := &versionConfiguration{name: "Debug", target: "App", buildSettings: map[string]any{
+		"CODE_SIGN_ENTITLEMENTS": "PBX.entitlements",
+	}}
+	project := &structuredVersionProject{configurations: []*versionConfiguration{projectConfiguration, configuration}}
+	resolver := newSigningSettingResolver(project, nil, false, nil)
+	stack := map[string]bool{"CODE_SIGN_ENTITLEMENTS": true}
+	got, err := resolver.resolveInheritedSettingValue(configuration, configuration, "CODE_SIGN_ENTITLEMENTS", "CODE_SIGN_ENTITLEMENTS", "$(inherited)Suffix", stack, true)
+	if err != nil {
+		t.Fatalf("resolveInheritedSettingValue() error = %v", err)
+	}
+	if got != "Base" {
+		t.Fatalf("xcconfig source inherited value = %q, want %q (PBX slot must be bypassed)", got, "Base")
+	}
+}
+
 func TestSigningPathLexicallyContainedDoesNotTrustCaseFoldedWindowsRel(t *testing.T) {
 	previousOS := runtimeGOOS
 	previousCaseSemantics := signingCaseInsensitiveVolumeFn
