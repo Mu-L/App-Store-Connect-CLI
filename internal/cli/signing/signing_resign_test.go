@@ -3197,6 +3197,14 @@ func TestSignSigningResignTreePreservesContainerMainEntitlements(t *testing.T) {
 	if got := strings.Join(calls[1], " "); !strings.Contains(got, "--entitlements "+entitlements) {
 		t.Fatalf("container signing call = %q, want prepared entitlements", got)
 	}
+	calls = nil
+	prepared.CodePlans[0].EntitlementsPath = ""
+	if err := signSigningResignTree(context.Background(), treePath, prepared, "IDENTITY", "/tmp/keychain"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || strings.Contains(strings.Join(calls[1], " "), "--entitlements") {
+		t.Fatalf("empty container entitlements signing call = %#v, want no entitlements flag", calls)
+	}
 }
 
 func TestDiscoverSigningResignArchiveIgnoresRegularFilesNamedLikeBundles(t *testing.T) {
