@@ -43,9 +43,6 @@ Examples:
 			if len(args) > 0 {
 				return shared.UsageErrorf("unexpected argument(s): %s", strings.Join(args, " "))
 			}
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if err := selectors.validate(); err != nil {
 				return err
 			}
@@ -190,9 +187,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if err := selectors.validate(); err != nil {
 				return err
 			}
@@ -261,9 +255,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if err := selectors.validate(); err != nil {
 				return err
 			}

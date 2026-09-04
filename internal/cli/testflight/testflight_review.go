@@ -223,7 +223,7 @@ Examples:
 func TestFlightReviewSubmitCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("submit", flag.ExitOnError)
 
-	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID")
+	buildID := fs.String("build-id", "", "Build ID")
 	confirm := fs.Bool("confirm", false, "Confirm submission")
 	output := shared.BindOutputFlags(fs)
 
@@ -238,9 +238,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			if strings.TrimSpace(*buildID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
 				return shared.MissingRequiredUsageError("--build-id")
@@ -364,7 +361,7 @@ Examples:
 func TestFlightReviewSubmissionsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("submissions list", flag.ExitOnError)
 
-	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID to filter")
+	buildID := fs.String("build-id", "", "Build ID to filter")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -382,9 +379,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			buildValue := strings.TrimSpace(*buildID)
 			if buildValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
@@ -558,7 +552,7 @@ Examples:
 func TestFlightBetaDetailsGetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 
-	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID")
+	buildID := fs.String("build-id", "", "Build ID")
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -577,9 +571,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.WithDiagnostic(
 					shared.UsageErrorCtx(ctx, "testflight beta-details view: --limit must be between 1 and 200"),

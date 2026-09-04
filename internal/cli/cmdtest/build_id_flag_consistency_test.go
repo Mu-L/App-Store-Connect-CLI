@@ -17,17 +17,6 @@ const legacyBuildFlagWarning = "Warning: `--build` is deprecated. Use `--build-i
 // `--build` while the rest of the CLI already documented `--build-id`.
 var buildIDCanonicalCommands = [][]string{
 	{"review", "submit"},
-	{"publish", "testflight"},
-	{"validate", "testflight"},
-	{"release", "stage"},
-	{"build-localizations", "list"},
-	{"build-localizations", "create"},
-	{"build-bundles", "list"},
-	{"testflight", "crashes", "list"},
-	{"testflight", "feedback", "list"},
-	{"performance", "metrics", "view"},
-	{"performance", "diagnostics", "list"},
-	{"performance", "download"},
 }
 
 func TestBuildIDIsTheCanonicalSpellingAcrossBuildSelectors(t *testing.T) {
@@ -156,14 +145,6 @@ func TestBuildIDAliasConflictErrors(t *testing.T) {
 		{
 			name: "review submit",
 			args: []string{"review", "submit", "--app", "app-1", "--version-id", "version-1", "--build-id", "build-canonical", "--build", "build-legacy", "--dry-run"},
-		},
-		{
-			name: "validate testflight",
-			args: []string{"validate", "testflight", "--app", "app-1", "--build-id", "build-canonical", "--build", "build-legacy"},
-		},
-		{
-			name: "build-bundles list",
-			args: []string{"build-bundles", "list", "--build-id", "build-canonical", "--build", "build-legacy"},
 		},
 	}
 

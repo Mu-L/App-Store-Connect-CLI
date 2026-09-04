@@ -45,14 +45,6 @@ func TestTestFlightUsageErrorDiagnosticsPreserveContracts(t *testing.T) {
 			wantParam:  "--external-testing",
 		},
 		{
-			name:       "legacy build alias conflict",
-			command:    BetaTestersExportCommand,
-			args:       []string{"--build-id", "build-1", "--build", "build-2"},
-			wantError:  "--build conflicts with --build-id; use only --build-id",
-			wantStderr: "Error: --build conflicts with --build-id; use only --build-id\n",
-			wantCode:   shared.DiagnosticConflictingInput,
-		},
-		{
 			name:       "export group and build conflict",
 			command:    BetaTestersExportCommand,
 			args:       []string{"--group", "group-1", "--build-id", "build-1"},

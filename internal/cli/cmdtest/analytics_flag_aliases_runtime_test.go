@@ -35,25 +35,11 @@ func TestAnalyticsRankedStringAliasesMatchCanonicalCommands(t *testing.T) {
 			canonical:     "id",
 		},
 		{
-			name:          "testflight groups view group id",
-			canonicalArgs: []string{"testflight", "groups", "view", "--id", "group-1"},
-			aliasArgs:     []string{"testflight", "groups", "view", "--group-id", "group-1"},
-			alias:         "group-id",
-			canonical:     "id",
-		},
-		{
 			name:          "subscription screenshot id",
 			canonicalArgs: []string{"subscriptions", "review", "screenshots", "delete", "--screenshot-id", "shot-1", "--confirm"},
 			aliasArgs:     []string{"subscriptions", "review", "screenshots", "delete", "--id", "shot-1", "--confirm"},
 			alias:         "id",
 			canonical:     "screenshot-id",
-		},
-		{
-			name:          "builds list app id",
-			canonicalArgs: []string{"builds", "list", "--app", "123456789"},
-			aliasArgs:     []string{"builds", "list", "--app-id", "123456789"},
-			alias:         "app-id",
-			canonical:     "app",
 		},
 	}
 
@@ -87,9 +73,7 @@ func TestAnalyticsRankedStringAliasesRejectConflictingValues(t *testing.T) {
 		canonical string
 	}{
 		{name: "subscriptions view", args: []string{"subscriptions", "view", "--id", "one", "--subscription-id", "two"}, alias: "subscription-id", canonical: "id"},
-		{name: "testflight groups view", args: []string{"testflight", "groups", "view", "--id", "one", "--group-id", "two"}, alias: "group-id", canonical: "id"},
 		{name: "subscriptions screenshots delete", args: []string{"subscriptions", "review", "screenshots", "delete", "--screenshot-id", "one", "--id", "two", "--confirm"}, alias: "id", canonical: "screenshot-id"},
-		{name: "builds list", args: []string{"builds", "list", "--app", "one", "--app-id", "two"}, alias: "app-id", canonical: "app"},
 	}
 
 	originalTransport := http.DefaultTransport
@@ -127,15 +111,8 @@ func analyticsAliasTransport(t *testing.T) http.RoundTripper {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/subscriptions/sub-1":
 			return analyticsAliasJSONResponse(http.StatusOK, `{"data":{"type":"subscriptions","id":"sub-1","attributes":{"name":"Subscription"}}}`), nil
-		case req.Method == http.MethodGet && req.URL.Path == "/v1/betaGroups/group-1":
-			return analyticsAliasJSONResponse(http.StatusOK, `{"data":{"type":"betaGroups","id":"group-1","attributes":{"name":"Group"}}}`), nil
 		case req.Method == http.MethodDelete && req.URL.Path == "/v1/subscriptionAppStoreReviewScreenshots/shot-1":
 			return analyticsAliasJSONResponse(http.StatusNoContent, ""), nil
-		case req.Method == http.MethodGet && req.URL.Path == "/v1/builds":
-			if got := req.URL.Query().Get("filter[app]"); got != "123456789" {
-				t.Fatalf("build filter = %q, want 123456789", got)
-			}
-			return analyticsAliasJSONResponse(http.StatusOK, `{"data":[{"type":"builds","id":"build-1","attributes":{"version":"1","uploadedDate":"2026-07-15T00:00:00Z","processingState":"VALID","expired":false}}],"links":{}}`), nil
 		default:
 			t.Fatalf("unexpected alias test request: %s %s", req.Method, req.URL.String())
 			return nil, errors.New("unexpected request")

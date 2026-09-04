@@ -779,7 +779,7 @@ func TestBuildsTestNotesUpdateConflictingFlagsExitCode(t *testing.T) {
 	binaryPath := buildASCBlackboxBinary(t)
 
 	runCmd := exec.Command(binaryPath, "builds", "test-notes", "update",
-		"--id", "loc-1", "--build", "build-1", "--whats-new", "test")
+		"--localization-id", "loc-1", "--build-id", "build-1", "--whats-new", "test")
 	runCmd.Env = isolatedCLITestEnv(filepath.Join(tmpDir, "config.json"))
 	output, err := runCmd.CombinedOutput()
 	if err == nil {
@@ -795,14 +795,46 @@ func TestBuildsTestNotesUpdateConflictingFlagsExitCode(t *testing.T) {
 	}
 
 	stderr := string(output)
-	if !strings.Contains(stderr, "Warning: `--build` is deprecated. Use `--build-id`.") {
-		t.Fatalf("expected legacy build warning, got %q", stderr)
-	}
-	if !strings.Contains(stderr, "Warning: `--id` is deprecated. Use `--localization-id`.") {
-		t.Fatalf("expected legacy id warning, got %q", stderr)
+	if strings.Contains(stderr, "is deprecated") {
+		t.Fatalf("expected no deprecation warnings for canonical flags, got %q", stderr)
 	}
 	if !strings.Contains(stderr, "--localization-id cannot be combined with build selectors or --locale") {
 		t.Fatalf("expected conflict message, got %q", stderr)
+	}
+}
+
+func TestRemovedBuildSelectorAliasesExitUsage(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		flag string
+	}{
+		{name: "builds wait --build", args: []string{"builds", "wait", "--build", "BUILD_123"}, flag: "--build"},
+		{name: "builds wait --newest", args: []string{"builds", "wait", "--app", "APP_123", "--newest"}, flag: "--newest"},
+		{name: "builds list --app-id", args: []string{"builds", "list", "--app-id", "APP_123"}, flag: "--app-id"},
+		{name: "builds test-notes view --id", args: []string{"builds", "test-notes", "view", "--id", "loc-1"}, flag: "--id"},
+		{name: "testflight groups view --group-id", args: []string{"testflight", "groups", "view", "--group-id", "group-1"}, flag: "--group-id"},
+		{name: "testflight testers list --build", args: []string{"testflight", "testers", "list", "--build", "BUILD_123"}, flag: "--build"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resetReportFlags(t)
+
+			stdout, stderr := captureCommandOutput(t, func() {
+				if code := Run(test.args, "1.0.0"); code != ExitUsage {
+					t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
+				}
+			})
+
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.Contains(stderr, "Error: unknown flag `"+test.flag+"`") {
+				t.Fatalf("expected unknown flag diagnostic for %s, got %q", test.flag, stderr)
+			}
+			if strings.Contains(stderr, "is deprecated") {
+				t.Fatalf("removed alias must not emit deprecation guidance, got %q", stderr)
+			}
+		})
 	}
 }
 

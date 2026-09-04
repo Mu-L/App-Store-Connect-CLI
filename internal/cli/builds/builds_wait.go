@@ -25,10 +25,8 @@ func BuildsWaitCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("wait", flag.ExitOnError)
 
 	buildID := fs.String("build-id", "", "Build ID to wait for")
-	legacyBuildID := bindHiddenStringFlag(fs, "build")
 	appID := fs.String("app", "", "App Store Connect app ID, bundle ID, or exact app name (required when --build-id is not provided)")
 	latest := fs.Bool("latest", false, "Wait for the latest matching build for --app context")
-	legacyNewest := bindHiddenBoolFlag(fs, "newest")
 	version := fs.String("version", "", "Optional marketing version filter (CFBundleShortVersionString) for --app")
 	buildNumber := fs.String("build-number", "", "Select a unique build by build number (CFBundleVersion) for --app context")
 	since := fs.String("since", "", "Only consider builds uploaded on or after this RFC3339 timestamp")
@@ -66,13 +64,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
-			if err := applyLegacyLatestAlias(latest, flagWasProvided(fs, "latest"), legacyNewest); err != nil {
-				return err
-			}
-
 			started := time.Now()
 			buildValue := strings.TrimSpace(*buildID)
 			resolvedAppID := shared.ResolveAppID(*appID)
@@ -101,6 +92,9 @@ Examples:
 				}
 				if !*latest && buildNumberValue == "" {
 					return shared.UsageError("--latest or --build-number is required when using --app")
+				}
+				if buildNumberValue != "" && platformValue == "" {
+					return shared.UsageError(buildNumberRequiresPlatformMessage)
 				}
 			}
 
@@ -150,9 +144,6 @@ Examples:
 					BuildNumber: buildNumberValue,
 					Platform:    normalizedPlatform,
 					Since:       sinceTime,
-				}
-				if !selector.Latest {
-					selector.Platform = applyLegacyImplicitBuildNumberPlatformDefault(selector.BuildNumber, selector.Platform)
 				}
 
 				buildResp, err = waitForBuildDiscovery(requestCtx, client, selector, *pollInterval)

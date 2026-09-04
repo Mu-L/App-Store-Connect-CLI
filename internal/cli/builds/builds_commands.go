@@ -543,7 +543,6 @@ func BuildsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 
 	appID := fs.String("app", "", "App Store Connect app ID, bundle ID, or exact app name (or ASC_APP_ID env)")
-	legacyAppID := shared.BindDeprecatedStringFlagAlias(fs, "app-id", "app")
 	output := shared.BindOutputFlags(fs)
 	sort := fs.String("sort", "", "Sort by "+strings.Join(buildsListSortValues, ", "))
 	version := fs.String("version", "", "Filter by marketing version string (CFBundleShortVersionString)")
@@ -585,9 +584,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := legacyAppID.Apply(appID); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.UsageErrorf("builds: --limit must be between 1 and 200")
 			}
@@ -802,7 +798,6 @@ func BuildsInfoCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("builds info", flag.ExitOnError)
 
 	buildID := fs.String("build-id", "", "Build ID")
-	legacyBuildID := bindHiddenStringFlag(fs, "build")
 	appID := fs.String("app", "", "App Store Connect app ID, bundle ID, or exact app name (required when --build-id is not provided)")
 	latest := fs.Bool("latest", false, "Show details for the latest build in --app context")
 	version := fs.String("version", "", "Optional marketing version filter (CFBundleShortVersionString) for --app selectors")
@@ -836,9 +831,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			excludeExpiredValue := *excludeExpired || *notExpired
 			processingStateValues, err := normalizeBuildProcessingStateFilter(*processingState)
 			if err != nil {
@@ -904,9 +896,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if err := selectors.validate(); err != nil {
 				return err
 			}

@@ -3024,7 +3024,7 @@ func TestPerformanceValidationErrors(t *testing.T) {
 		},
 		{
 			name:     "performance download mutually exclusive",
-			args:     []string{"performance", "download", "--app", "APP_ID", "--build", "BUILD_ID"},
+			args:     []string{"performance", "download", "--app", "APP_ID", "--build-id", "BUILD_ID"},
 			wantErr:  "mutually exclusive",
 			wantHelp: true,
 		},
@@ -3594,7 +3594,7 @@ func TestBuildLocalizationsValidationErrors(t *testing.T) {
 		},
 		{
 			name:    "build-localizations create missing locale",
-			args:    []string{"build-localizations", "create", "--build", "BUILD_ID"},
+			args:    []string{"build-localizations", "create", "--build-id", "BUILD_ID"},
 			wantErr: "--locale is required",
 		},
 		{
@@ -3821,23 +3821,23 @@ func TestPublishValidationErrors(t *testing.T) {
 		},
 		{
 			name:    "publish testflight submit missing confirm",
-			args:    []string{"publish", "testflight", "--app", "APP_123", "--build", "BUILD_123", "--group", "GROUP_ID", "--submit"},
+			args:    []string{"publish", "testflight", "--app", "APP_123", "--build-id", "BUILD_123", "--group", "GROUP_ID", "--submit"},
 			wantErr: "Error: --confirm is required with --submit",
 		},
 		{
 			name:     "publish testflight submit invalid value",
-			args:     []string{"publish", "testflight", "--app", "APP_123", "--build", "BUILD_123", "--group", "GROUP_ID", "--submit=maybe"},
+			args:     []string{"publish", "testflight", "--app", "APP_123", "--build-id", "BUILD_123", "--group", "GROUP_ID", "--submit=maybe"},
 			wantErr:  `invalid boolean value "maybe" for -submit`,
 			wantExit: rootcmd.ExitUsage,
 		},
 		{
 			name:    "publish testflight confirm requires submit",
-			args:    []string{"publish", "testflight", "--app", "APP_123", "--build", "BUILD_123", "--group", "GROUP_ID", "--confirm"},
+			args:    []string{"publish", "testflight", "--app", "APP_123", "--build-id", "BUILD_123", "--group", "GROUP_ID", "--confirm"},
 			wantErr: "Error: --confirm requires --submit",
 		},
 		{
 			name:     "publish testflight confirm invalid value",
-			args:     []string{"publish", "testflight", "--app", "APP_123", "--build", "BUILD_123", "--group", "GROUP_ID", "--confirm=maybe"},
+			args:     []string{"publish", "testflight", "--app", "APP_123", "--build-id", "BUILD_123", "--group", "GROUP_ID", "--confirm=maybe"},
 			wantErr:  `invalid boolean value "maybe" for -confirm`,
 			wantExit: rootcmd.ExitUsage,
 		},
@@ -3868,17 +3868,17 @@ func TestPublishValidationErrors(t *testing.T) {
 		},
 		{
 			name:    "publish testflight ipa and build mutually exclusive",
-			args:    []string{"publish", "testflight", "--app", "APP_123", "--ipa", "app.ipa", "--build", "BUILD_123", "--group", "GROUP_ID"},
+			args:    []string{"publish", "testflight", "--app", "APP_123", "--ipa", "app.ipa", "--build-id", "BUILD_123", "--group", "GROUP_ID"},
 			wantErr: "--ipa and --build-id are mutually exclusive",
 		},
 		{
 			name:    "publish testflight build and build-number mutually exclusive without ipa",
-			args:    []string{"publish", "testflight", "--app", "APP_123", "--build", "BUILD_123", "--build-number", "42", "--group", "GROUP_ID"},
+			args:    []string{"publish", "testflight", "--app", "APP_123", "--build-id", "BUILD_123", "--build-number", "42", "--group", "GROUP_ID"},
 			wantErr: "--build-id and --build-number are mutually exclusive when --ipa is not provided",
 		},
 		{
 			name:    "publish testflight version without ipa",
-			args:    []string{"publish", "testflight", "--app", "APP_123", "--build", "BUILD_123", "--version", "1.2.3", "--group", "GROUP_ID"},
+			args:    []string{"publish", "testflight", "--app", "APP_123", "--build-id", "BUILD_123", "--version", "1.2.3", "--group", "GROUP_ID"},
 			wantErr: "--version is only supported when --ipa is provided",
 		},
 		{
@@ -3903,7 +3903,7 @@ func TestPublishValidationErrors(t *testing.T) {
 		},
 		{
 			name:    "publish testflight local build rejects build",
-			args:    []string{"publish", "testflight", "--app", "APP_123", "--workspace", "App.xcworkspace", "--scheme", "App", "--version", "1.2.3", "--build", "BUILD_123", "--group", "GROUP_ID"},
+			args:    []string{"publish", "testflight", "--app", "APP_123", "--workspace", "App.xcworkspace", "--scheme", "App", "--version", "1.2.3", "--build-id", "BUILD_123", "--group", "GROUP_ID"},
 			wantErr: "--build-id cannot be combined with --workspace or --project",
 		},
 		{

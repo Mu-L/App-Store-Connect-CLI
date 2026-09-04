@@ -65,9 +65,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.UsageError("builds individual-testers list: --limit must be between 1 and 200")
 			}
@@ -154,9 +151,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if err := selectors.validate(); err != nil {
 				return err
 			}
@@ -217,9 +211,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if err := selectors.validate(); err != nil {
 				return err
 			}
