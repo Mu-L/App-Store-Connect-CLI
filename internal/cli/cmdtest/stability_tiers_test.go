@@ -35,6 +35,8 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "agreements"}},
 		{[]string{"web", "agreements", "status"}},
 		{[]string{"web", "agreements", "accept"}},
+		{[]string{"web", "auth", "export"}},
+		{[]string{"web", "auth", "import"}},
 		{[]string{"web", "bundle-ids", "list"}},
 		{[]string{"web", "bundle-ids", "view"}},
 	}
@@ -67,14 +69,17 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 		t.Fatal("command [web] not found")
 	}
 	assertCommandDoesNotMentionExperimental(t, webCmd, []string{"web"})
+	allowed := map[string]struct{}{
+		"web auth export":     {},
+		"web auth import":     {},
+		"web bundle-ids list": {},
+		"web bundle-ids view": {},
+	}
 	for _, sub := range webCmd.Subcommands {
 		if sub.Name == "agreements" {
 			continue
 		}
-		assertCommandTreeDoesNotMentionExperimentalExcept(t, sub, []string{"web", sub.Name}, map[string]struct{}{
-			"web bundle-ids list": {},
-			"web bundle-ids view": {},
-		})
+		assertCommandTreeDoesNotMentionExperimentalExcept(t, sub, []string{"web", sub.Name}, allowed)
 	}
 }
 

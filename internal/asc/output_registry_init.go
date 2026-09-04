@@ -6,6 +6,8 @@ package asc
 // commands that never render registry output (for example `asc --version`)
 // do not pay the ~450-type registration cost at process start.
 func registerAllOutputRenderers() {
+	registerRows(notarizationStapleResultRows)
+	registerRows(notarizationValidateResultRows)
 	registerDirect(func(v *DeveloperSystemStatusReport, render func([]string, [][]string)) error {
 		h, r := developerSystemStatusSummaryRows(v)
 		render(h, r)
@@ -22,11 +24,15 @@ func registerAllOutputRenderers() {
 	registerRows(webMedicalDeviceDeclarationStateRows)
 	registerRows(webMedicalDeviceDeclarationResultRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
+	registerRows(webXcodeCloudNextBuildNumberRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
+	registerRows(webXcodeCloudVersionAliasesRows)
 	registerRows(webAppGroupDeleteRows)
 	registerRows(webAppGroupUnassignRows)
 	registerRows(webAppGroupSetRows)
 	registerRows(webAPIKeysListRows)
+	registerRows(webSessionExportRows)
+	registerRows(webSessionImportRows)
 	registerRows(webAPIKeyGetRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
 		h, r := keywordRankSummaryRows(v)
@@ -128,7 +134,6 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(inAppPurchasesRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseVersionsRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseLocalizationsRows)
-	registerRowsWithSingleResourceAdapter(inAppPurchaseImagesRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseImagesV2Rows)
 	registerSingleLinkageRows(func(v *InAppPurchaseVersionImageLinkageResponse) ResourceData { return v.Data })
 	registerRows(inAppPurchasePricePointsRows)
