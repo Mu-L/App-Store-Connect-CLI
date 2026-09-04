@@ -155,6 +155,37 @@ Alternatively, pass the key content directly:
   Never commit private keys to version control. Use secret management tools in CI/CD (GitHub Secrets, GitLab CI Variables, etc.).
 </Warning>
 
+## Apple Account web sessions
+
+`asc web` commands use a cached Apple Account web session, not an API key. That
+session is created with `asc web auth login` and can be moved to another machine
+or to CI with the experimental `asc web auth export` and `asc web auth import`
+commands.
+
+<Warning>
+  An exported web-session bundle is a live credential. It can act as the Apple
+  Account until the cookies expire. Write it only to a `0600` file, store it
+  in a secrets manager, and delete the file once it is consumed. Cookie values
+  are never printed to stdout. Import performs local document, origin, cookie,
+  and expiry validation before writing to the cache; it does not contact Apple.
+  Run `asc web auth status` afterwards for live validation when network access
+  is available. A successful local import does not prove that the session is
+  still accepted by Apple or belongs to the named Apple Account.
+</Warning>
+
+```bash  theme={null}
+asc web auth export --output-path ./web-session.json --apple-id "user@example.com"
+asc web auth import --file ./web-session.json --apple-id "user@example.com"
+asc web auth status
+```
+
+Pass `--overwrite` to replace an existing destination file on export, or an
+existing cached session for that Apple Account on import. Isolate tests and
+automation with `ASC_WEB_SESSION_CACHE_DIR` and
+`ASC_WEB_SESSION_CACHE_BACKEND=file` so they cannot read or replace the
+operator's real session cache. An unset or `auto` backend still falls back to
+the keychain when the file cache is empty.
+
 ## Manage multiple profiles
 
 Switch between different API keys for multiple apps or teams:
@@ -391,7 +422,7 @@ asc auth logout --all --confirm
 
 `--all` always attempts config cleanup and also attempts keychain cleanup. If config cleanup succeeds, a keychain cleanup error is treated as non-fatal.
 
-For compatibility, logout still runs without `--confirm` after printing a deprecation warning. Confirmation will be required in 5.0.0.
+`--confirm` is required. Running logout without it is a usage error and no credentials are removed.
 
 ## Security best practices
 

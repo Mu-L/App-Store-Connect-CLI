@@ -2,6 +2,14 @@
 
 Quirks and tips for specific App Store Connect API endpoints.
 
+## Web App Privacy Data Usage Updates
+
+- Live canary on 2026-09-04 using a disposable app and a redacted web session verified the private `PATCH /iris/v1/appDataUsages/{usageID}` contract for a same-category, same-purpose `DATA_LINKED_TO_YOU` to `DATA_NOT_LINKED_TO_YOU` identity flip. The request uses the existing `appDataUsages` JSON:API resource and its `dataProtection` relationship; Apple returned `200`, and a fresh GET showed the same usage ID with the new protection.
+- The reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition was not exercised by this canary and remains unverified; do not infer it from this note.
+- The canary seeded the tuple with `POST` (`201`), confirmed it by GET, then restored the semantic baseline by deleting it (`204`) and creating the `DATA_NOT_COLLECTED` declaration (`201`). Direct restore attempts via `POST` or `PATCH` to `DATA_NOT_COLLECTED` returned `409 STATE_ERROR`.
+- The direct mutations advanced the remote `lastPublished` value while `published` remained `true`, despite no publish endpoint being called. Treat this path as a published-state mutation; do not describe the canary or `asc web privacy apply` as unpublished-only.
+- For the verified transition, the planner must pair only the same-category, same-purpose identity flip into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations; other identity-transition directions are not covered by this live contract.
+
 ## Apple Ads Profile Context Isolation
 
 - Apple Ads named profiles use only the context stored on that profile: they do not inherit `ads.org_id` or `ads.ad_account_id` from root config or another profile. This prevents a selected profile from silently sending a request to the wrong organization or ad account. Profile-less access-token and environment authentication can still use matching root context.
@@ -125,8 +133,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## TestFlight Distribution
 
-- `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.
-- Migrate `--external-testing=true` to `asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm`. Migrate `--external-testing=false` to `asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm`; the old boolean cannot identify which group assignments to remove.
+- `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag was deprecated (parseable but failing before HTTP) and removed in 5.0.0; it is now an unknown flag.
+- External distribution is managed through group assignment: `asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm` to enable, and `asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm` to remove group assignments.
 - App Store Connect can briefly return a build-specific 404 from `POST /v1/builds/{id}/relationships/betaGroups` after an uploaded build is already readable and valid. `asc publish testflight` confirms the uploaded build with `GET /v1/builds/{id}` and retries only that post-upload propagation error with bounded backoff, reporting retry attempts on stderr. A confirmation in processing state `FAILED` or `INVALID` stops immediately without retrying distribution. A later post-upload failure emits a partial publish result with the recoverable `buildId`, terminal processing or notification outcome, and completed stages before exiting non-zero; notification follow-up failures use `failureStage=notification` after beta-group distribution succeeds.
 
 ## Game Center
@@ -139,8 +147,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - The relationship endpoint is replace-only (PATCH); GET relationship requests are rejected with "does not allow 'GET_RELATIONSHIP'... Allowed operation is: REPLACE".
 - Setting `challengesMinimumPlatformVersions` requires a live App Store version; non-live versions fail with `ENTITY_ERROR.RELATIONSHIP.INVALID.MIN_CHALLENGES_VERSION_MUST_BE_LIVE` ("must be live to be set as a minimum challenges version.").
 - App Store Connect has no direct GET for a leaderboard-set member localization. `asc game-center leaderboard-sets member-localizations view --id` resolves the localization's leaderboard and leaderboard set through their to-one endpoints, then finds the exact ID in the doubly filtered collection across all pages.
-- App Store Connect exposes a group's challenge relationships as read-only. `asc game-center groups challenges set` remains registered during a deprecation window and returns migration guidance without making an HTTP request; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
-- `asc game-center details list` is backed by the app's single Game Center detail. Its legacy `--limit`, `--next`, and `--paginate` flags remain registered during a deprecation window but return precise guidance to omit the unsupported flag.
+- App Store Connect exposes a group's challenge relationships as read-only, so there is no `asc game-center groups challenges set` command; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
+- `asc game-center details list` is backed by the app's single Game Center detail, so it does not accept `--limit`, `--next`, or `--paginate`.
 
 ## Apple Ads Platform API v1
 
@@ -184,6 +192,7 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - `GET /v1/ciWorkflows/{id}` returns relationships with links only by default: `repository` and `buildRuns` come back without a `data` linkage, and `product`, `xcodeVersion`, and `macOsVersion` are absent from the response entirely. `POST /v1/ciWorkflows` requires all four linkages, so any read-then-recreate flow must request `?include=product,repository,xcodeVersion,macOsVersion`, which populates them.
 - `GET /v1/ciWorkflows/{id}` also emits JSON `null` for optional action and start-condition properties (`destination`, `testConfiguration`, `filesAndFoldersRule`) that `CiWorkflowCreateRequest` does not mark nullable. `workflows duplicate` omits those nulls so the create body stays schema-clean; unused nullable start conditions are omitted rather than sent as `null`.
 - `CiAction` has no post-actions: the public workflow schema covers `BUILD`, `ANALYZE`, `TEST`, and `ARCHIVE` actions plus `buildDistributionAudience`, but TestFlight post-actions (beta group and tester assignment) exist only in the private `/ci/api/` workflow payload. A workflow recreated through the public API therefore loses its TestFlight post-actions.
+- A live read on 2026-09-04 confirmed that private `workflows-v15` payloads expose TestFlight post-actions under `post_actions[].deployment_config.testflight_deployment_ids`. Two distinct `beta_group_ids` observed across two post-actions matched the same app's authenticated IRIS `betaGroups` IDs and the public command output from `asc testflight groups list --app APP_ID --paginate --output json` (three groups returned). Use `asc xcode-cloud products app --id PRODUCT_ID` to resolve a product to its app, then the public TestFlight group and tester commands when preparing a workflow edit; no duplicate web lookup command is needed. The scan covered 14 products/workflows; all observed `beta_tester_ids` arrays were empty, so tester-ID equivalence remains unverified.
 - Workflow-scoped environment variables and secrets are also absent from `CiWorkflowCreateRequest`; they live on the private `/ci/api/` workflow payload. `workflows duplicate` cannot copy them. Use `asc web xcode-cloud env-vars` after creating the copy.
 
 ## Devices

@@ -43,6 +43,7 @@ type signingResignTarget struct {
 	ExistingEntitlements map[string]any
 	Profile              signingResignProfile
 	EntitlementsPath     string
+	EntitlementRewrites  []signingResignEntitlementRewrite
 }
 
 type signingResignArchive struct {
