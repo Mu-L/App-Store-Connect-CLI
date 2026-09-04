@@ -169,7 +169,7 @@ func syncPushCommand() *ffcli.Command {
 	passwordFile := fs.String("password-file", "", "[experimental] Protected file containing the repository encryption password")
 	branch := fs.String("branch", "main", "Git branch")
 	certType := fs.String("certificate-type", "", "Certificate type filter (optional)")
-	deviceIDs := fs.String("device", "", "Device ID(s), comma-separated (required with --create-missing for development profiles; deprecated and ignored without it until 5.0.0)")
+	deviceIDs := fs.String("device", "", "Device ID(s), comma-separated (requires --create-missing; required for development profiles)")
 	createMissing := fs.Bool("create-missing", false, "Create missing profiles")
 	identityPath := fs.String("identity", "", "[experimental] Protected PKCS#12 signing identity file")
 	privateKeyPath := fs.String("private-key", "", "[experimental] Protected RSA or EC private key PEM file")
@@ -220,7 +220,9 @@ func syncPushCommand() *ffcli.Command {
 			if repo == "" {
 				return shared.UsageError("--repo is required")
 			}
-			warnDeviceWithoutCreateMissing(*deviceIDs, *createMissing)
+			if err := rejectDeviceWithoutCreateMissing(*deviceIDs, *createMissing); err != nil {
+				return err
+			}
 			if *createMissing && isDevelopmentProfile(profType) && strings.TrimSpace(*deviceIDs) == "" {
 				return shared.UsageError("--device is required for development profiles with --create-missing")
 			}

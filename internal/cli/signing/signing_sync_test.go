@@ -32,15 +32,16 @@ func TestSigningSyncCommandLongHelpUsesOutputDirExample(t *testing.T) {
 	}
 }
 
-func TestSigningSyncPushHelpDocumentsDeviceTransition(t *testing.T) {
+func TestSigningSyncPushHelpPairsDeviceWithCreateMissing(t *testing.T) {
 	deviceFlag := syncPushCommand().FlagSet.Lookup("device")
 	if deviceFlag == nil {
 		t.Fatal("expected --device flag")
 	}
-	if !strings.Contains(deviceFlag.Usage, "--create-missing") ||
-		!strings.Contains(deviceFlag.Usage, "deprecated") ||
-		!strings.Contains(deviceFlag.Usage, "5.0.0") {
-		t.Fatalf("--device usage = %q, want the transition and rejection release", deviceFlag.Usage)
+	if !strings.Contains(deviceFlag.Usage, "--create-missing") {
+		t.Fatalf("--device usage = %q, want it to name --create-missing", deviceFlag.Usage)
+	}
+	if strings.Contains(deviceFlag.Usage, "deprecated") || strings.Contains(deviceFlag.Usage, "5.0.0") {
+		t.Fatalf("--device usage = %q, must not describe a finished transition", deviceFlag.Usage)
 	}
 }
 
@@ -287,11 +288,12 @@ func TestSigningSyncCaseCollisionFailsBeforeProfileCreatePOST(t *testing.T) {
 	}
 }
 
-func TestSigningSyncPushWarnsForDeviceWithoutCreateMissing(t *testing.T) {
+func TestSigningSyncPushRejectsDeviceWithoutCreateMissing(t *testing.T) {
+	t.Setenv(signingSyncPasswordEnvVar, "repository-password")
 	clientCalls := 0
 	t.Cleanup(shared.SetASCClientFactoryForTesting(func() (*asc.Client, error) {
 		clientCalls++
-		return nil, errors.New("client reached after validation")
+		return nil, errors.New("client must not be created")
 	}))
 
 	cmd := syncPushCommand()
@@ -303,7 +305,6 @@ func TestSigningSyncPushWarnsForDeviceWithoutCreateMissing(t *testing.T) {
 			"--bundle-id", "com.example.app",
 			"--profile-type", "IOS_APP_DEVELOPMENT",
 			"--repo", "git@github.com:team/certs.git",
-			"--password", "secret",
 			"--device", "DEVICE1",
 		}); err != nil {
 			t.Fatalf("parse error: %v", err)
@@ -311,22 +312,23 @@ func TestSigningSyncPushWarnsForDeviceWithoutCreateMissing(t *testing.T) {
 		runErr = cmd.Run(context.Background())
 	})
 
-	if runErr == nil || runErr.Error() != "signing sync push: client reached after validation" {
-		t.Fatalf("unexpected error: %v", runErr)
+	if runErr == nil || runErr.Error() != deviceWithoutCreateMissingError {
+		t.Fatalf("error = %v, want %q", runErr, deviceWithoutCreateMissingError)
 	}
-	if errors.Is(runErr, flag.ErrHelp) {
-		t.Fatalf("deprecated input must not return a usage error: %v", runErr)
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("error = %v, want usage error", runErr)
 	}
-	if clientCalls != 1 {
-		t.Fatalf("client factory calls = %d, want 1", clientCalls)
+	if clientCalls != 0 {
+		t.Fatalf("client factory calls = %d, want 0", clientCalls)
 	}
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	wantWarning := "Warning: --device without --create-missing is deprecated and ignored because device IDs are only applied when creating a profile. Add --create-missing so they can be applied if a profile must be created. This combination will be rejected in 5.0.0.\n" +
-		"Warning: --password and ASC_MATCH_PASSWORD are deprecated for signing sync; use --password-file or ASC_SIGNING_SYNC_PASSWORD. The legacy sources will be removed in 5.0.0.\n"
-	if stderr != wantWarning {
-		t.Fatalf("stderr = %q, want %q", stderr, wantWarning)
+	if stderr != "Error: "+deviceWithoutCreateMissingError+"\n" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if strings.Contains(stderr, "Cloning signing repo") {
+		t.Fatalf("stderr shows repository side effects: %q", stderr)
 	}
 }
 
