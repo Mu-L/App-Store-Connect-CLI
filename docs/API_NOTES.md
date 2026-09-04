@@ -245,7 +245,9 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
   `cloudContainers`, `certificates`, `appConsentBundleId`, `macBundleId`,
   `relatedAppConsentBundleIds`, `parentBundleId`, and
   `mediaSharingProtocolIds`. The response is a single JSON:API `data` resource
-  plus any included capability resources.
+  plus any included capability resources. Table/Markdown output shows the
+  primary resource fields only and emits a diagnostic when included resources
+  are present; use `--output json` to inspect the complete capability graph.
 - Both read commands bootstrap the shared Developer Portal team session, carry
   no credentials or CSRF values in output, and do not mutate Bundle IDs or
   invalidate provisioning profiles. This first slice intentionally does not

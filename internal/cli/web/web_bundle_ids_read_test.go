@@ -197,6 +197,39 @@ func TestWebBundleIDsViewPrintsTable(t *testing.T) {
 	}
 }
 
+func TestWebBundleIDsViewWarnsWhenFormattedOutputOmitsIncludedResources(t *testing.T) {
+	for _, output := range []string{"table", "markdown"} {
+		t.Run(output, func(t *testing.T) {
+			restore := stubWebBundleIDReadDependencies(t)
+			defer restore()
+
+			getDeveloperBundleIDFn = func(_ context.Context, _ *webcore.Client, bundleID string) (*webcore.DeveloperBundleIDGetResult, error) {
+				return &webcore.DeveloperBundleIDGetResult{
+					Data: webcore.DeveloperBundleID{ID: bundleID, Type: "bundleIds"},
+					Included: []webcore.DeveloperBundleID{{
+						ID:   "capability-1",
+						Type: "bundleIdCapabilities",
+					}},
+				}, nil
+			}
+
+			command := WebBundleIDsViewCommand()
+			if err := command.FlagSet.Parse([]string{"--bundle-id", "bundle-1", "--output", output}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			_, stderr := captureWebCommandOutput(t, func() {
+				if err := command.Exec(context.Background(), nil); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			})
+			want := developerBundleIDIncludedOutputWarning + "\n"
+			if stderr != want {
+				t.Fatalf("stderr = %q, want %q", stderr, want)
+			}
+		})
+	}
+}
+
 func TestWebBundleIDsViewPrintsRawJSONEnvelope(t *testing.T) {
 	restore := stubWebBundleIDReadDependencies(t)
 	defer restore()
@@ -211,7 +244,8 @@ func TestWebBundleIDsViewPrintsRawJSONEnvelope(t *testing.T) {
 					"identifier": "com.example.app",
 				},
 			},
-			Raw: json.RawMessage(`{"data":{"type":"bundleIds","id":"bundle-1","attributes":{"name":"Example App","identifier":"com.example.app"}},"included":[],"links":{},"meta":{},"unknownTopLevel":[]}`),
+			Included: []webcore.DeveloperBundleID{{ID: "capability-1", Type: "bundleIdCapabilities"}},
+			Raw:      json.RawMessage(`{"data":{"type":"bundleIds","id":"bundle-1","attributes":{"name":"Example App","identifier":"com.example.app"}},"included":[{"type":"bundleIdCapabilities","id":"capability-1"}],"links":{},"meta":{},"unknownTopLevel":[]}`),
 		}, nil
 	}
 
@@ -238,6 +272,9 @@ func TestWebBundleIDsViewPrintsRawJSONEnvelope(t *testing.T) {
 	}
 	if got := string(envelope["unknownTopLevel"]); got != `[]` {
 		t.Fatalf("unknown top-level member = %s, want []", got)
+	}
+	if !strings.Contains(string(envelope["included"]), "capability-1") {
+		t.Fatalf("JSON output omitted included capability: %s", envelope["included"])
 	}
 }
 

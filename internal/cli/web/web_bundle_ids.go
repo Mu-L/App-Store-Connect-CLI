@@ -614,6 +614,7 @@ func renderDeveloperBundleIDTable(result *webcore.DeveloperBundleIDGetResult) er
 		asc.RenderTable(developerBundleIDDetailHeaders(), nil)
 		return nil
 	}
+	warnDeveloperBundleIDIncludedOutput(result)
 	asc.RenderTable(developerBundleIDDetailHeaders(), developerBundleIDDetailRows(result.Data))
 	return nil
 }
@@ -623,8 +624,18 @@ func renderDeveloperBundleIDMarkdown(result *webcore.DeveloperBundleIDGetResult)
 		asc.RenderMarkdown(developerBundleIDDetailHeaders(), nil)
 		return nil
 	}
+	warnDeveloperBundleIDIncludedOutput(result)
 	asc.RenderMarkdown(developerBundleIDDetailHeaders(), developerBundleIDDetailRows(result.Data))
 	return nil
+}
+
+const developerBundleIDIncludedOutputWarning = "Warning: table or Markdown output omits included Bundle ID resources; use --output json to inspect the complete capability graph."
+
+func warnDeveloperBundleIDIncludedOutput(result *webcore.DeveloperBundleIDGetResult) {
+	if result == nil || len(result.Included) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr, developerBundleIDIncludedOutputWarning)
 }
 
 func developerBundleIDStringAttribute(attributes map[string]any, key string) string {
