@@ -139,8 +139,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - The relationship endpoint is replace-only (PATCH); GET relationship requests are rejected with "does not allow 'GET_RELATIONSHIP'... Allowed operation is: REPLACE".
 - Setting `challengesMinimumPlatformVersions` requires a live App Store version; non-live versions fail with `ENTITY_ERROR.RELATIONSHIP.INVALID.MIN_CHALLENGES_VERSION_MUST_BE_LIVE` ("must be live to be set as a minimum challenges version.").
 - App Store Connect has no direct GET for a leaderboard-set member localization. `asc game-center leaderboard-sets member-localizations view --id` resolves the localization's leaderboard and leaderboard set through their to-one endpoints, then finds the exact ID in the doubly filtered collection across all pages.
-- App Store Connect exposes a group's challenge relationships as read-only. `asc game-center groups challenges set` remains registered during a deprecation window and returns migration guidance without making an HTTP request; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
-- `asc game-center details list` is backed by the app's single Game Center detail. Its legacy `--limit`, `--next`, and `--paginate` flags remain registered during a deprecation window but return precise guidance to omit the unsupported flag.
+- App Store Connect exposes a group's challenge relationships as read-only, so there is no `asc game-center groups challenges set` command; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
+- `asc game-center details list` is backed by the app's single Game Center detail, so it does not accept `--limit`, `--next`, or `--paginate`.
 
 ## Apple Ads Platform API v1
 
