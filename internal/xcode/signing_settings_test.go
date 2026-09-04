@@ -3959,6 +3959,107 @@ func TestSigningPlanReclassifiesNoOpAfterDependentRemoval(t *testing.T) {
 	}
 }
 
+// TestSigningPlanDefersRemovalFallbackBlockerUntilNoOpPromotion covers the
+// convergence case where a removal exposes a fallback changed by a sibling
+// operation while that same staged pass promotes a dependent no-op. The
+// promotion must be applied before the fallback comparison is treated as a
+// final blocker: the target-level literal then restores the removal-only
+// fallback and the next pass can converge safely.
+func TestSigningPlanDefersRemovalFallbackBlockerUntilNoOpPromotion(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	shared := mustReadVersionTestFile(t, sharedPath)
+	shared = "PRODUCT_BUNDLE_IDENTIFIER = \"$(PROVISIONING_PROFILE_SPECIFIER)\"\r\n" +
+		"CODE_SIGN_IDENTITY = \"$(PRODUCT_BUNDLE_IDENTIFIER)\"\r\n" +
+		"PROVISIONING_PROFILE_SPECIFIER = com.example.old\r\n" + shared
+	if err := os.WriteFile(sharedPath, []byte(shared), 0o640); err != nil {
+		t.Fatalf("WriteFile(shared xcconfig) error = %v", err)
+	}
+	// Removing the direct identity exposes the shared identity fallback. The
+	// target's bundle identifier initially resolves to com.example.old through
+	// the shared profile, so it is a no-op until the requested profile change
+	// stages; that change makes the bundle identifier a dependent no-op that must
+	// be promoted to preserve its requested value.
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`CODE_SIGN_IDENTITY = debug-profile;`)
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{
+			"CODE_SIGN_IDENTITY":null,
+			"PRODUCT_BUNDLE_IDENTIFIER":"com.example.old",
+			"PROVISIONING_PROFILE_SPECIFIER":"com.example.new"
+		}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if !plan.Ready {
+		t.Fatalf("expected converged ready plan, got blockers %#v", plan.Blockers)
+	}
+	if len(plan.Changes) != 3 {
+		t.Fatalf("plan changes = %#v, want identity removal plus profile and promoted bundle-ID writes", plan.Changes)
+	}
+	var identityRemoval, bundleChange, profileChange *SigningSettingChange
+	for index := range plan.Changes {
+		change := &plan.Changes[index]
+		switch change.Setting {
+		case "CODE_SIGN_IDENTITY":
+			identityRemoval = change
+		case "PRODUCT_BUNDLE_IDENTIFIER":
+			bundleChange = change
+		case "PROVISIONING_PROFILE_SPECIFIER":
+			profileChange = change
+		}
+	}
+	if identityRemoval == nil || identityRemoval.Operation != "remove" {
+		t.Fatalf("identity change = %#v, want direct removal", identityRemoval)
+	}
+	if bundleChange == nil || bundleChange.Source != "pbxproj" || bundleChange.NewValue == nil || *bundleChange.NewValue != "com.example.old" {
+		t.Fatalf("bundle-ID change = %#v, want promoted target-level literal", bundleChange)
+	}
+	if profileChange == nil || profileChange.NewValue == nil || *profileChange.NewValue != "com.example.new" {
+		t.Fatalf("profile change = %#v, want requested profile", profileChange)
+	}
+
+	if err := WriteSigningPlanArtifact(plan, false); err != nil {
+		t.Fatalf("WriteSigningPlanArtifact() error = %v", err)
+	}
+	if _, err := ApplySigningPlan(SigningApplyOptions{PlanPath: plan.PlanPath}); err != nil {
+		t.Fatalf("ApplySigningPlan() error = %v", err)
+	}
+	updated, err := openStructuredVersionProject(project)
+	if err != nil {
+		t.Fatalf("reopen project: %v", err)
+	}
+	configuration, err := signingConfigurationFor(updated, "App", "Debug")
+	if err != nil {
+		t.Fatalf("find updated configuration: %v", err)
+	}
+	for _, expected := range []struct {
+		setting string
+		value   string
+	}{
+		{setting: "PRODUCT_BUNDLE_IDENTIFIER", value: "com.example.old"},
+		{setting: "PROVISIONING_PROFILE_SPECIFIER", value: "com.example.new"},
+		{setting: "CODE_SIGN_IDENTITY", value: "com.example.old"},
+	} {
+		resolved, _, err := updated.resolveSetting(configuration, expected.setting)
+		if err != nil {
+			t.Fatalf("resolve applied %s: %v", expected.setting, err)
+		}
+		if resolved != expected.value {
+			t.Fatalf("applied %s = %q, want %q", expected.setting, resolved, expected.value)
+		}
+	}
+}
+
 func TestSigningPlanBlocksRemovalWhenSiblingWriteChangesSharedFallback(t *testing.T) {
 	project := writeStructuredVersionProject(t, true)
 	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")

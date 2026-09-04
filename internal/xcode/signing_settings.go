@@ -612,7 +612,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			break
 		}
 		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, project, stagedProject, stagedResolver, baselineResolver)
-		if len(resolutionBlockers) > 0 {
+		if len(resolutionBlockers) > 0 && reclassified == 0 {
 			operationBlockers = append(operationBlockers, resolutionBlockers...)
 			break
 		}
