@@ -769,23 +769,33 @@ func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string,
 	if err != nil {
 		return fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
 	}
+	// Complete structural validation before invoking codesign. Directory
+	// enumeration order is filesystem-specific, so an invalid later entry must
+	// not be hidden by an earlier unsigned dylib verification failure.
+	for _, entry := range entries {
+		if err := contextError(ctx); err != nil {
+			return err
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect SwiftSupport/iphoneos entry: %w", err)
+		}
+		if entryInfo.Mode()&os.ModeSymlink != 0 || !entryInfo.Mode().IsRegular() {
+			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
+		}
+		name := entry.Name()
+		if name == ".dylib" || !strings.HasSuffix(name, ".dylib") {
+			return fmt.Errorf("SwiftSupport/iphoneos contains an unsupported entry")
+		}
+	}
 	for _, entry := range entries {
 		if err := contextError(ctx); err != nil {
 			return err
 		}
 		name := entry.Name()
-		// Reject the final symlink from the directory entry itself. Some
-		// os.Root implementations may follow it during OpenFile.
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
-		}
 		file, _, err := openSigningResignRegularNoFollow(platform, name)
 		if err != nil {
 			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry: %w", err)
-		}
-		if name == ".dylib" || !strings.HasSuffix(name, ".dylib") {
-			file.Close()
-			return fmt.Errorf("SwiftSupport/iphoneos contains an unsupported entry")
 		}
 		if err := verifySigningResignPreservedExternalCodeOpen(ctx, file, treeRoot); err != nil {
 			file.Close()

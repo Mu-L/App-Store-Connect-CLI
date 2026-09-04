@@ -1567,6 +1567,37 @@ func TestValidateSigningResignSwiftSupportRejectsTamperedAndNestedEntries(t *tes
 	}
 }
 
+func TestValidateSigningResignSwiftSupportRejectsLaterSymlinkBeforeCodeVerification(t *testing.T) {
+	temporary := t.TempDir()
+	root := filepath.Join(temporary, "SwiftSupport", "iphoneos")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "a-libswiftCore-real.dylib")
+	if err := os.WriteFile(target, []byte("runtime"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "z-libswiftCore.dylib")); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	toolCalls := 0
+	runSigningResignToolFn = func(_ context.Context, _ string, _ ...string) (signingResignToolOutput, error) {
+		toolCalls++
+		return signingResignToolOutput{}, errors.New("code object is not signed")
+	}
+
+	err := validateSigningResignSwiftSupport(context.Background(), temporary)
+	if err == nil || !strings.Contains(err.Error(), "nested or symbolic-link") {
+		t.Fatalf("validateSigningResignSwiftSupport() error = %v, want symbolic-link rejection", err)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("SwiftSupport verification tool calls = %d, want structural rejection before code verification", toolCalls)
+	}
+}
+
 func TestValidateSigningResignSwiftSupportAcceptsCanonicalLayout(t *testing.T) {
 	temporary := t.TempDir()
 	root := filepath.Join(temporary, "SwiftSupport", "iphoneos")
