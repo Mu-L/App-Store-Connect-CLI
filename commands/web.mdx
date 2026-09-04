@@ -204,6 +204,13 @@ Inspect apps shown in App Store Connect's Removed Apps status view.
 Available commands:
 
 * `asc web removed-apps list` - list removed apps
+* `asc web removed-apps restore` - restore a removed app and configure siloable-user access
+
+`restore` requires `--app`, `--access limited|full`, and `--confirm`. It PATCHes
+the app with `removed:false`, verifies that state, then writes permissions. The
+PATCH is the authoritative name-availability gate; no separate name preflight
+is performed. A permission failure means the app is restored but access may be
+unchanged.
 
 Example:
 
