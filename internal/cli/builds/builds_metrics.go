@@ -48,7 +48,7 @@ func BuildsMetricsBetaUsagesCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "beta-usages",
-		ShortUsage: "asc builds metrics beta-usages (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM]) [flags]",
+		ShortUsage: "asc builds metrics beta-usages (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION]) [flags]",
 		ShortHelp:  "Fetch beta build usage metrics for a build.",
 		LongHelp: `Fetch beta build usage metrics for a build.
 
