@@ -5,9 +5,10 @@
 Version 5.0 removes every CLI-side compatibility surface that 4.x kept behind a
 deprecation warning, and turns the remaining "warns and continues" inputs into
 hard usage errors. Nothing in this release adds a new warning phase: a removed
-flag is simply not registered any more, so the CLI fails with `Unknown flag:
---name` plus the usage dump on stderr and exit code `2`; a removed command
-fails with the generic unknown-command usage error, also exit `2`.
+flag is simply not registered any more, so the CLI fails on stderr with
+``Error: unknown flag `--old` for `asc <command>` `` (followed by a `Try:`
+suggestion when a close canonical flag exists) and exit code `2`; a removed
+command fails with ``Error: unknown command `asc <command>` ``, also exit `2`.
 
 If you have pinned CI jobs, shell scripts, or internal runbooks on 4.x, read
 this page before you cut over. Use `asc --help` and `asc <command> --help`
@@ -32,9 +33,9 @@ truth.
 * `asc builds ...` app-scoped `--build-number` selection requires `--platform`
   instead of defaulting to `IOS`.
 * Unsupported shims that only ever printed a deprecation error are unregistered
-  (`asc game-center groups challenges set`, `asc app-clips advanced-experiences
-  images delete`, `--external-testing`, `--challenge-enabled`, Game Center
-  details pagination flags).
+  (`asc game-center groups challenges set ...`, `asc app-clips
+  advanced-experiences images delete ...`, `--external-testing`,
+  `--challenge-enabled`, Game Center details pagination flags).
 * `ASC_MATCH_PASSWORD`, `ASC_IRIS_SESSION_CACHE`, and
   `ASC_IRIS_SESSION_CACHE_DIR` are no longer read.
 
@@ -116,12 +117,12 @@ right-hand column is the canonical replacement that already existed in 4.x.
 | `asc iap localizations create ...` | `asc iap versions localizations create --version-id "IAP_VERSION_ID" --name "NAME" --locale "LOCALE"` |
 | `asc iap localizations update ...` | `asc iap versions localizations update --localization-id "LOCALIZATION_ID" ...` |
 | `asc iap localizations delete ...` | `asc iap versions localizations delete --localization-id "LOCALIZATION_ID" --confirm` |
-| `asc iap images list|view|create|update|delete ...` | `asc iap versions images ...` |
+| `asc iap images <subcommand> ...` | `asc iap versions images ...` |
 | `asc iap submit ...` | `asc review items add --submission "SUBMISSION_ID" --item-type inAppPurchaseVersions --item-id "IAP_VERSION_ID"` |
-| `asc subscriptions localizations list|view|create|update|delete ...` | `asc subscriptions versions localizations ...` |
+| `asc subscriptions localizations <subcommand> ...` | `asc subscriptions versions localizations ...` |
 | `asc subscriptions localizations sync ...` | Reconcile each locale with `asc subscriptions versions localizations` list/create/update/delete |
-| `asc subscriptions images list|view|create|update|delete ...` | `asc subscriptions versions images ...` (`upload` replaces both `create` and `update`) |
-| `asc subscriptions groups localizations list|view|create|update|delete ...` | `asc subscriptions groups versions localizations ...` |
+| `asc subscriptions images <subcommand> ...` | `asc subscriptions versions images ...` (`upload` replaces both `create` and `update`) |
+| `asc subscriptions groups localizations <subcommand> ...` | `asc subscriptions groups versions localizations ...` |
 | `asc subscriptions groups localizations sync ...` | Reconcile each locale with `asc subscriptions groups versions localizations` list/create/update/delete |
 | `asc subscriptions review submit ...` | `asc review items add --submission "SUBMISSION_ID" --item-type subscriptionVersions --item-id "SUBSCRIPTION_VERSION_ID"` |
 | `asc subscriptions review submit-group ...` | `asc review items add --submission "SUBMISSION_ID" --item-type subscriptionGroupVersions --item-id "GROUP_VERSION_ID"` |
@@ -266,8 +267,8 @@ asc builds wait --app "APP_ID" --build-number 42 --platform IOS
 3. Pair every `--device` on `asc signing fetch` or `asc signing sync push`
    with `--create-missing`, and move signing sync passwords to
    `--password-file` or `ASC_SIGNING_SYNC_PASSWORD`.
-4. Replace product-scoped `asc iap localizations|images ...`,
-   `asc subscriptions localizations|images ...`, and
+4. Replace product-scoped `asc iap localizations ...`, `asc iap images ...`,
+   `asc subscriptions localizations ...`, `asc subscriptions images ...`, and
    `asc subscriptions groups localizations ...` calls with the version-scoped
    commands, and route review submission through `asc review items add`.
 5. Replace `--two-factor-code` with `--two-factor-code-command` (or
