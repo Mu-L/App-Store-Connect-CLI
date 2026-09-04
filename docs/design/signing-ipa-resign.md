@@ -128,8 +128,9 @@ publication should use the bounded ZIP, `rootfs`, and `secureopen` patterns in
    third-prefix value may remain unchanged only when its replacement profile
    authorizes it. No profile wildcard is emitted, and profile-only entries are
    never added. App Clip parent and associated-identifier relationship claims
-   are deferred in this version: each is preserved only when already
-   authorized unchanged, and neither is rewritten. Every other entitlement,
+   are rebased only through a proven unique reciprocal main-app/App-Clip pair;
+   if pairing cannot be proven, each is preserved only when already authorized
+   unchanged. Every other entitlement,
    including iCloud containers and migration/data claims, remains exact-only
    and is never generically rewritten. The JSON receipt reports one flattened
    entry per changed scalar or array element, with optional array indexes, in
