@@ -412,7 +412,7 @@ Examples:
   asc builds info --build-id "BUILD_ID"
   asc builds info --app "123456789" --latest
   asc builds info --app "123456789" --latest --version "1.2.3" --platform IOS
-  asc builds info --app "123456789" --build-number "42"
+  asc builds info --app "123456789" --build-number "42" --platform IOS
   asc builds next-build-number --app "123456789" --version "1.2.3" --platform IOS
   asc builds expire --app "123456789" --latest --confirm
   asc builds expire-all --app "123456789" --older-than 90d --dry-run
@@ -819,14 +819,14 @@ Selector modes:
   --app APP --latest [--version VERSION] [--platform PLATFORM]
                      [--processing-state STATES]
                      [--exclude-expired | --not-expired]
-  --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM]
+  --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION]
 
 Examples:
   asc builds info --build-id "BUILD_ID"
   asc builds info --app "123456789" --latest
   asc builds info --app "123456789" --latest --version "1.2.3" --platform IOS
   asc builds info --app "123456789" --latest --processing-state "PROCESSING,VALID"
-  asc builds info --app "123456789" --build-number "42"
+  asc builds info --app "123456789" --build-number "42" --platform IOS
   asc builds info --app "123456789" --build-number "42" --version "1.2.3" --platform IOS`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -884,7 +884,7 @@ func BuildsExpireCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "expire",
-		ShortUsage: "asc builds expire (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM]) --confirm [flags]",
+		ShortUsage: "asc builds expire (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION]) --confirm [flags]",
 		ShortHelp:  "Expire a build for TestFlight.",
 		LongHelp: `Expire a build for TestFlight.
 
