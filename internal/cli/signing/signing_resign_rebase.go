@@ -199,7 +199,9 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 			}
 			permitted = permitted && signingResignStrictEntitlementValuePermits(profileValue, value)
 		} else {
-			permitted = permitted && signingResignEntitlementValuePermits(profileValue, value)
+			// Rebasing is opt-in and must validate the complete profile
+			// authorization grammar; the legacy no-flag path remains unchanged.
+			permitted = permitted && signingResignStrictEntitlementValuePermits(profileValue, value)
 		}
 		if !permitted {
 			unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
