@@ -234,6 +234,21 @@ func TestSigningResignRebaseRejectsMalformedProfileArrayEntries(t *testing.T) {
 	}
 }
 
+func TestPlanSigningResignEntitlementsUsesStrictAuthorizationOnlyWhenRebasing(t *testing.T) {
+	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
+		"com.example.claim": "OLD.value",
+	})
+	profile := rebaseTestProfile(target.BundleID, "NEWPREFIX", map[string]any{
+		"com.example.claim": "*",
+	})
+	if _, err := planSigningResignEntitlements(signingResignArchive{MainPath: target.RelativePath, Targets: []signingResignTarget{target}}, map[string]signingResignProfile{target.BundleID: profile}, false); err != nil {
+		t.Fatalf("legacy plan rejected historically authorized wildcard: %v", err)
+	}
+	if _, err := planSigningResignEntitlements(signingResignArchive{MainPath: target.RelativePath, Targets: []signingResignTarget{target}}, map[string]signingResignProfile{target.BundleID: profile}, true); err == nil || !strings.Contains(err.Error(), "com.example.claim") {
+		t.Fatalf("rebasing plan error = %v, want strict claim refusal", err)
+	}
+}
+
 func TestSigningResignStrictAuthorizationPreservesExactNonStringScalars(t *testing.T) {
 	if !signingResignStrictEntitlementValuePermits(true, true) {
 		t.Fatal("exact boolean authorization was rejected")
