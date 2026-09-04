@@ -1177,7 +1177,6 @@ func TestWebAuthLoginPromptInterruptDoesNotFallBackToUsageError(t *testing.T) {
 		"ASC_WEB_SESSION_CACHE=1",
 		"ASC_WEB_SESSION_CACHE_BACKEND=file",
 		"ASC_WEB_SESSION_CACHE_DIR="+filepath.Join(tmpDir, "web-session-cache"),
-		"ASC_IRIS_SESSION_CACHE=0",
 	)
 
 	ptmx, err := pty.Start(runCmd)
@@ -1273,7 +1272,6 @@ func TestWebAuthLoginPromptInterruptSkipsSkillsAutoCheck(t *testing.T) {
 		"ASC_WEB_SESSION_CACHE=1",
 		"ASC_WEB_SESSION_CACHE_BACKEND=file",
 		"ASC_WEB_SESSION_CACHE_DIR="+filepath.Join(tmpDir, "web-session-cache"),
-		"ASC_IRIS_SESSION_CACHE=0",
 		"ASC_SKILLS_AUTO_CHECK=1",
 		"CI=",
 		"PATH="+scriptDir+string(os.PathListSeparator)+os.Getenv("PATH"),
