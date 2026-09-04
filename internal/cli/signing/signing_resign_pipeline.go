@@ -140,16 +140,15 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 		return result, fmt.Errorf("secure private re-signing directory: %w", err)
 	}
 	defer func() {
-		if cleanupErr := removeSigningResignStage(stageDir); cleanupErr != nil {
-			resultErr = errors.Join(
-				resultErr,
-				wrapSigningResignOperationalError(
-					signingResignStageCleanup,
-					signingResignCodeCleanup,
-					fmt.Errorf("%w: remove private re-signing directory: %w", ErrSigningResignCleanupFailed, cleanupErr),
-				),
-			)
+		cleanupErr := removeSigningResignStage(stageDir)
+		if cleanupErr == nil {
+			return
 		}
+		// A cleanup failure after the artifact reached its create-only
+		// destination must keep the publication visible to the caller, exactly
+		// like the environment-cleanup-after-publication path below.
+		published := result.Output.Path != "" || errors.Is(resultErr, ErrSigningResignPublicationAmbiguous)
+		resultErr = errors.Join(resultErr, signingResignStageCleanupFailure(published, cleanupErr))
 	}()
 
 	stageRoot, err := rootfs.New(stageDir)
@@ -488,6 +487,9 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		if !ok {
 			return signingResignPreparedTree{}, fmt.Errorf("Mach-O code is not contained by an app-like target")
 		}
+		if err := validateSigningResignNestedExecutableMode(ctx, treeRoot, codePath); err != nil {
+			return signingResignPreparedTree{}, err
+		}
 		entitlements, err := readSigningResignEntitlements(ctx, codePath)
 		if err != nil {
 			return signingResignPreparedTree{}, fmt.Errorf("read nested code entitlements failed")
@@ -543,6 +545,35 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 	}
 	prepared.CodePlans = codePlans
 	return prepared, nil
+}
+
+func validateSigningResignNestedExecutableMode(ctx context.Context, tree rootfs.Root, codePath string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(tree.Path(), codePath)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("nested executable is outside the staging tree")
+	}
+	file, err := tree.OpenFile(relative)
+	if err != nil {
+		return fmt.Errorf("inspect nested executable mode: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect nested executable mode: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("nested executable is not a regular file")
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		return fmt.Errorf("nested executable file mode is missing the owner-execute permission")
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 func isSigningResignPreservedExternalCodePath(treeRoot, codePath string) bool {
@@ -665,6 +696,9 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	entryInfo, err := entry.Info()
 	if err != nil || !entryInfo.Mode().IsRegular() {
 		return fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
+	}
+	if entryInfo.Mode().Perm()&0o100 == 0 {
+		return fmt.Errorf("WatchKitSupport2/WK is missing the owner-execute permission")
 	}
 	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(watchRoot, "WK")); err != nil {
 		return fmt.Errorf("verify preserved WatchKitSupport2 code failed: %w", err)
@@ -1091,6 +1125,13 @@ func removeSigningResignStage(stagePath string) error {
 	return os.RemoveAll(clean)
 }
 
+func signingResignRepackEntryLimitError(count int) error {
+	if count > signingResignMaxArchiveEntries {
+		return fmt.Errorf("repacked IPA would exceed the archive entry limit")
+	}
+	return nil
+}
+
 func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root) (packedPath string, packedSize int64, packedDigest string, resultErr error) {
 	defer func() {
 		resultErr = wrapSigningResignOperationalError(
@@ -1153,6 +1194,9 @@ func repackSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Roo
 	}
 	if fileCount == 0 {
 		return "", 0, "", fmt.Errorf("staging tree is empty")
+	}
+	if err := signingResignRepackEntryLimitError(len(entries)); err != nil {
+		return "", 0, "", err
 	}
 	sort.Slice(entries, func(left, right int) bool {
 		return entries[left].relative < entries[right].relative

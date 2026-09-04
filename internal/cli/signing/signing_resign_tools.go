@@ -158,9 +158,14 @@ func readSigningResignEntitlements(ctx context.Context, executablePath string) (
 }
 
 func isUnsignedSigningResignCodeObject(stderr []byte) bool {
-	message := strings.ToLower(string(stderr))
-	return strings.Contains(message, "code object is not signed at all") ||
-		strings.Contains(message, "code object is not signed")
+	for _, rawLine := range strings.Split(strings.ToLower(string(stderr)), "\n") {
+		line := strings.TrimSpace(rawLine)
+		const diagnostic = "code object is not signed at all"
+		if line == diagnostic || strings.HasSuffix(line, ": "+diagnostic) {
+			return true
+		}
+	}
+	return false
 }
 
 func signSigningResignObject(ctx context.Context, pathValue, identitySHA1, keychainPath, entitlementsPath string) error {

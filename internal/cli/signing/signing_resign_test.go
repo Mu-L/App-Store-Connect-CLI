@@ -680,6 +680,241 @@ func TestBuildSigningResignEntitlementsDerivesPushEnvironmentFromProfileClass(t 
 	}
 }
 
+func TestBuildSigningResignEntitlementsRebindsAppAttestByProfileClass(t *testing.T) {
+	const key = "com.apple.developer.devicecheck.appattest-environment"
+	existing := map[string]any{
+		"application-identifier":              "OLDTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "OLDTEAM",
+		"get-task-allow":                      true,
+		key:                                   "development",
+	}
+	profile := signingResignProfile{
+		Class: signingResignProfileClassAdHoc,
+		Entitlements: map[string]any{
+			"application-identifier":              "NEWTEAM.com.example.app",
+			"com.apple.developer.team-identifier": "NEWTEAM",
+			"get-task-allow":                      false,
+			key:                                   "production",
+		},
+	}
+	got, err := buildSigningResignEntitlementsForProfile(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v", err)
+	}
+	if got[key] != "production" {
+		t.Fatalf("app attest environment = %#v, want replacement profile class value", got[key])
+	}
+	delete(existing, key)
+	got, err = buildSigningResignEntitlementsForProfile(existing, profile)
+	if err != nil {
+		t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v", err)
+	}
+	if _, exists := got[key]; exists {
+		t.Fatal("app attest environment granted without an existing claim")
+	}
+}
+
+func TestBuildSigningResignEntitlementsRebindsBetaReportsByProfileClass(t *testing.T) {
+	baseProfile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	tests := []struct {
+		name            string
+		class           string
+		existingBeta    any
+		existingPresent bool
+		profileBeta     any
+		profilePresent  bool
+		wantBeta        any
+		wantPresent     bool
+		wantErr         bool
+	}{
+		{
+			name:            "app store keeps authorized claim",
+			class:           signingResignProfileClassAppStore,
+			existingBeta:    true,
+			existingPresent: true,
+			profileBeta:     true,
+			profilePresent:  true,
+			wantBeta:        true,
+			wantPresent:     true,
+		},
+		{
+			name:            "app store rebinds false source",
+			class:           signingResignProfileClassAppStore,
+			existingBeta:    false,
+			existingPresent: true,
+			profileBeta:     true,
+			profilePresent:  true,
+			wantBeta:        true,
+			wantPresent:     true,
+		},
+		{
+			name:            "development removes store claim",
+			class:           signingResignProfileClassDevelopment,
+			existingBeta:    true,
+			existingPresent: true,
+			wantPresent:     false,
+		},
+		{
+			name:            "ad hoc removes store claim",
+			class:           signingResignProfileClassAdHoc,
+			existingBeta:    true,
+			existingPresent: true,
+			profileBeta:     false,
+			profilePresent:  true,
+			wantPresent:     false,
+		},
+		{
+			name:           "development profile cannot authorize store claim",
+			class:          signingResignProfileClassDevelopment,
+			profileBeta:    true,
+			profilePresent: true,
+			wantErr:        true,
+		},
+		{
+			name:           "invalid app store profile value",
+			class:          signingResignProfileClassAppStore,
+			profileBeta:    "yes",
+			profilePresent: true,
+			wantErr:        true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			existing := map[string]any{
+				"application-identifier":              "OLDTEAM.com.example.app",
+				"com.apple.developer.team-identifier": "OLDTEAM",
+				"get-task-allow":                      false,
+			}
+			if test.existingPresent {
+				existing["beta-reports-active"] = test.existingBeta
+			}
+			profile := make(map[string]any, len(baseProfile)+1)
+			for key, value := range baseProfile {
+				profile[key] = value
+			}
+			if test.profilePresent {
+				profile["beta-reports-active"] = test.profileBeta
+			}
+			got, err := buildSigningResignEntitlementsForProfile(existing, signingResignProfile{
+				Class:        test.class,
+				Entitlements: profile,
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			gotBeta, gotPresent := got["beta-reports-active"]
+			if gotPresent != test.wantPresent || (gotPresent && gotBeta != test.wantBeta) {
+				t.Fatalf("beta-reports-active = %#v (present %v), want %#v (present %v); entitlements = %#v", gotBeta, gotPresent, test.wantBeta, test.wantPresent, got)
+			}
+		})
+	}
+}
+
+func TestBuildSigningResignEntitlementsRebindsICloudEnvironmentByProfileClass(t *testing.T) {
+	baseProfile := map[string]any{
+		"application-identifier":              "NEWTEAM.com.example.app",
+		"com.apple.application-identifier":    "NEWTEAM.com.example.app",
+		"com.apple.developer.team-identifier": "NEWTEAM",
+		"get-task-allow":                      false,
+	}
+	tests := []struct {
+		name            string
+		class           string
+		existingEnv     any
+		existingPresent bool
+		profileEnv      any
+		profilePresent  bool
+		wantEnv         any
+		wantPresent     bool
+		wantErr         bool
+	}{
+		{
+			name:            "development to distribution",
+			class:           signingResignProfileClassAdHoc,
+			existingEnv:     "Development",
+			existingPresent: true,
+			profileEnv:      "Production",
+			profilePresent:  true,
+			wantEnv:         "Production",
+			wantPresent:     true,
+		},
+		{
+			name:            "distribution to development",
+			class:           signingResignProfileClassDevelopment,
+			existingEnv:     "Production",
+			existingPresent: true,
+			profileEnv:      "Development",
+			profilePresent:  true,
+			wantEnv:         "Development",
+			wantPresent:     true,
+		},
+		{
+			name:           "absent capability is not granted",
+			class:          signingResignProfileClassAppStore,
+			profileEnv:     "Production",
+			profilePresent: true,
+			wantPresent:    false,
+		},
+		{
+			name:            "missing replacement authorization remains blocked",
+			class:           signingResignProfileClassAppStore,
+			existingEnv:     "Development",
+			existingPresent: true,
+			wantErr:         true,
+		},
+		{
+			name:            "profile value must match class",
+			class:           signingResignProfileClassDevelopment,
+			existingEnv:     "Development",
+			existingPresent: true,
+			profileEnv:      "Production",
+			profilePresent:  true,
+			wantErr:         true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			existing := map[string]any{
+				"application-identifier":              "OLDTEAM.com.example.app",
+				"com.apple.developer.team-identifier": "OLDTEAM",
+				"get-task-allow":                      false,
+			}
+			if test.existingPresent {
+				existing["com.apple.developer.icloud-container-environment"] = test.existingEnv
+			}
+			profile := make(map[string]any, len(baseProfile)+1)
+			for key, value := range baseProfile {
+				profile[key] = value
+			}
+			if test.profilePresent {
+				profile["com.apple.developer.icloud-container-environment"] = test.profileEnv
+			}
+			got, err := buildSigningResignEntitlementsForProfile(existing, signingResignProfile{
+				Class:        test.class,
+				Entitlements: profile,
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("buildSigningResignEntitlementsForProfile() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			gotEnv, gotPresent := got["com.apple.developer.icloud-container-environment"]
+			if gotPresent != test.wantPresent || (gotPresent && gotEnv != test.wantEnv) {
+				t.Fatalf("iCloud environment = %#v (present %v), want %#v (present %v); entitlements = %#v", gotEnv, gotPresent, test.wantEnv, test.wantPresent, got)
+			}
+		})
+	}
+}
+
 func TestBuildSigningResignEntitlementsKeepsConcreteValuesForWildcardProfileClaims(t *testing.T) {
 	existing := map[string]any{
 		"application-identifier":                             "OLDTEAM.com.example.app",
@@ -2124,6 +2359,15 @@ func TestRepackSigningResignTreeIsDeterministicAndBounded(t *testing.T) {
 	}
 }
 
+func TestSigningResignRepackEntryLimitError(t *testing.T) {
+	if err := signingResignRepackEntryLimitError(signingResignMaxArchiveEntries); err != nil {
+		t.Fatalf("signingResignRepackEntryLimitError(%d) = %v, want accepted", signingResignMaxArchiveEntries, err)
+	}
+	if err := signingResignRepackEntryLimitError(signingResignMaxArchiveEntries + 1); err == nil || !strings.Contains(err.Error(), "archive entry limit") {
+		t.Fatalf("signingResignRepackEntryLimitError(%d) = %v, want limit rejection", signingResignMaxArchiveEntries+1, err)
+	}
+}
+
 func TestPublishSigningResignOutputReportsAmbiguousPublication(t *testing.T) {
 	contents := []byte("packed IPA")
 	for _, test := range []struct {
@@ -2477,6 +2721,126 @@ func TestInspectSigningResignTargetRequiresOwnerExecutableBinary(t *testing.T) {
 	}
 }
 
+func TestSigningResignAppExecutableClassificationRequiresMHExecute(t *testing.T) {
+	base := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	for _, test := range []struct {
+		name     string
+		fileType []byte
+		want     bool
+	}{
+		{name: "MH_EXECUTE", fileType: []byte{2, 0, 0, 0}, want: true},
+		{name: "MH_DYLIB", fileType: []byte{6, 0, 0, 0}},
+		{name: "MH_BUNDLE", fileType: []byte{8, 0, 0, 0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := append([]byte(nil), base...)
+			copy(data[12:16], test.fileType)
+			path := filepath.Join(t.TempDir(), "executable")
+			if err := os.WriteFile(path, data, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			info, err := file.Stat()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := isSigningResignAppExecutableFile(file, info.Size()); got != test.want {
+				t.Fatalf("isSigningResignAppExecutableFile() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPrepareSigningResignTreeRequiresOwnerExecutableNestedCode(t *testing.T) {
+	treePath := t.TempDir()
+	appPath := filepath.Join(treePath, "Payload", "App.app")
+	nestedPath := filepath.Join(appPath, "PlugIns", "Service.xpc", "Service")
+	if err := os.MkdirAll(filepath.Dir(nestedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	machoData := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	if err := os.WriteFile(filepath.Join(appPath, "App"), machoData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nestedPath, machoData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stagePath := t.TempDir()
+	stageRoot, err := rootfs.New(stagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stageRoot.Close()
+	treeRoot, err := rootfs.New(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer treeRoot.Close()
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{}, nil
+	}
+	profile := signingResignProfile{
+		Data: []byte("profile"),
+		Entitlements: map[string]any{
+			"application-identifier":              "TEAM.com.example.app",
+			"com.apple.application-identifier":    "TEAM.com.example.app",
+			"com.apple.developer.team-identifier": "TEAM",
+			"get-task-allow":                      false,
+		},
+	}
+	_, err = prepareSigningResignTree(context.Background(), stageRoot, treeRoot, signingResignArchive{
+		MainPath: "Payload/App.app",
+		Targets: []signingResignTarget{{
+			Kind: "application", RelativePath: "Payload/App.app", BundleID: "com.example.app", Executable: "App",
+		}},
+	}, map[string]signingResignProfile{"com.example.app": profile})
+	if err == nil || !strings.Contains(err.Error(), "owner-execute") {
+		t.Fatalf("prepareSigningResignTree() error = %v, want nested owner-execute rejection", err)
+	}
+}
+
+func TestSigningResignArchiveMemberModeUsesNonExecutableDOSDefault(t *testing.T) {
+	machoData := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	data := buildSigningResignZip(t, []signingResignZipEntry{{
+		name: "Payload/App.app/PlugIns/Service.xpc/Service", data: machoData,
+	}})
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.File) != 1 || reader.File[0].CreatorVersion>>8 != 0 {
+		t.Fatalf("test ZIP unexpectedly carries Unix mode metadata: %#v", reader.File)
+	}
+	mode, err := signingResignArchiveMemberMode(reader.File[0])
+	if err != nil {
+		t.Fatalf("signingResignArchiveMemberMode() error = %v", err)
+	}
+	if mode != 0o644 {
+		t.Fatalf("DOS-created nested executable default mode = %#o, want %#o", mode, 0o644)
+	}
+}
+
 func TestSigningResignSafeFileModeRequiresOwnerWritableDirectories(t *testing.T) {
 	if _, err := signingResignSafeFileMode(0o555, true); err == nil || !strings.Contains(err.Error(), "owner-writable") {
 		t.Fatalf("signingResignSafeFileMode(0o555, dir) error = %v, want owner-writable rejection", err)
@@ -2609,6 +2973,37 @@ func TestBuildSigningResignEntitlementsListsEveryUnauthorizedCrossTeamClaim(t *t
 	}
 	if got := strings.Count(message, "then re-run"); got != 2 {
 		t.Fatalf("refusal %q lists %d remediations, want one per blocked claim", message, got)
+	}
+}
+
+func TestSigningResignUnauthorizedClaimsEscapeAndBoundDetails(t *testing.T) {
+	rawKey := "unauthorized\n\x1b[31mclaim"
+	rawValue := strings.Repeat("\x1b", 512)
+	claims := make([]signingResignUnauthorizedClaim, 32)
+	for index := range claims {
+		claims[index] = signingResignUnauthorizedClaim{
+			Key:      rawKey,
+			Existing: rawValue,
+			Profile:  "authorized",
+		}
+	}
+	err := signingResignUnauthorizedClaimsError(claims)
+	message := err.Error()
+	if strings.ContainsAny(message, "\r\n\x1b") {
+		t.Fatalf("unauthorized-claim detail contains raw control characters: %q", message)
+	}
+	if strings.Contains(message, rawKey) || strings.Contains(message, rawValue) {
+		t.Fatal("unauthorized-claim detail exposed unescaped or unbounded input")
+	}
+	if len(message) > signingResignPublicDetailMaxBytes {
+		t.Fatalf("unauthorized-claim detail length = %d, want bounded output", len(message))
+	}
+	suggestion, ok := signingResignClaimRebaseSuggestion("OLDTEAM."+rawValue, "NEWTEAM.*")
+	if !ok {
+		t.Fatal("signingResignClaimRebaseSuggestion() did not derive a wildcard remediation")
+	}
+	if strings.ContainsAny(suggestion, "\r\n\x1b") || len(suggestion) > 160 {
+		t.Fatalf("wildcard remediation = %q, want escaped bounded output", suggestion)
 	}
 }
 
@@ -2837,5 +3232,122 @@ func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
 		if !seen {
 			t.Fatalf("containers %v are missing %q", containers, container)
 		}
+	}
+}
+
+func TestDiscoverSigningResignArchiveIgnoresRegularFilesNamedLikeBundles(t *testing.T) {
+	info, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":         "com.example.app",
+		"CFBundleExecutable":         "App",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	data := buildSigningResignZip(t, []signingResignZipEntry{
+		{name: "Payload/App.app/Info.plist", data: info},
+		{name: "Payload/App.app/App", data: executable, mode: 0o755},
+		{name: "Payload/App.app/Resources/example.app", data: []byte("resource named like a bundle")},
+		{name: "Payload/App.app/Resources/example.appex", data: []byte("resource named like an extension")},
+	})
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignArchive(context.Background(), reader); err != nil {
+		t.Fatalf("validateSigningResignArchive() error = %v", err)
+	}
+	tree, err := rootfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	treeOS, err := tree.OpenRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer treeOS.Close()
+	if err := materializeSigningResignArchive(context.Background(), reader, treeOS); err != nil {
+		t.Fatalf("materializeSigningResignArchive() error = %v", err)
+	}
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{
+			Stderr: []byte("staged executable: code object is not signed at all"),
+		}, errors.New("codesign failed")
+	}
+	archive, err := discoverSigningResignArchive(context.Background(), reader, tree)
+	if err != nil {
+		t.Fatalf("discoverSigningResignArchive() error = %v, want regular files named like bundles to be ignored", err)
+	}
+	if archive.MainPath != "Payload/App.app" {
+		t.Fatalf("archive.MainPath = %q, want Payload/App.app", archive.MainPath)
+	}
+	if len(archive.Targets) != 1 || archive.Targets[0].RelativePath != "Payload/App.app" {
+		t.Fatalf("archive.Targets = %+v, want only the main application", archive.Targets)
+	}
+}
+
+func TestDiscoverSigningResignArchiveStillRejectsNestedBundleDirectories(t *testing.T) {
+	info, err := plist.Marshal(map[string]any{
+		"CFBundleIdentifier":         "com.example.app",
+		"CFBundleExecutable":         "App",
+		"DTPlatformName":             "iphoneos",
+		"CFBundleSupportedPlatforms": []string{"iPhoneOS"},
+	}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	for _, test := range []struct {
+		name    string
+		entries []signingResignZipEntry
+	}{
+		{
+			name: "implied directory",
+			entries: []signingResignZipEntry{
+				{name: "Payload/App.app/Frameworks/Helper.app/Info.plist", data: info},
+			},
+		},
+		{
+			name: "explicit directory entry",
+			entries: []signingResignZipEntry{
+				{name: "Payload/App.app/Frameworks/Helper.app/", directory: true},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entries := append([]signingResignZipEntry{
+				{name: "Payload/App.app/Info.plist", data: info},
+				{name: "Payload/App.app/App", data: executable, mode: 0o755},
+			}, test.entries...)
+			data := buildSigningResignZip(t, entries)
+			reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree, err := rootfs.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tree.Close()
+			_, err = discoverSigningResignArchive(context.Background(), reader, tree)
+			if err == nil || !strings.Contains(err.Error(), "unsupported nested app target") {
+				t.Fatalf("discoverSigningResignArchive() error = %v, want unsupported nested target rejection", err)
+			}
+		})
 	}
 }

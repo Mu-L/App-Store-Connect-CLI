@@ -448,3 +448,61 @@ func TestSigningResignOperationalErrorTreeRejectsPlainWrappers(t *testing.T) {
 		t.Fatal("aggregates of typed errors remain public-safe")
 	}
 }
+
+func TestSigningResignStageCleanupAfterPublicationIsAmbiguous(t *testing.T) {
+	const stageSecret = "/private/tmp/asc-signing-resign.secret-stage"
+	cleanup := fmt.Errorf("remove private re-signing directory failed at %s", stageSecret)
+	err := signingResignStageCleanupFailure(true, cleanup)
+	if err == nil {
+		t.Fatal("signingResignStageCleanupFailure() returned nil")
+	}
+	if !errors.Is(err, ErrSigningResignPublicationAmbiguous) {
+		t.Fatalf("error = %v, want publication ambiguity once the IPA is published", err)
+	}
+	if !errors.Is(err, ErrSigningResignCleanupFailed) || !errors.Is(err, cleanup) {
+		t.Fatalf("error = %v, want cleanup signal and cause", err)
+	}
+	if strings.Contains(err.Error(), stageSecret) {
+		t.Fatalf("cleanup error leaked private cause: %q", err)
+	}
+	if got := err.Error(); got != "signing resign failed during cleanup (cleanup)" {
+		t.Fatalf("public error = %q, want the closed cleanup stage/code text", got)
+	}
+	// The pipeline joins this failure onto a nil result error on the success
+	// path, and the outermost operational wrapper must keep that aggregate
+	// unchanged instead of relabelling it with the last executed stage.
+	joined := wrapSigningResignOperationalError(
+		signingResignStagePreparation,
+		signingResignCodeFilesystem,
+		errors.Join(nil, err),
+	)
+	if !errors.Is(joined, ErrSigningResignPublicationAmbiguous) {
+		t.Fatalf("joined error = %v, want the publication ambiguity preserved", joined)
+	}
+	if got := joined.Error(); got != "signing resign failed during cleanup (cleanup)" {
+		t.Fatalf("joined public error = %q, want the closed cleanup stage/code text", got)
+	}
+}
+
+func TestSigningResignStageCleanupBeforePublicationIsNotAmbiguous(t *testing.T) {
+	cleanup := errors.New("remove private re-signing directory failed")
+	err := signingResignStageCleanupFailure(false, cleanup)
+	if err == nil {
+		t.Fatal("signingResignStageCleanupFailure() returned nil")
+	}
+	if errors.Is(err, ErrSigningResignPublicationAmbiguous) {
+		t.Fatalf("error = %v, want no publication ambiguity before the IPA is published", err)
+	}
+	if !errors.Is(err, ErrSigningResignCleanupFailed) || !errors.Is(err, cleanup) {
+		t.Fatalf("error = %v, want cleanup signal and cause", err)
+	}
+	if got := err.Error(); got != "signing resign failed during cleanup (cleanup)" {
+		t.Fatalf("public error = %q, want the closed cleanup stage/code text", got)
+	}
+}
+
+func TestSigningResignStageCleanupSuccessReturnsNil(t *testing.T) {
+	if err := signingResignStageCleanupFailure(true, nil); err != nil {
+		t.Fatalf("signingResignStageCleanupFailure(true, nil) = %v, want nil", err)
+	}
+}

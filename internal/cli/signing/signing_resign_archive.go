@@ -395,7 +395,15 @@ func discoverSigningResignArchive(ctx context.Context, reader *zip.Reader, tree 
 		if name == "" || !filepath.IsLocal(filepath.FromSlash(name)) {
 			return signingResignArchive{}, fmt.Errorf("IPA contains a non-local archive path")
 		}
-		for candidate := name; candidate != "." && candidate != ""; candidate = path.Dir(candidate) {
+		// Only real and implied directories may participate in target
+		// discovery. A regular member is never a bundle, so start at its
+		// parent: otherwise a resource whose name ends in .app or .appex
+		// would be rejected as an unsupported nested target.
+		candidate := name
+		if !member.FileInfo().IsDir() {
+			candidate = path.Dir(name)
+		}
+		for ; candidate != "." && candidate != ""; candidate = path.Dir(candidate) {
 			directories[candidate] = struct{}{}
 		}
 	}
@@ -505,8 +513,8 @@ func inspectSigningResignTarget(ctx context.Context, tree rootfs.Root, relativeP
 	if err != nil || !stat.Mode().IsRegular() {
 		return signingResignTarget{}, fmt.Errorf("executable is not a regular file")
 	}
-	if !isSigningResignMachOFile(file, stat.Size()) {
-		return signingResignTarget{}, fmt.Errorf("executable is not a loadable Mach-O")
+	if !isSigningResignAppExecutableFile(file, stat.Size()) {
+		return signingResignTarget{}, fmt.Errorf("executable is not an executable Mach-O")
 	}
 	// A DOS-created archive member carries no Unix metadata and defaults to a
 	// non-executable file mode, and validated modes are preserved exactly
@@ -686,7 +694,15 @@ func enumerateSigningResignMachOFiles(ctx context.Context, rootPath string) ([]s
 }
 
 func isSigningResignMachOFile(file *os.File, fileSize int64) bool {
-	if file == nil || fileSize < 4 {
+	return isSigningResignMachOFileWithPredicate(file, fileSize, isSigningResignLoadableMachO)
+}
+
+func isSigningResignAppExecutableFile(file *os.File, fileSize int64) bool {
+	return isSigningResignMachOFileWithPredicate(file, fileSize, isSigningResignAppExecutableMachO)
+}
+
+func isSigningResignMachOFileWithPredicate(file *os.File, fileSize int64, predicate func(*macho.File) bool) bool {
+	if file == nil || fileSize < 4 || predicate == nil {
 		return false
 	}
 	var magic [4]byte
@@ -696,19 +712,19 @@ func isSigningResignMachOFile(file *os.File, fileSize int64) bool {
 	switch magic {
 	case [4]byte{0xfe, 0xed, 0xfa, 0xce}, [4]byte{0xce, 0xfa, 0xed, 0xfe}, [4]byte{0xfe, 0xed, 0xfa, 0xcf}, [4]byte{0xcf, 0xfa, 0xed, 0xfe}:
 		image, err := macho.NewFile(io.NewSectionReader(file, 0, fileSize))
-		return err == nil && isSigningResignLoadableMachO(image)
+		return err == nil && predicate(image)
 	case [4]byte{0xca, 0xfe, 0xba, 0xbe}, [4]byte{0xbe, 0xba, 0xfe, 0xca}:
 		var order binary.ByteOrder = binary.BigEndian
 		if magic == [4]byte{0xbe, 0xba, 0xfe, 0xca} {
 			order = binary.LittleEndian
 		}
-		return classifySigningResignFatMachO(file, fileSize, order, 20)
+		return classifySigningResignFatMachOWithPredicate(file, fileSize, order, 20, predicate)
 	case [4]byte{0xca, 0xfe, 0xba, 0xbf}, [4]byte{0xbf, 0xba, 0xfe, 0xca}:
 		var order binary.ByteOrder = binary.BigEndian
 		if magic == [4]byte{0xbf, 0xba, 0xfe, 0xca} {
 			order = binary.LittleEndian
 		}
-		return classifySigningResignFatMachO(file, fileSize, order, 32)
+		return classifySigningResignFatMachOWithPredicate(file, fileSize, order, 32, predicate)
 	default:
 		return false
 	}
@@ -718,7 +734,11 @@ func isSigningResignLoadableMachO(file *macho.File) bool {
 	return file != nil && (file.Type == macho.TypeExec || file.Type == macho.TypeDylib || file.Type == macho.TypeBundle)
 }
 
-func classifySigningResignFatMachO(file *os.File, fileSize int64, order binary.ByteOrder, headerSize int64) bool {
+func isSigningResignAppExecutableMachO(file *macho.File) bool {
+	return file != nil && file.Type == macho.TypeExec
+}
+
+func classifySigningResignFatMachOWithPredicate(file *os.File, fileSize int64, order binary.ByteOrder, headerSize int64, predicate func(*macho.File) bool) bool {
 	var countBytes [4]byte
 	if _, err := file.ReadAt(countBytes[:], 4); err != nil {
 		return false
@@ -728,7 +748,6 @@ func classifySigningResignFatMachO(file *os.File, fileSize int64, order binary.B
 	if count == 0 || count > 64 || tableEnd > fileSize {
 		return false
 	}
-	hasLoadable := false
 	for index := uint32(0); index < count; index++ {
 		header := make([]byte, headerSize)
 		if _, err := file.ReadAt(header, int64(8)+int64(index)*headerSize); err != nil {
@@ -744,15 +763,14 @@ func classifySigningResignFatMachO(file *os.File, fileSize int64, order binary.B
 			return false
 		}
 		image, err := macho.NewFile(io.NewSectionReader(file, int64(offset), int64(size)))
-		if err != nil || !isSigningResignLoadableMachO(image) {
+		if err != nil || !predicate(image) {
 			return false
 		}
 		if uint32(image.Cpu) != order.Uint32(header[:4]) {
 			return false
 		}
-		hasLoadable = true
 	}
-	return hasLoadable
+	return true
 }
 
 func buildSigningResignTargetIDs(targets []signingResignTarget) map[string]struct{} {

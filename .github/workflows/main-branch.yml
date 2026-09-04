@@ -279,6 +279,7 @@ jobs:
             runner: macos-latest
             command: |
               ASC_BYPASS_KEYCHAIN=1 go test -short ./internal/screenshots
+              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs
               CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -o build/asc_dev_macos_amd64 .
               CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o build/asc_dev_macos_arm64 .
           - name: Linux
@@ -289,8 +290,12 @@ jobs:
           - name: Windows
             runner: windows-latest
             command: |
+              ASC_BYPASS_KEYCHAIN=1 go test -count=1 ./internal/screenshots
               ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/secureopen
               ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/cli/shared -run '^(TestSafeWriteFileNoSymlink|TestPublishStagedFileNoReplace|TestWriteNewFileNoSymlink|TestCleanupIncompleteFile)'
+              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/rootfs
+              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/xcode -run '^TestSigningApplyUnsupportedOnWindowsLeavesProjectUntouched$'
+              ASC_BYPASS_KEYCHAIN=1 go test -short -count=1 ./internal/cli/xcode -run '^(TestXcodeHelpScopesMacOSRequirementToXcodeTooling|TestXcodeSigningApplyHelpExplainsWindowsBoundary)$'
               CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o build/asc_dev_windows_amd64.exe .
     steps:
       - name: Checkout code
