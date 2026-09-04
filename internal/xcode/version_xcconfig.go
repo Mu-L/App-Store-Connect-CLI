@@ -491,6 +491,9 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 		}
 		seen[pathKey] = true
 		paths = append(paths, path)
+		if len(paths) > signingPlanMaxFiles {
+			return fmt.Errorf("signing plan source graph contains more than %d files", signingPlanMaxFiles), false
+		}
 		if identity != nil {
 			collected = append(collected, collectedIdentity{path: path, info: identity})
 		}

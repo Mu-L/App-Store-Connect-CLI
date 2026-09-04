@@ -5174,6 +5174,25 @@ func TestReadSigningPlanRejectsUnboundedMissingOptionalIncludes(t *testing.T) {
 	}
 }
 
+func TestReadSigningPlanRejectsUnboundedSigningSources(t *testing.T) {
+	planPath := filepath.Join(t.TempDir(), "plan.json")
+	files := make([]SigningPlanFile, signingPlanMaxFiles+1)
+	for index := range files {
+		files[index] = SigningPlanFile{Path: fmt.Sprintf("source-%d.xcconfig", index), SHA256: strings.Repeat("0", 64), Source: "xcconfig"}
+	}
+	plan := &SigningPlan{SchemaVersion: signingPlanSchemaVersion, Command: signingPlanCommand, Files: files}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("json.Marshal(plan) error = %v", err)
+	}
+	if err := os.WriteFile(planPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(plan) error = %v", err)
+	}
+	if _, err := readSigningPlanArtifact(planPath); err == nil || !IsSigningInputError(err) || !strings.Contains(err.Error(), "signing source files") {
+		t.Fatalf("readSigningPlanArtifact() error = %v, want bounded source error", err)
+	}
+}
+
 func TestSigningSettingResolverDoesNotShareOptionalIncludeAuthorizationBetweenConfigurations(t *testing.T) {
 	projectPath := writeStructuredVersionProject(t, true)
 	project, err := openStructuredVersionProject(projectPath)

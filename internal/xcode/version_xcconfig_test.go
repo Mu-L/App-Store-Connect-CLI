@@ -35,6 +35,31 @@ func TestXCConfigRecursiveIncludesHandleCyclesOptionalFilesAndOrder(t *testing.T
 	}
 }
 
+func TestXCConfigCollectorBoundsSigningSourceGraph(t *testing.T) {
+	paths := make([]string, signingPlanMaxFiles+1)
+	for i := range paths {
+		paths[i] = filepath.Join(t.TempDir(), "source.xcconfig")
+	}
+	contents := make(map[string][]byte, len(paths))
+	for i, path := range paths {
+		if i+1 < len(paths) {
+			contents[path] = []byte(`#include "` + paths[i+1] + `"`)
+		} else {
+			contents[path] = []byte("CODE_SIGN_STYLE = Manual")
+		}
+	}
+	_, err := collectXCConfigFilesWithReader(paths[0], func(path string) ([]byte, error) {
+		data, ok := contents[path]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return data, nil
+	}, func(string) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "more than 4096 files") {
+		t.Fatalf("collectXCConfigFilesWithReader() error = %v, want aggregate source limit", err)
+	}
+}
+
 func TestXCConfigEditorPreservesCommentsQuotesAndMissingFinalNewline(t *testing.T) {
 	input := []byte("URL = \"https://example.com/path\" // URL comment\n/* MARKETING_VERSION = 9.9.9 */\nMARKETING_VERSION[sdk=iphoneos*] ?= 1.2.3 // keep me")
 	updated, oldValues, changed, err := editXCConfig(input, marketingVersionSetting, "2.0.0")
