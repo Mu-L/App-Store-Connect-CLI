@@ -111,7 +111,10 @@ type signingIncompleteInternalXCConfigError struct {
 }
 
 func (e signingIncompleteInternalXCConfigError) Error() string {
-	return signingIncompleteInternalXCConfigMessage
+	if e.err == nil {
+		return signingIncompleteInternalXCConfigMessage
+	}
+	return fmt.Sprintf("%s: %v", signingIncompleteInternalXCConfigMessage, e.err)
 }
 
 func (e signingIncompleteInternalXCConfigError) Unwrap() error {

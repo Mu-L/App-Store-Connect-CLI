@@ -1365,6 +1365,7 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 	unauthorizedExternal := false
 	lexicalConfigPaths := make(map[string][]string)
 	observedPathsByRoot := make(map[string][]string)
+	var unselectedCollectionError error
 	addProtectedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range protectedConfigPaths {
@@ -1408,7 +1409,7 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 		if xcconfigUsesIdentityTraversal() {
 			identify = signingXCConfigIdentityFn
 		}
-		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
+		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
 			path,
 			func(filePath string) ([]byte, error) {
 				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
@@ -1452,6 +1453,8 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 			},
 			identify,
 			addMissingOptionalInclude,
+			signingPlanMaxFiles,
+			signingXCConfigStatFileFn,
 		)
 		observedPathsByRoot[normalizeSigningLexicalPath(path)] = observedPaths
 		if err == nil {
@@ -1470,12 +1473,25 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 		}
 		return nil, err
 	}
-	consumers, configFiles, identities, uncertain, err := project.xcconfigConsumersWithCollectorAndErrorHook(selectedIDs, collect, func(_ *versionConfiguration, err error) {
+	consumers, configFiles, identities, uncertain, err := project.xcconfigConsumersWithCollectorAndErrorHook(selectedIDs, collect, func(configuration *versionConfiguration, err error) {
 		var accessErr *signingXCConfigAccessError
 		if errors.As(err, &accessErr) {
 			addBlockedPath(accessErr.path)
 		}
+		if !selectedIDs[configuration.id] && isXCConfigSourceGraphLimitError(err) {
+			unselectedCollectionError = errors.Join(
+				unselectedCollectionError,
+				fmt.Errorf("resolve xcconfig for target %q configuration %q: %w", configuration.target, configuration.name, err),
+			)
+		}
 	})
+	// Unselected collection failures are normally represented by an uncertain
+	// consumer scope so stable target-level planning can continue. A source
+	// graph limit is different: the collector did not inventory the complete
+	// graph, so serializing any plan could omit a source that aliases an output
+	// artifact. Preserve this fatal cause for BuildSigningPlan even when the
+	// overflowing configuration was not selected.
+	err = errors.Join(err, unselectedCollectionError)
 	for _, configuration := range project.configurations {
 		if configuration.baseReferenceID == "" {
 			continue

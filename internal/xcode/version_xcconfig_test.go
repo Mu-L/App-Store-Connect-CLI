@@ -2,10 +2,12 @@ package xcode
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestXCConfigRecursiveIncludesHandleCyclesOptionalFilesAndOrder(t *testing.T) {
@@ -48,15 +50,148 @@ func TestXCConfigCollectorBoundsSigningSourceGraph(t *testing.T) {
 			contents[path] = []byte("CODE_SIGN_STYLE = Manual")
 		}
 	}
-	_, err := collectXCConfigFilesWithReader(paths[0], func(path string) ([]byte, error) {
+	_, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(paths[0], func(path string) ([]byte, error) {
 		data, ok := contents[path]
 		if !ok {
 			return nil, os.ErrNotExist
 		}
 		return data, nil
-	}, func(string) error { return nil })
+	}, func(string) error { return nil }, nil, nil, nil, nil, signingPlanMaxFiles, nil)
 	if err == nil || !strings.Contains(err.Error(), "more than 4096 files") {
 		t.Fatalf("collectXCConfigFilesWithReader() error = %v, want aggregate source limit", err)
+	}
+}
+
+func TestXCConfigCollectorStopsWideGraphAtLimit(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Root.xcconfig")
+	left := filepath.Join(filepath.Dir(root), "Left.xcconfig")
+	right := filepath.Join(filepath.Dir(root), "Right.xcconfig")
+	contents := map[string][]byte{root: []byte(`#include "Left.xcconfig"
+#include "Right.xcconfig"`), left: []byte("A = 1"), right: []byte("B = 2")}
+	readCount := make(map[string]int)
+	errorCount := 0
+	_, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(root, func(path string) ([]byte, error) {
+		readCount[path]++
+		return contents[path], nil
+	}, nil, nil, func(string, error) { errorCount++ }, nil, nil, 2, nil)
+	if err == nil || errorCount != 1 || readCount[right] != 0 {
+		t.Fatalf("wide graph err=%v errors=%d reads=%#v, want one overflow and no sibling read", err, errorCount, readCount)
+	}
+}
+
+func TestXCConfigCollectorSkipsAbsentOptionalIncludeAtLimit(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Root.xcconfig")
+	left := filepath.Join(filepath.Dir(root), "Left.xcconfig")
+	missing := filepath.Join(filepath.Dir(root), "Missing.xcconfig")
+	contents := map[string][]byte{
+		root: []byte("#include \"Left.xcconfig\"\n#include? \"Missing.xcconfig\""),
+		left: []byte("A = 1"),
+	}
+	readCount := make(map[string]int)
+	probeCount := make(map[string]int)
+	var optionalMissing string
+	files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
+		root,
+		func(path string) ([]byte, error) {
+			readCount[path]++
+			data, ok := contents[path]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return data, nil
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		func(path string) { optionalMissing = path },
+		2,
+		func(path string) (os.FileInfo, error) {
+			probeCount[path]++
+			if _, ok := contents[path]; !ok {
+				return nil, os.ErrNotExist
+			}
+			return fakeXCConfigFileInfo{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("collector error = %v, want absent optional include to be ignored", err)
+	}
+	if len(files) != 2 || optionalMissing != missing {
+		t.Fatalf("files=%#v optionalMissing=%q, want root/left and %q", files, optionalMissing, missing)
+	}
+	if readCount[missing] != 0 || probeCount[missing] != 1 {
+		t.Fatalf("missing optional read/probe counts = %d/%d, want 0/1", readCount[missing], probeCount[missing])
+	}
+}
+
+func TestXCConfigCollectorRejectsPresentOptionalIncludeAtLimitBeforeRead(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "Root.xcconfig")
+	left := filepath.Join(filepath.Dir(root), "Left.xcconfig")
+	present := filepath.Join(filepath.Dir(root), "Present.xcconfig")
+	contents := map[string][]byte{
+		root:    []byte("#include \"Left.xcconfig\"\n#include? \"Present.xcconfig\""),
+		left:    []byte("A = 1"),
+		present: []byte("B = 2"),
+	}
+	readCount := make(map[string]int)
+	probeCount := make(map[string]int)
+	_, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
+		root,
+		func(path string) ([]byte, error) {
+			readCount[path]++
+			return contents[path], nil
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		2,
+		func(path string) (os.FileInfo, error) {
+			probeCount[path]++
+			return fakeXCConfigFileInfo{}, nil
+		},
+	)
+	if err == nil || !isXCConfigSourceGraphLimitError(err) || !strings.Contains(err.Error(), "more than 2 files") {
+		t.Fatalf("collector error = %v, want typed source-graph limit", err)
+	}
+	if readCount[present] != 0 || probeCount[present] != 1 {
+		t.Fatalf("present optional read/probe counts = %d/%d, want 0/1", readCount[present], probeCount[present])
+	}
+}
+
+// fakeXCConfigFileInfo is sufficient for the optional-probe contract: the
+// bounded collector only needs a non-nil result to distinguish presence from
+// os.ErrNotExist when the source budget is exhausted.
+type fakeXCConfigFileInfo struct{}
+
+func (fakeXCConfigFileInfo) Name() string       { return "xcconfig" }
+func (fakeXCConfigFileInfo) Size() int64        { return 0 }
+func (fakeXCConfigFileInfo) Mode() os.FileMode  { return 0 }
+func (fakeXCConfigFileInfo) ModTime() time.Time { return time.Time{} }
+func (fakeXCConfigFileInfo) IsDir() bool        { return false }
+func (fakeXCConfigFileInfo) Sys() any           { return nil }
+
+func TestXCConfigStableCollectorAllowsLargeGraph(t *testing.T) {
+	const count = signingPlanMaxFiles + 1
+	dir := t.TempDir()
+	paths := make([]string, count)
+	contents := make(map[string][]byte, count)
+	for i := range paths {
+		paths[i] = filepath.Join(dir, fmt.Sprintf("source-%d.xcconfig", i))
+		if i+1 < count {
+			contents[paths[i]] = []byte(fmt.Sprintf(`#include "source-%d.xcconfig"`, i+1))
+		} else {
+			contents[paths[i]] = []byte("CODE_SIGN_STYLE = Manual")
+		}
+		if err := os.WriteFile(paths[i], contents[paths[i]], 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := collectStableXCConfigFiles(paths[0])
+	if err != nil || len(files) != count {
+		t.Fatalf("stable collector err=%v files=%d, want %d files with no signing bound", err, len(files), count)
 	}
 }
 
@@ -713,9 +848,6 @@ func TestIdentityAwareDarwinCollectorDeduplicatesCaseVariantSameFile(t *testing.
 			}
 			return []byte("CODE_SIGN_STYLE = Manual\n"), nil
 		},
-		nil,
-		nil,
-		nil,
 		func(string) (os.FileInfo, error) { return identity, nil },
 	)
 	if err != nil {
@@ -760,9 +892,6 @@ func TestIdentityAwareLinuxCollectorDeduplicatesCaseVariantSameFile(t *testing.T
 			}
 			return []byte("CODE_SIGN_STYLE = Manual\nCODE_SIGN_STYLE += Extra\n"), nil
 		},
-		nil,
-		nil,
-		nil,
 		func(string) (os.FileInfo, error) { return identity, nil },
 	)
 	if err != nil {
@@ -813,9 +942,6 @@ func TestIdentityAwareWindowsCollectorKeepsCaseDistinctFilesOnCaseSensitiveDirec
 				return nil, os.ErrNotExist
 			}
 		},
-		nil,
-		nil,
-		nil,
 		func(string) (os.FileInfo, error) { return identity, nil },
 	)
 	if err != nil {
@@ -860,9 +986,6 @@ func TestIdentityAwareWindowsCollectorCoalescesCaseVariantOnCaseInsensitiveDirec
 				return nil, os.ErrNotExist
 			}
 		},
-		nil,
-		nil,
-		nil,
 		func(string) (os.FileInfo, error) { return identity, nil },
 	)
 	if err != nil {
@@ -925,9 +1048,6 @@ func TestIdentityAwareCollectorKeepsCaseDistinctHardlinkedIncludesOnCaseSensitiv
 				return nil, os.ErrNotExist
 			}
 		},
-		nil,
-		nil,
-		nil,
 		func(path string) (os.FileInfo, error) {
 			return identity, nil
 		},
@@ -1107,9 +1227,6 @@ func TestIdentityAwareWindowsCollectorReportsMissingRequiredCaseVariant(t *testi
 			}
 			return os.ReadFile(path)
 		},
-		nil,
-		nil,
-		nil,
 		func(path string) (os.FileInfo, error) {
 			if filepath.Clean(path) == missingPath {
 				return nil, os.ErrNotExist

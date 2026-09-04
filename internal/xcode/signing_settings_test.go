@@ -141,6 +141,57 @@ func TestBuildSigningPlanRejectsOversizedXCConfig(t *testing.T) {
 	}
 }
 
+func TestBuildSigningPlanRejectsOversizedUnselectedXCConfigBeforeArtifactPublication(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	configDir := filepath.Join(projectRoot, "Configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(config) error = %v", err)
+	}
+	const graphRoot = "Graph-0000.xcconfig"
+	for index := 0; index < signingPlanMaxFiles; index++ {
+		name := fmt.Sprintf("Graph-%04d.xcconfig", index)
+		contents := "CODE_SIGN_STYLE = Manual\n"
+		if index+1 < signingPlanMaxFiles {
+			contents = fmt.Sprintf("#include \"Graph-%04d.xcconfig\"\n", index+1)
+		}
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte(contents), 0o640); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	attachSigningWidgetXCConfig(t, project, fmt.Sprintf("#include \"%s\"\n", graphRoot))
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(state) error = %v", err)
+	}
+	planPath := filepath.Join(stateDir, "plan.json")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(existing plan) error = %v", err)
+	}
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: stateDir,
+	})
+	if err == nil || !isXCConfigSourceGraphLimitError(err) || !strings.Contains(err.Error(), "more than 4096 files") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want unselected source-graph limit", plan, err)
+	}
+	if plan != nil {
+		t.Fatalf("BuildSigningPlan() returned a plan after unselected graph overflow: %#v", plan)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("existing plan changed after unselected graph overflow: %q", got)
+	}
+}
+
 func TestSigningApplyDoesNotUseStablePortableWriteFallback(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()

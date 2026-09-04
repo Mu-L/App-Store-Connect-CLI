@@ -41,6 +41,41 @@ type xcconfigDocument struct {
 	includes    []xcconfigInclude
 }
 
+// xcconfigSourceGraphLimitError reports that a bounded collector found a new
+// source after its configured file budget was exhausted. The typed error lets
+// signing-plan consumers distinguish an incomplete source graph from an
+// ordinary read or parse failure, including when the error is wrapped while a
+// configuration is being attributed to a target.
+type xcconfigSourceGraphLimitError struct {
+	path  string
+	limit int
+	err   error
+}
+
+func (e *xcconfigSourceGraphLimitError) Error() string {
+	message := fmt.Sprintf("signing plan source graph contains more than %d files", e.limit)
+	if e.path != "" {
+		message = fmt.Sprintf("%s at %s", message, e.path)
+	}
+	if e.err != nil {
+		return fmt.Sprintf("%s: %v", message, e.err)
+	}
+	return message
+}
+
+func (e *xcconfigSourceGraphLimitError) Unwrap() error {
+	return e.err
+}
+
+func newXCConfigSourceGraphLimitError(path string, limit int, err error) error {
+	return &xcconfigSourceGraphLimitError{path: path, limit: limit, err: err}
+}
+
+func isXCConfigSourceGraphLimitError(err error) bool {
+	var limitErr *xcconfigSourceGraphLimitError
+	return errors.As(err, &limitErr)
+}
+
 type xcconfigResolvedValue struct {
 	value            string
 	path             string
@@ -328,7 +363,7 @@ func collectStableXCConfigFiles(root string) ([]string, error) {
 	if xcconfigUsesIdentityTraversal() {
 		identify = os.Stat
 	}
-	return collectXCConfigFilesWithHooksAndIdentity(root, os.ReadFile, nil, nil, nil, identify)
+	return collectXCConfigFilesWithHooksAndIdentity(root, os.ReadFile, identify)
 }
 
 // collectXCConfigFilesWithReader walks an xcconfig include graph using the
@@ -351,7 +386,7 @@ func collectXCConfigFilesWithHooks(
 	onPath func(string),
 	onError func(string, error),
 ) ([]string, error) {
-	return collectXCConfigFilesWithHooksAndIdentity(root, read, authorize, onPath, onError, nil)
+	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(root, read, authorize, onPath, onError, nil, nil)
 }
 
 // collectXCConfigFilesWithHooksAndIdentity is the signing-specific collector
@@ -362,12 +397,9 @@ func collectXCConfigFilesWithHooks(
 func collectXCConfigFilesWithHooksAndIdentity(
 	root string,
 	read func(string) ([]byte, error),
-	authorize func(string) error,
-	onPath func(string),
-	onError func(string, error),
 	identify func(string) (os.FileInfo, error),
 ) ([]string, error) {
-	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(root, read, authorize, onPath, onError, identify, nil)
+	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(root, read, nil, nil, nil, identify, nil)
 }
 
 // collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing is the
@@ -384,6 +416,27 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 	onError func(string, error),
 	identify func(string) (os.FileInfo, error),
 	onOptionalMissing func(string),
+) ([]string, error) {
+	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(root, read, authorize, onPath, onError, identify, onOptionalMissing, 0, nil)
+}
+
+// collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit is the
+// bounded form used by signing-plan generation. optionalProbe is consulted
+// only for an optional include encountered after maxFiles sources have already
+// been collected. It must perform a no-follow existence check after the caller
+// has authorized the path; os.ErrNotExist means the optional include remains
+// absent and does not consume the budget, while any other result is treated as
+// a present or indeterminate source and fails with a typed limit error.
+func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
+	root string,
+	read func(string) ([]byte, error),
+	authorize func(string) error,
+	onPath func(string),
+	onError func(string, error),
+	identify func(string) (os.FileInfo, error),
+	onOptionalMissing func(string),
+	maxFiles int,
+	optionalProbe func(string) (os.FileInfo, error),
 ) ([]string, error) {
 	seen := make(map[string]bool)
 	type collectedIdentity struct {
@@ -403,8 +456,8 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 		}
 		return signingLexicalPathKey(path)
 	}
-	var visit func(string, map[string][]os.FileInfo) (error, bool)
-	visit = func(path string, stack map[string][]os.FileInfo) (error, bool) {
+	var visit func(string, map[string][]os.FileInfo, bool) (error, bool)
+	visit = func(path string, stack map[string][]os.FileInfo, optional bool) (error, bool) {
 		path = filepath.Clean(path)
 		pathKey := traversalKey(path)
 		if onPath != nil {
@@ -466,6 +519,30 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 				}
 			}
 		}
+		if maxFiles > 0 && len(paths) >= maxFiles {
+			if optional && optionalProbe != nil {
+				_, probeErr := optionalProbe(path)
+				if errors.Is(probeErr, os.ErrNotExist) {
+					if onError != nil {
+						onError(path, probeErr)
+					}
+					return probeErr, true
+				}
+				// A nil probe error, a non-nil file, or any other probe error
+				// proves that this is not a safely absent optional include. The
+				// source budget must win before the content reader is reached.
+				err := newXCConfigSourceGraphLimitError(path, maxFiles, probeErr)
+				if onError != nil {
+					onError(path, err)
+				}
+				return err, false
+			}
+			err := newXCConfigSourceGraphLimitError(path, maxFiles, nil)
+			if onError != nil {
+				onError(path, err)
+			}
+			return err, false
+		}
 		data, err := read(path)
 		if err != nil {
 			if onError != nil {
@@ -491,9 +568,6 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 		}
 		seen[pathKey] = true
 		paths = append(paths, path)
-		if len(paths) > signingPlanMaxFiles {
-			return fmt.Errorf("signing plan source graph contains more than %d files", signingPlanMaxFiles), false
-		}
 		if identity != nil {
 			collected = append(collected, collectedIdentity{path: path, info: identity})
 		}
@@ -516,8 +590,11 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 			// checks. In particular, never stat an include before the authorization
 			// hook has accepted its lexical path. Optional missing includes are the
 			// one intentional not-exist case and are ignored after that check.
-			childErr, missingTarget := visit(includePath, nextStack)
+			childErr, missingTarget := visit(includePath, nextStack, include.optional)
 			if childErr != nil {
+				if isXCConfigSourceGraphLimitError(childErr) {
+					return childErr, false
+				}
 				if include.optional && missingTarget {
 					if onOptionalMissing != nil {
 						onOptionalMissing(includePath)
@@ -535,7 +612,7 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 		}
 		return nil, false
 	}
-	if err, _ := visit(root, make(map[string][]os.FileInfo)); err != nil {
+	if err, _ := visit(root, make(map[string][]os.FileInfo), false); err != nil {
 		return nil, err
 	}
 	return paths, nil
