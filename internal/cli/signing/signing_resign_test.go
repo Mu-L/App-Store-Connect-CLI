@@ -3137,6 +3137,39 @@ func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
 	}
 }
 
+func TestSignSigningResignTreePreservesContainerMainEntitlements(t *testing.T) {
+	treePath := t.TempDir()
+	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(container, "Feature")
+	if err := os.WriteFile(executable, []byte("nested executable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entitlements := filepath.Join(t.TempDir(), "feature.entitlements")
+	if err := os.WriteFile(entitlements, []byte("permitted non-identity claim"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = original })
+	var calls [][]string
+	runSigningResignToolFn = func(_ context.Context, executable string, args ...string) (signingResignToolOutput, error) {
+		calls = append(calls, append([]string{executable}, args...))
+		return signingResignToolOutput{}, nil
+	}
+	prepared := signingResignPreparedTree{CodePlans: []signingResignCodePlan{{Path: executable, EntitlementsPath: entitlements}}}
+	if err := signSigningResignTree(context.Background(), treePath, prepared, "IDENTITY", "/tmp/keychain"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("codesign calls = %#v, want leaf and container passes", calls)
+	}
+	if got := strings.Join(calls[1], " "); !strings.Contains(got, "--entitlements "+entitlements) {
+		t.Fatalf("container signing call = %q, want prepared entitlements", got)
+	}
+}
+
 func TestDiscoverSigningResignArchiveIgnoresRegularFilesNamedLikeBundles(t *testing.T) {
 	info, err := plist.Marshal(map[string]any{
 		"CFBundleIdentifier":         "com.example.app",
