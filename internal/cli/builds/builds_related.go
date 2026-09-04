@@ -59,7 +59,7 @@ func BuildsAppViewCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds app view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM])",
+		ShortUsage: "asc builds app view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION])",
 		ShortHelp:  "View the app for a build.",
 		LongHelp: `View the app for a build.
 
@@ -130,7 +130,7 @@ func BuildsPreReleaseVersionViewCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds pre-release-version view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM])",
+		ShortUsage: "asc builds pre-release-version view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION])",
 		ShortHelp:  "View the pre-release version for a build.",
 		LongHelp: `View the pre-release version for a build.
 
@@ -312,7 +312,7 @@ func BuildsBetaAppReviewSubmissionViewCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds beta-app-review-submission view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM])",
+		ShortUsage: "asc builds beta-app-review-submission view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION])",
 		ShortHelp:  "View beta app review submission for a build.",
 		LongHelp: `View beta app review submission for a build.
 
@@ -387,7 +387,7 @@ func BuildsBuildBetaDetailViewCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds build-beta-detail view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM])",
+		ShortUsage: "asc builds build-beta-detail view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION])",
 		ShortHelp:  "View build beta detail for a build.",
 		LongHelp: `View build beta detail for a build.
 

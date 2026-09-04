@@ -43,7 +43,7 @@ func BuildsAppEncryptionDeclarationViewCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds app-encryption-declaration view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM])",
+		ShortUsage: "asc builds app-encryption-declaration view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION])",
 		ShortHelp:  "View the encryption declaration for a build.",
 		LongHelp: `View the encryption declaration for a build.
 
