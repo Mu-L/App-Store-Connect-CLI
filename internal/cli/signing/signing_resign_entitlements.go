@@ -3,7 +3,9 @@ package signing
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 	"howett.net/plist"
@@ -146,6 +148,41 @@ func signingResignFormatClaimValue(value any) string {
 		}
 		return "[" + strings.Join(items, ", ") + "]"
 	}
+}
+
+const (
+	signingResignClaimDetailMaxBytes  = 512
+	signingResignPublicDetailMaxBytes = 8192
+)
+
+func signingResignSafeClaimName(key string) string {
+	if signingResignSafeClaimIdentifier(key) {
+		return key
+	}
+	return signingResignQuoteBounded(key, 128)
+}
+
+func signingResignSafeClaimIdentifier(key string) bool {
+	if key == "" || len(key) > 128 {
+		return false
+	}
+	for _, character := range key {
+		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
+			return false
+		}
+	}
+	return true
+}
+
+func signingResignQuoteBounded(value string, limit int) string {
+	if limit > 0 && len(value) > limit {
+		value = value[:limit]
+	}
+	quoted := strconv.Quote(value)
+	if limit > 0 && len(quoted) > limit {
+		quoted = quoted[:limit]
+	}
+	return quoted
 }
 
 var signingResignIdentityEntitlementKeys = map[string]struct{}{
