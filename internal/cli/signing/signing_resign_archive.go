@@ -43,6 +43,7 @@ type signingResignTarget struct {
 	ExistingEntitlements map[string]any
 	Profile              signingResignProfile
 	EntitlementsPath     string
+	EntitlementRewrites  []signingResignEntitlementRewrite
 }
 
 type signingResignArchive struct {
@@ -380,6 +381,14 @@ func materializeSigningResignArchive(ctx context.Context, reader *zip.Reader, de
 }
 
 func discoverSigningResignArchive(ctx context.Context, reader *zip.Reader, tree rootfs.Root) (signingResignArchive, error) {
+	return discoverSigningResignArchiveWithEntitlements(ctx, reader, tree, true)
+}
+
+func discoverSigningResignArchiveRooted(ctx context.Context, reader *zip.Reader, tree rootfs.Root) (signingResignArchive, error) {
+	return discoverSigningResignArchiveWithEntitlements(ctx, reader, tree, false)
+}
+
+func discoverSigningResignArchiveWithEntitlements(ctx context.Context, reader *zip.Reader, tree rootfs.Root, readEntitlements bool) (signingResignArchive, error) {
 	if reader == nil || tree.Path() == "" {
 		return signingResignArchive{}, fmt.Errorf("IPA archive or staging root is missing")
 	}
@@ -466,9 +475,12 @@ func discoverSigningResignArchive(ctx context.Context, reader *zip.Reader, tree 
 	})
 	archive := signingResignArchive{MainPath: mainPath}
 	for _, targetPath := range targetPaths {
-		target, err := inspectSigningResignTarget(ctx, tree, targetPath, accepted[targetPath])
+		target, err := inspectSigningResignTargetWithEntitlements(ctx, tree, targetPath, accepted[targetPath], readEntitlements)
 		if err != nil {
 			return signingResignArchive{}, fmt.Errorf("inspect target %s: %w", targetPath, err)
+		}
+		if err := checkSigningResignRootIdentity(tree); err != nil {
+			return signingResignArchive{}, fmt.Errorf("staging tree identity changed during target discovery: %w", err)
 		}
 		archive.Targets = append(archive.Targets, target)
 	}
@@ -476,6 +488,10 @@ func discoverSigningResignArchive(ctx context.Context, reader *zip.Reader, tree 
 }
 
 func inspectSigningResignTarget(ctx context.Context, tree rootfs.Root, relativePath, kind string) (signingResignTarget, error) {
+	return inspectSigningResignTargetWithEntitlements(ctx, tree, relativePath, kind, true)
+}
+
+func inspectSigningResignTargetWithEntitlements(ctx context.Context, tree rootfs.Root, relativePath, kind string, readEntitlements bool) (signingResignTarget, error) {
 	if err := contextError(ctx); err != nil {
 		return signingResignTarget{}, err
 	}
@@ -543,9 +559,12 @@ func inspectSigningResignTarget(ctx context.Context, tree rootfs.Root, relativeP
 	default:
 		return signingResignTarget{}, fmt.Errorf("inspect embedded profile")
 	}
-	entitlements, err := readSigningResignEntitlements(ctx, filepath.Join(tree.Path(), executablePath))
-	if err != nil {
-		return signingResignTarget{}, fmt.Errorf("read signed entitlements: %w", err)
+	var entitlements map[string]any
+	if readEntitlements {
+		entitlements, err = readSigningResignEntitlements(ctx, filepath.Join(tree.Path(), executablePath))
+		if err != nil {
+			return signingResignTarget{}, fmt.Errorf("read signed entitlements: %w", err)
+		}
 	}
 	return signingResignTarget{Kind: kind, RelativePath: relativePath, BundleID: bundleID, Executable: executable, ProfileMode: profileMode, ExistingEntitlements: entitlements}, nil
 }
@@ -650,42 +669,102 @@ func signingResignPlatformStringHasControl(value string) bool {
 }
 
 func enumerateSigningResignMachOFiles(ctx context.Context, rootPath string) ([]string, error) {
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	paths, err := enumerateSigningResignMachOFilesRoot(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, len(paths))
+	for index, relative := range paths {
+		result[index] = filepath.Join(rootPath, filepath.FromSlash(relative))
+	}
+	return result, nil
+}
+
+// enumerateSigningResignMachOFilesRoot walks the directory identity already
+// selected by root. It returns only relative paths so a caller never needs to
+// reconstruct and reopen the root's lexical pathname after materialization.
+func enumerateSigningResignMachOFilesRoot(ctx context.Context, root *os.Root) ([]string, error) {
+	if root == nil {
+		return nil, fmt.Errorf("staging tree root is missing")
+	}
 	var result []string
-	err := filepath.WalkDir(rootPath, func(candidate string, entry os.DirEntry, walkErr error) error {
+	var walk func(current *os.Root, prefix string) error
+	walk = func(current *os.Root, prefix string) error {
 		if err := contextError(ctx); err != nil {
 			return err
 		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("staging tree contains a symbolic link")
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
+		directory, err := current.Open(".")
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("staging tree contains a non-regular file")
+		entries, readErr := directory.ReadDir(-1)
+		closeErr := directory.Close()
+		if readErr != nil || closeErr != nil {
+			return errors.Join(readErr, closeErr)
 		}
-		file, err := os.Open(candidate)
-		if err != nil {
-			return err
-		}
-		isMachO := isSigningResignMachOFile(file, info.Size())
-		closeErr := file.Close()
-		if closeErr != nil {
-			return closeErr
-		}
-		if isMachO {
-			result = append(result, candidate)
+		for _, entry := range entries {
+			if err := contextError(ctx); err != nil {
+				return err
+			}
+			name := entry.Name()
+			if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+				return fmt.Errorf("staging tree contains an invalid entry name")
+			}
+			before, err := current.Lstat(name)
+			if err != nil {
+				return err
+			}
+			if before.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("staging tree contains a symbolic link")
+			}
+			relative := path.Join(prefix, name)
+			if before.IsDir() {
+				child, err := current.OpenRoot(name)
+				if err != nil {
+					return err
+				}
+				afterPath, pathErr := current.Lstat(name)
+				afterRoot, rootErr := child.Stat(".")
+				if pathErr != nil || rootErr != nil || !os.SameFile(before, afterPath) || !os.SameFile(before, afterRoot) {
+					_ = child.Close()
+					return errors.Join(pathErr, rootErr, fmt.Errorf("staging tree directory changed during rooted open"))
+				}
+				walkErr := walk(child, relative)
+				closeErr := child.Close()
+				if walkErr != nil || closeErr != nil {
+					return errors.Join(walkErr, closeErr)
+				}
+				continue
+			}
+			if !before.Mode().IsRegular() {
+				return fmt.Errorf("staging tree contains a non-regular file")
+			}
+			file, err := secureopen.OpenExistingNoFollowInRoot(current, name)
+			if err != nil {
+				return err
+			}
+			opened, statErr := file.Stat()
+			latest, lstatErr := current.Lstat(name)
+			if statErr != nil || lstatErr != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, latest) {
+				_ = file.Close()
+				return errors.Join(statErr, lstatErr, fmt.Errorf("staging tree file changed during rooted open"))
+			}
+			isMachO := isSigningResignMachOFile(file, opened.Size())
+			if closeErr := file.Close(); closeErr != nil {
+				return closeErr
+			}
+			if isMachO {
+				result = append(result, relative)
+			}
 		}
 		return nil
-	})
-	if err != nil {
+	}
+	if err := walk(root, ""); err != nil {
 		return nil, err
 	}
 	sort.Strings(result)

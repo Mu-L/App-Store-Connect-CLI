@@ -8,6 +8,146 @@ import (
 	"testing"
 )
 
+func TestXCConfigImplicitLookupShadowsConditionalDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, contents, implicit, want string
+	}{
+		{"conditional", "PROJECT_DIR", "PROJECT_DIR ?= /fallback\n", "/project", "/project"},
+		{"conditional selector", "PROJECT_DIR", "PROJECT_DIR[sdk=iphoneos*] ?= /fallback\n", "/project", "/project"},
+		{"inherited", "PROJECT_DIR", "PROJECT_DIR = $(inherited)/Sub\n", "/project", "/project/Sub"},
+		{"append", "PROJECT_NAME", "PROJECT_NAME += Suffix\n", "App", "App Suffix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "App.xcconfig")
+			if err := os.WriteFile(path, []byte(tc.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(path, tc.setting, xcconfigResolvedValue{}, os.ReadFile, os.Stat, nil, func(string) (string, bool) { return tc.implicit, true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !resolved.found || !resolved.exact || resolved.value != tc.want {
+				t.Fatalf("resolved = %#v, want an exact implicit value %q", resolved, tc.want)
+			}
+		})
+	}
+}
+
+func TestXCConfigImplicitLookupPreservesExplicitConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR[sdk=iphoneos*] = /special\nPROJECT_DIR = $(inherited)/Sub\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(string) (string, bool) { return "/project", true },
+	)
+	if err == nil || !strings.Contains(err.Error(), "differing conditional") {
+		t.Fatalf("resolve implicit value error = %v, want divergent explicit conditional error", err)
+	}
+}
+
+func TestXCConfigConditionalAssignmentExpandsInheritedValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "OTHER[sdk=iphoneos*] = $(inherited)-child\nOTHER = base-child\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path, "OTHER", xcconfigResolvedValue{}, os.ReadFile, os.Stat, nil,
+		func(string) (string, bool) { return "base", true },
+	)
+	if err != nil {
+		t.Fatalf("resolve conditional inherited value: %v", err)
+	}
+	if len(resolved.conditionals) != 1 || resolved.conditionals[0].value != "base-child" {
+		t.Fatalf("conditional state = %#v, want expanded base-child", resolved.conditionals)
+	}
+}
+
+func TestXCConfigImplicitLookupComposesInheritedConditional(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR[sdk=iphoneos*] = $(inherited)\nPROJECT_DIR = $(inherited)\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(string) (string, bool) { return "/project", true },
+	)
+	if err != nil {
+		t.Fatalf("resolve implicit inherited value error = %v", err)
+	}
+	if !resolved.found || !resolved.exact || resolved.value != "/project" {
+		t.Fatalf("resolved = %#v, want an exact implicit value %q", resolved, "/project")
+	}
+}
+
+func TestXCConfigImplicitLookupExpandsConditionalReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR[sdk=iphoneos*] = $(SRCROOT)\nPROJECT_DIR = $(inherited)\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(name string) (string, bool) {
+			if name == "SRCROOT" || name == "PROJECT_DIR" {
+				return "/project", true
+			}
+			return "", false
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve implicit conditional reference error = %v", err)
+	}
+	if !resolved.found || !resolved.exact || resolved.value != "/project" {
+		t.Fatalf("resolved = %#v, want an exact implicit value %q", resolved, "/project")
+	}
+}
+
+func TestXCConfigImplicitLookupComposesRepeatedConditionalInheritedValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR = /base\n" +
+		"PROJECT_DIR[sdk=iphoneos*] = /special\n" +
+		"PROJECT_DIR[sdk=iphoneos*] = $(inherited)/Suffix\n" +
+		"PROJECT_DIR = /special/Suffix\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(string) (string, bool) { return "/implicit", true },
+	)
+	if err != nil {
+		t.Fatalf("resolve repeated conditional inherited value error = %v", err)
+	}
+	if !resolved.found || !resolved.exact || resolved.value != "/special/Suffix" {
+		t.Fatalf("resolved = %#v, want an exact value %q", resolved, "/special/Suffix")
+	}
+}
+
 func TestXCConfigRecursiveIncludesHandleCyclesOptionalFilesAndOrder(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "Root.xcconfig")
