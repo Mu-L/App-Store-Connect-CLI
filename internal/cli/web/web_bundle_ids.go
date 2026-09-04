@@ -88,8 +88,10 @@ func WebBundleIDsListCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "list",
 		ShortUsage: "asc web bundle-ids list [flags]",
-		ShortHelp:  "List Bundle IDs via a Developer Portal web session.",
-		LongHelp: `WEB SESSION WORKFLOWS
+		ShortHelp:  "[experimental] List Bundle IDs via a Developer Portal web session.",
+		LongHelp: `[experimental] List Bundle IDs via a Developer Portal web session.
+
+WEB SESSION WORKFLOWS
 
 List the iOS and Mac Bundle IDs visible to the selected Apple Developer team
 through the Developer Portal web-session endpoint. The command requests the
@@ -171,8 +173,10 @@ func newWebBundleIDsViewCommand(errorHandling flag.ErrorHandling) *ffcli.Command
 	return &ffcli.Command{
 		Name:       "view",
 		ShortUsage: "asc web bundle-ids view --bundle-id BUNDLE_RESOURCE_ID [flags]",
-		ShortHelp:  "Inspect one Bundle ID via a Developer Portal web session.",
-		LongHelp: `WEB SESSION WORKFLOWS
+		ShortHelp:  "[experimental] Inspect one Bundle ID via a Developer Portal web session.",
+		LongHelp: `[experimental] Inspect one Bundle ID via a Developer Portal web session.
+
+WEB SESSION WORKFLOWS
 
 Inspect one opaque Bundle ID resource and its included Developer Portal
 capability resources. Pass an ID returned by "asc web bundle-ids list". This is

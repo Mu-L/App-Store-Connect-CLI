@@ -62,6 +62,21 @@ type DeveloperBundleIDsListResult struct {
 	Included []DeveloperBundleID `json:"included,omitempty"`
 	Links    map[string]any      `json:"links,omitempty"`
 	Meta     map[string]any      `json:"meta,omitempty"`
+	// Raw preserves the complete JSON:API envelope returned by Apple. It is
+	// omitted from the encoded shape because MarshalJSON emits it verbatim when
+	// available, retaining unknown top-level members and explicitly empty ones.
+	Raw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON preserves Apple's full collection envelope for JSON output.
+// Table renderers use the parsed fields above, while JSON callers receive the
+// original response rather than a lossy re-encoding of the known fields.
+func (r DeveloperBundleIDsListResult) MarshalJSON() ([]byte, error) {
+	if len(r.Raw) > 0 {
+		return append([]byte(nil), r.Raw...), nil
+	}
+	type resultWithoutMethods DeveloperBundleIDsListResult
+	return json.Marshal(resultWithoutMethods(r))
 }
 
 // DeveloperBundleIDGetResult is the read-only single-resource response for
@@ -71,6 +86,19 @@ type DeveloperBundleIDGetResult struct {
 	Included []DeveloperBundleID `json:"included,omitempty"`
 	Links    map[string]any      `json:"links,omitempty"`
 	Meta     map[string]any      `json:"meta,omitempty"`
+	// Raw preserves the complete JSON:API envelope returned by Apple. It is
+	// omitted from the encoded shape because MarshalJSON emits it verbatim when
+	// available, retaining unknown top-level members and explicitly empty ones.
+	Raw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON preserves Apple's full single-resource envelope for JSON output.
+func (r DeveloperBundleIDGetResult) MarshalJSON() ([]byte, error) {
+	if len(r.Raw) > 0 {
+		return append([]byte(nil), r.Raw...), nil
+	}
+	type resultWithoutMethods DeveloperBundleIDGetResult
+	return json.Marshal(resultWithoutMethods(r))
 }
 
 // DeveloperBundleIDListResult is retained as a singular spelling alias for
@@ -178,6 +206,7 @@ func parseDeveloperBundleIDsListResponse(body []byte) (*DeveloperBundleIDsListRe
 	if result.Included == nil {
 		result.Included = []DeveloperBundleID{}
 	}
+	result.Raw = append(json.RawMessage(nil), body...)
 	return &result, nil
 }
 
@@ -202,6 +231,7 @@ func parseDeveloperBundleIDGetResponse(body []byte) (*DeveloperBundleIDGetResult
 	if result.Included == nil {
 		result.Included = []DeveloperBundleID{}
 	}
+	result.Raw = append(json.RawMessage(nil), body...)
 	return &result, nil
 }
 

@@ -179,6 +179,44 @@ func TestGetDeveloperBundleIDSurfacesAPIError(t *testing.T) {
 	}
 }
 
+func TestDeveloperBundleIDReadResultsPreserveRawJSONAPIEnvelopes(t *testing.T) {
+	listBody := []byte(`{
+		"data": [],
+		"included": [],
+		"links": {},
+		"meta": {},
+		"unknownTopLevel": {"keep": true}
+	}`)
+	listResult, err := parseDeveloperBundleIDsListResponse(listBody)
+	if err != nil {
+		t.Fatalf("parseDeveloperBundleIDsListResponse() error: %v", err)
+	}
+	assertCompactJSONEqual(t, listResult.Raw, listBody)
+	encodedList, err := json.Marshal(listResult)
+	if err != nil {
+		t.Fatalf("marshal list result: %v", err)
+	}
+	assertCompactJSONEqual(t, encodedList, listBody)
+
+	getBody := []byte(`{
+		"data": {"type": "bundleIds", "id": "bundle-1", "attributes": {}},
+		"included": [],
+		"links": {},
+		"meta": {},
+		"unknownTopLevel": []
+	}`)
+	getResult, err := parseDeveloperBundleIDGetResponse(getBody)
+	if err != nil {
+		t.Fatalf("parseDeveloperBundleIDGetResponse() error: %v", err)
+	}
+	assertCompactJSONEqual(t, getResult.Raw, getBody)
+	encodedGet, err := json.Marshal(getResult)
+	if err != nil {
+		t.Fatalf("marshal get result: %v", err)
+	}
+	assertCompactJSONEqual(t, encodedGet, getBody)
+}
+
 func mustReadBody(t *testing.T, r *http.Request) []byte {
 	t.Helper()
 	body, err := io.ReadAll(r.Body)
@@ -186,4 +224,19 @@ func mustReadBody(t *testing.T, r *http.Request) []byte {
 		t.Fatalf("read request body: %v", err)
 	}
 	return body
+}
+
+func assertCompactJSONEqual(t *testing.T, got, want []byte) {
+	t.Helper()
+	var compactGot bytes.Buffer
+	if err := json.Compact(&compactGot, got); err != nil {
+		t.Fatalf("compact got JSON: %v", err)
+	}
+	var compactWant bytes.Buffer
+	if err := json.Compact(&compactWant, want); err != nil {
+		t.Fatalf("compact want JSON: %v", err)
+	}
+	if !bytes.Equal(compactGot.Bytes(), compactWant.Bytes()) {
+		t.Fatalf("JSON differs:\n got: %s\nwant: %s", compactGot.Bytes(), compactWant.Bytes())
+	}
 }

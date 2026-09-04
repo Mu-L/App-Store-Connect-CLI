@@ -76,6 +76,7 @@ func TestWebBundleIDsListPrintsJSON(t *testing.T) {
 					"wildcard":   false,
 				},
 			}},
+			Raw: json.RawMessage(`{"data":[{"type":"bundleIds","id":"bundle-1","attributes":{"name":"Example App","identifier":"com.example.app","platform":"IOS","wildcard":false}}],"included":[],"links":{},"meta":{},"unknownTopLevel":{"keep":true}}`),
 		}, nil
 	}
 
@@ -97,6 +98,18 @@ func TestWebBundleIDsListPrintsJSON(t *testing.T) {
 	}
 	if len(result.Data) != 1 || result.Data[0].ID != "bundle-1" || result.Data[0].Attributes["identifier"] != "com.example.app" {
 		t.Fatalf("unexpected list result: %+v", result)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decode raw JSON envelope %q: %v", stdout, err)
+	}
+	for _, member := range []string{"included", "links", "meta", "unknownTopLevel"} {
+		if _, ok := envelope[member]; !ok {
+			t.Fatalf("JSON output omitted envelope member %q: %s", member, stdout)
+		}
+	}
+	if got := string(envelope["unknownTopLevel"]); got != `{"keep":true}` {
+		t.Fatalf("unknown top-level member = %s, want {\"keep\":true}", got)
 	}
 }
 
@@ -134,6 +147,50 @@ func TestWebBundleIDsViewPrintsTable(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("table output %q does not contain %q", stdout, want)
 		}
+	}
+}
+
+func TestWebBundleIDsViewPrintsRawJSONEnvelope(t *testing.T) {
+	restore := stubWebBundleIDReadDependencies(t)
+	defer restore()
+
+	getDeveloperBundleIDFn = func(_ context.Context, _ *webcore.Client, bundleID string) (*webcore.DeveloperBundleIDGetResult, error) {
+		return &webcore.DeveloperBundleIDGetResult{
+			Data: webcore.DeveloperBundleID{
+				ID:   bundleID,
+				Type: "bundleIds",
+				Attributes: map[string]any{
+					"name":       "Example App",
+					"identifier": "com.example.app",
+				},
+			},
+			Raw: json.RawMessage(`{"data":{"type":"bundleIds","id":"bundle-1","attributes":{"name":"Example App","identifier":"com.example.app"}},"included":[],"links":{},"meta":{},"unknownTopLevel":[]}`),
+		}, nil
+	}
+
+	command := WebBundleIDsViewCommand()
+	if err := command.FlagSet.Parse([]string{"--bundle-id", "bundle-1", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	stdout, stderr := captureWebCommandOutput(t, func() {
+		if err := command.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &envelope); err != nil {
+		t.Fatalf("decode raw JSON envelope %q: %v", stdout, err)
+	}
+	for _, member := range []string{"included", "links", "meta", "unknownTopLevel"} {
+		if _, ok := envelope[member]; !ok {
+			t.Fatalf("JSON output omitted envelope member %q: %s", member, stdout)
+		}
+	}
+	if got := string(envelope["unknownTopLevel"]); got != `[]` {
+		t.Fatalf("unknown top-level member = %s, want []", got)
 	}
 }
 

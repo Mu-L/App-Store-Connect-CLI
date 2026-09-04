@@ -221,9 +221,9 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
 
-## Developer Portal Bundle ID reads (web session)
+## [experimental] Developer Portal Bundle ID reads (web session)
 
-- `asc web bundle-ids list` uses the captured cookie-authenticated JSON:API
+- `[experimental] asc web bundle-ids list` uses the captured cookie-authenticated JSON:API
   proxy `POST /services-account/v1/bundleIds` with
   `X-HTTP-Method-Override: GET`. Its JSON body carries the selected `teamId`
   and `urlEncodedQueryParams`; the first slice sends
@@ -235,12 +235,12 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
   `entitlementGroupName`, `bundleType`, `platform`, `wildcard`, `dateCreated`,
   `bundleIdCapabilitiesSettingOption`, `seedId`, `name`, `platformName`,
   `deploymentDataNotice`, and `responseId`.
-- `asc web bundle-ids view --bundle-id ID` uses the captured detail form;
-  `get` remains a compatibility alias for existing scripts and emits a
-  deprecation warning.
+- `[experimental] asc web bundle-ids view --bundle-id ID` uses the captured detail form
   `POST /services-account/v1/bundleIds/{id}` with the fields/include query in
-  the URL and a JSON body containing only the selected `teamId`. The requested
-  `fields[bundleIds]` are `name,identifier,platform,seedId,wildcard,~permissions.delete,~permissions.edit`.
+  the URL, `X-HTTP-Method-Override: GET`, and a JSON body containing only the
+  selected `teamId`. `get` remains a compatibility alias for existing scripts
+  and emits a deprecation warning.
+  The requested `fields[bundleIds]` are `name,identifier,platform,seedId,wildcard,~permissions.delete,~permissions.edit`.
   The requested include graph covers `bundleIdCapabilities`, its
   `capability`, `associatedBundleIds`, `appGroups`, `merchantIds`,
   `cloudContainers`, `certificates`, `appConsentBundleId`, `macBundleId`,

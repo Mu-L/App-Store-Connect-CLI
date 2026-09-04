@@ -26,7 +26,7 @@ asc web apps delete --app "1234567890" --dry-run
 asc web app-groups create --name "My App Shared" --identifier "group.com.example.app.shared" --confirm
 asc web app-groups list --output table
 
-# List and inspect Developer Portal Bundle IDs unavailable through the public API
+# [experimental] List and inspect Developer Portal Bundle IDs unavailable through the public API
 asc web bundle-ids list --output table
 asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
 
@@ -216,7 +216,7 @@ asc web removed-apps list
 asc web removed-apps list --paginate --output table
 ```
 
-### `asc web bundle-ids`
+### [experimental] `asc web bundle-ids`
 
 Bundle ID operations that are only available through Apple web-session
 endpoints, including Developer Portal identifier reads, Developer Portal-only
@@ -224,13 +224,14 @@ capabilities, and App Clip capability sync.
 
 Available commands:
 
-* `asc web bundle-ids list` - list the captured iOS and Mac Bundle ID collection for the selected Developer team
-* `asc web bundle-ids view` - inspect one opaque Bundle ID and its included capability graph
+* `asc web bundle-ids list` - [experimental] list the captured iOS and Mac Bundle ID collection for the selected Developer team
+* `asc web bundle-ids view` - [experimental] inspect one opaque Bundle ID and its included capability graph
 * `asc web bundle-ids capabilities enable` - enable a Developer Portal-only Bundle ID capability
 * `asc web bundle-ids capabilities sync-app-clip` - sync an App Clip capability with its parent Bundle ID
 
-The read commands use the cookie-authenticated Developer Portal JSON:API
-service, not the public App Store Connect API. `list` requests the first
+This command family is experimental. The read commands use the cookie-authenticated Developer Portal JSON:API
+service, not the public App Store Connect API. The `view` detail request uses
+`X-HTTP-Method-Override: GET` on Apple's POST endpoint. `list` requests the first
 1000-resource iOS/Mac collection and does not expose pagination; if Apple
 returns `links.next`, it remains visible in JSON for a later slice. `view`
 accepts the opaque resource ID returned by `list` and includes the requested
