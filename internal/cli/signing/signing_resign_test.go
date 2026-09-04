@@ -3097,7 +3097,7 @@ func TestSigningResignCommandReceiptRenderFailureRetainsPublicationAmbiguity(t *
 }
 
 func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
-	treePath := filepath.Join(string(filepath.Separator), "stage", "tree")
+	treePath := t.TempDir()
 	plans := []signingResignCodePlan{
 		{Path: filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework", "Feature")},
 		{Path: filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Loadable.bundle", "Loadable")},
@@ -3123,17 +3123,39 @@ func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
 }
 
 func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
-	treePath := filepath.Join(string(filepath.Separator), "stage", "tree")
+	treePath := t.TempDir()
 	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	info, err := plist.Marshal(map[string]any{"CFBundleExecutable": "Feature"}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(container, "Info.plist"), info, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	plans := []signingResignCodePlan{
-		{Path: filepath.Join(container, "Feature"), EntitlementsPath: "/stage/entitlements/feature.plist"},
+		{Path: filepath.Join(container, "Feature"), EntitlementsPath: filepath.Join(t.TempDir(), "feature.plist")},
 		{Path: filepath.Join(container, "Versions", "A", "Feature"), EntitlementsPath: "/stage/entitlements/version.plist"},
 	}
-	if got := signingResignContainerEntitlementsPath(container, plans); got != "/stage/entitlements/feature.plist" {
+	if got := signingResignContainerEntitlementsPath(container, plans); got != plans[0].EntitlementsPath {
 		t.Fatalf("container entitlements path = %q, want main executable document", got)
 	}
 	if got := signingResignContainerEntitlementsPath(filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Empty.bundle"), plans); got != "" {
 		t.Fatalf("unplanned container entitlements path = %q, want empty", got)
+	}
+	versioned := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Versioned.framework")
+	if err := os.MkdirAll(filepath.Join(versioned, "Versions", "A"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versioned, "Info.plist"), info, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	versionEntitlements := filepath.Join(t.TempDir(), "versioned.plist")
+	versionPlans := []signingResignCodePlan{{Path: filepath.Join(versioned, "Versions", "A", "Feature"), EntitlementsPath: versionEntitlements}}
+	if got := signingResignContainerEntitlementsPath(versioned, versionPlans); got != versionEntitlements {
+		t.Fatalf("versioned container entitlements path = %q, want %q", got, versionEntitlements)
 	}
 }
 
@@ -3141,6 +3163,13 @@ func TestSignSigningResignTreePreservesContainerMainEntitlements(t *testing.T) {
 	treePath := t.TempDir()
 	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
 	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := plist.Marshal(map[string]any{"CFBundleExecutable": "Feature"}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(container, "Info.plist"), info, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(container, "Feature")

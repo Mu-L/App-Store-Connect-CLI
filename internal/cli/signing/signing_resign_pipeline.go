@@ -816,8 +816,25 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 // so passing the same document preserves the claims applied to that
 // executable when the container's resource seal is refreshed.
 func signingResignContainerEntitlementsPath(container string, plans []signingResignCodePlan) string {
+	infoData, err := os.ReadFile(filepath.Join(container, "Info.plist"))
+	if err != nil {
+		return ""
+	}
+	var info struct {
+		Executable string `plist:"CFBundleExecutable"`
+	}
+	if _, err := plist.Unmarshal(infoData, &info); err != nil || strings.TrimSpace(info.Executable) == "" {
+		return ""
+	}
 	for _, plan := range plans {
-		if filepath.Dir(plan.Path) == container {
+		if filepath.Base(plan.Path) != info.Executable {
+			continue
+		}
+		relative, err := filepath.Rel(container, plan.Path)
+		if err != nil || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if filepath.Dir(relative) == "." || strings.HasPrefix(filepath.ToSlash(relative), "Versions/") {
 			return plan.EntitlementsPath
 		}
 	}
