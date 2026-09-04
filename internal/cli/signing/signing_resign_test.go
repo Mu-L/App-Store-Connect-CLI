@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1525,6 +1526,104 @@ func TestSigningResignPreservedExternalCodeRequiresAppleVerification(t *testing.
 	}
 }
 
+func TestSigningResignPreservedExternalCodeRejectsTemporaryPathReplacement(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(sourcePath, []byte("trusted code"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(_ context.Context, _ string, args ...string) (signingResignToolOutput, error) {
+		verificationPath := args[len(args)-1]
+		replacedPath := verificationPath + ".replaced"
+		if err := os.Rename(verificationPath, replacedPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(verificationPath, []byte("attacker replacement"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return signingResignToolOutput{}, nil
+	}
+
+	err = verifySigningResignPreservedExternalCodeOpen(context.Background(), source, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "changed during verification") {
+		t.Fatalf("verifySigningResignPreservedExternalCodeOpen() error = %v, want replacement rejection", err)
+	}
+}
+
+func TestSigningResignPreservedExternalCodeRejectsSameLengthMutation(t *testing.T) {
+	trusted := []byte("trusted code")
+	mutated := []byte("mutated code")
+	if len(trusted) != len(mutated) {
+		t.Fatal("test mutation must preserve file length")
+	}
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(sourcePath, trusted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(_ context.Context, _ string, args ...string) (signingResignToolOutput, error) {
+		verificationPath := args[len(args)-1]
+		if err := os.WriteFile(verificationPath, mutated, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return signingResignToolOutput{}, nil
+	}
+
+	err = verifySigningResignPreservedExternalCodeOpen(context.Background(), source, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "changed during verification") {
+		t.Fatalf("verifySigningResignPreservedExternalCodeOpen() error = %v, want same-length mutation rejection", err)
+	}
+}
+
+func TestSigningResignPreservedExternalCodeRejectsTemporaryRootReplacement(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(sourcePath, []byte("trusted code"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	parent := t.TempDir()
+	verificationRoot := filepath.Join(parent, "verification-root")
+	movedRoot := filepath.Join(parent, "original-root")
+	if err := os.Mkdir(verificationRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(_ context.Context, _ string, _ ...string) (signingResignToolOutput, error) {
+		if err := os.Rename(verificationRoot, movedRoot); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(verificationRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return signingResignToolOutput{}, nil
+	}
+
+	err = verifySigningResignPreservedExternalCodeOpen(context.Background(), source, verificationRoot)
+	if err == nil || !strings.Contains(err.Error(), "changed during verification") {
+		t.Fatalf("verifySigningResignPreservedExternalCodeOpen() error = %v, want root replacement rejection", err)
+	}
+}
+
 func TestValidateSigningResignSwiftSupportRejectsTamperedAndNestedEntries(t *testing.T) {
 	originalTool := runSigningResignToolFn
 	t.Cleanup(func() { runSigningResignToolFn = originalTool })
@@ -1620,6 +1719,37 @@ func TestValidateSigningResignSwiftSupportRejectsTamperedAndNestedEntries(t *tes
 	}
 }
 
+func TestValidateSigningResignSwiftSupportRejectsLaterSymlinkBeforeCodeVerification(t *testing.T) {
+	temporary := t.TempDir()
+	root := filepath.Join(temporary, "SwiftSupport", "iphoneos")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "a-libswiftCore-real.dylib")
+	if err := os.WriteFile(target, []byte("runtime"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "z-libswiftCore.dylib")); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	toolCalls := 0
+	runSigningResignToolFn = func(_ context.Context, _ string, _ ...string) (signingResignToolOutput, error) {
+		toolCalls++
+		return signingResignToolOutput{}, errors.New("code object is not signed")
+	}
+
+	err := validateSigningResignSwiftSupport(context.Background(), temporary)
+	if err == nil || !strings.Contains(err.Error(), "nested or symbolic-link") {
+		t.Fatalf("validateSigningResignSwiftSupport() error = %v, want symbolic-link rejection", err)
+	}
+	if toolCalls != 0 {
+		t.Fatalf("SwiftSupport verification tool calls = %d, want structural rejection before code verification", toolCalls)
+	}
+}
+
 func TestValidateSigningResignSwiftSupportAcceptsCanonicalLayout(t *testing.T) {
 	temporary := t.TempDir()
 	root := filepath.Join(temporary, "SwiftSupport", "iphoneos")
@@ -1639,7 +1769,7 @@ func TestValidateSigningResignSwiftSupportAcceptsCanonicalLayout(t *testing.T) {
 	if err := validateSigningResignSwiftSupport(context.Background(), temporary); err != nil {
 		t.Fatalf("validateSigningResignSwiftSupport() error = %v", err)
 	}
-	if len(verified) != 1 || !strings.Contains(verified[0], "--verify") || !strings.Contains(verified[0], "SwiftSupport/iphoneos/libswiftCore.dylib") {
+	if len(verified) != 1 || !strings.Contains(verified[0], "--verify") || !strings.Contains(verified[0], ".signing-resign-verify-") {
 		t.Fatalf("SwiftSupport verification calls = %#v", verified)
 	}
 }
@@ -1979,6 +2109,79 @@ func TestValidateSigningResignPackedCodeInventory(t *testing.T) {
 				t.Fatalf("validateSigningResignPackedCodeInventory() error = %v, wantErr %v", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestEnumerateSigningResignMachOFilesRootStaysOnOpenedTree(t *testing.T) {
+	parent := t.TempDir()
+	treePath := filepath.Join(parent, "packed-tree")
+	originalPath := filepath.Join(parent, "original-tree")
+	if err := os.Mkdir(treePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	machoData := []byte{
+		0xcf, 0xfa, 0xed, 0xfe, 0x07, 0x00, 0x00, 0x01,
+		0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	writeSigningResignTestMachO(t, treePath, "Payload/App.app/App", machoData)
+	opened, err := os.OpenRoot(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if err := os.Rename(treePath, originalPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(treePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSigningResignTestMachO(t, treePath, "Payload/Evil.app/Evil", machoData)
+
+	paths, err := enumerateSigningResignMachOFilesRoot(context.Background(), opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(paths, []string{"Payload/App.app/App"}) {
+		t.Fatalf("enumerateSigningResignMachOFilesRoot() = %v, want original opened tree", paths)
+	}
+}
+
+func TestVerifySigningResignTreeRejectsRootReplacementDuringCodesign(t *testing.T) {
+	parent := t.TempDir()
+	treePath := filepath.Join(parent, "packed-tree")
+	movedPath := filepath.Join(parent, "original-tree")
+	if err := os.MkdirAll(filepath.Join(treePath, "Payload", "App.app"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := rootfs.New(treePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(_ context.Context, _ string, _ ...string) (signingResignToolOutput, error) {
+		if err := os.Rename(treePath, movedPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(treePath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return signingResignToolOutput{}, nil
+	}
+
+	err = verifySigningResignTree(context.Background(), tree, signingResignPreparedTree{
+		Archive: signingResignArchive{MainPath: "Payload/App.app"},
+	}, "TEAM", "")
+	if err == nil {
+		t.Fatal("verifySigningResignTree() accepted a replaced verification root")
+	}
+	var operational *signingResignOperationalError
+	if !errors.As(err, &operational) || operational.stage != signingResignStageVerification || operational.code != signingResignCodeVerification {
+		t.Fatalf("verifySigningResignTree() error = %v, want closed verification failure", err)
 	}
 }
 

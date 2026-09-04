@@ -308,7 +308,7 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 		}
 		publicStage = signingResignStageVerification
 		publicCode = signingResignCodeVerification
-		if err := verifySigningResignTree(signingContext, treeRoot.Path(), prepared, teamID, identity.CertificateSHA256); err != nil {
+		if err := verifySigningResignTree(signingContext, treeRoot, prepared, teamID, identity.CertificateSHA256); err != nil {
 			return wrapSigningResignOperationalError(signingResignStageVerification, signingResignCodeVerification, err)
 		}
 		publicStage = signingResignStageArtifact
@@ -582,7 +582,10 @@ func isSigningResignPreservedExternalCodePath(treeRoot, codePath string) bool {
 	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return false
 	}
-	relative = filepath.ToSlash(relative)
+	return isSigningResignPreservedExternalCodeRelativePath(filepath.ToSlash(relative))
+}
+
+func isSigningResignPreservedExternalCodeRelativePath(relative string) bool {
 	if relative == "WatchKitSupport2/WK" {
 		// App Store-exported Watch IPAs carry the distribution-side WK shim
 		// binary beside the payload. It is provenance-checked and preserved
@@ -607,59 +610,278 @@ func verifySigningResignPreservedExternalCode(ctx context.Context, codePath stri
 	return nil
 }
 
+// verifySigningResignPreservedExternalCodeOpen verifies the bytes already
+// selected by a rooted descriptor. codesign cannot consume an fd on macOS,
+// so copy the descriptor into a private temporary regular file first.
+func verifySigningResignPreservedExternalCodeOpen(ctx context.Context, source *os.File, tempRoot string) (resultErr error) {
+	if source == nil {
+		return fmt.Errorf("preserved code descriptor is nil")
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	tempOwner, err := rootfs.New(tempRoot)
+	if err != nil {
+		return err
+	}
+	defer tempOwner.Close()
+	tempDirectory, err := tempOwner.OpenRoot()
+	if err != nil {
+		return err
+	}
+	defer tempDirectory.Close()
+	temp, tempName, err := secureopen.CreateTempNoFollowInRoot(tempDirectory, ".", ".signing-resign-verify-*", 0o600)
+	if err != nil {
+		return err
+	}
+	name := filepath.Join(tempOwner.Path(), tempName)
+	defer func() {
+		if cleanupErr := tempDirectory.Remove(tempName); cleanupErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove temporary provenance copy: %w", cleanupErr))
+		}
+	}()
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		temp.Close()
+		return err
+	}
+	var copied int64
+	expectedHash := sha256.New()
+	buf := make([]byte, 128*1024)
+	for {
+		if err := contextError(ctx); err != nil {
+			temp.Close()
+			return err
+		}
+		n, readErr := source.Read(buf)
+		if n > 0 {
+			copied += int64(n)
+			if copied > signingResignSwiftSupportMaxBytes {
+				temp.Close()
+				return fmt.Errorf("preserved code exceeds %d bytes", signingResignSwiftSupportMaxBytes)
+			}
+			written, err := temp.Write(buf[:n])
+			if err != nil {
+				temp.Close()
+				return err
+			}
+			if written != n {
+				temp.Close()
+				return io.ErrShortWrite
+			}
+			if _, err := expectedHash.Write(buf[:n]); err != nil {
+				temp.Close()
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			temp.Close()
+			return readErr
+		}
+	}
+	tempInfo, err := temp.Stat()
+	if err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	retained, err := secureopen.OpenExistingNoFollowInRoot(tempDirectory, tempName)
+	if err != nil {
+		return err
+	}
+	defer retained.Close()
+	before, err := tempDirectory.Lstat(tempName)
+	if err != nil || !before.Mode().IsRegular() || !os.SameFile(tempInfo, before) || before.Size() != copied {
+		return fmt.Errorf("temporary provenance copy changed before verification")
+	}
+	expectedDigest := strings.ToUpper(hex.EncodeToString(expectedHash.Sum(nil)))
+	beforeDigest, err := hashSigningResignOpenFile(ctx, retained, copied)
+	if err != nil || !strings.EqualFold(beforeDigest, expectedDigest) {
+		return errors.Join(err, fmt.Errorf("temporary provenance copy changed before verification"))
+	}
+	if err := checkSigningResignRootIdentity(tempOwner); err != nil {
+		return fmt.Errorf("temporary provenance directory changed before verification: %w", err)
+	}
+	toolErr := verifySigningResignPreservedExternalCode(ctx, name)
+	after, pathErr := tempDirectory.Lstat(tempName)
+	retainedInfo, retainedErr := retained.Stat()
+	afterDigest, digestErr := hashSigningResignOpenFile(ctx, retained, copied)
+	rootErr := checkSigningResignRootIdentity(tempOwner)
+	if pathErr != nil || retainedErr != nil || digestErr != nil || rootErr != nil || !after.Mode().IsRegular() ||
+		!os.SameFile(tempInfo, after) || !os.SameFile(tempInfo, retainedInfo) || after.Size() != copied || retainedInfo.Size() != copied {
+		return errors.Join(toolErr, pathErr, retainedErr, digestErr, rootErr, fmt.Errorf("temporary provenance copy changed during verification"))
+	}
+	if !strings.EqualFold(afterDigest, expectedDigest) {
+		return errors.Join(toolErr, fmt.Errorf("temporary provenance copy changed during verification"))
+	}
+	return toolErr
+}
+
+func checkSigningResignRootIdentity(root rootfs.Root) error {
+	opened, err := root.OpenRoot()
+	if err != nil {
+		return err
+	}
+	return opened.Close()
+}
+
+func openSigningResignRegularNoFollow(root *os.Root, name string) (*os.File, os.FileInfo, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("entry is not a regular file")
+	}
+	file, err := secureopen.OpenExistingNoFollowInRoot(root, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	opened, statErr := file.Stat()
+	latest, lstatErr := root.Lstat(name)
+	if statErr != nil || lstatErr != nil || !opened.Mode().IsRegular() ||
+		latest.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, opened) || !os.SameFile(opened, latest) {
+		return nil, nil, errors.Join(statErr, lstatErr, fmt.Errorf("regular file changed during rooted open"), file.Close())
+	}
+	return file, opened, nil
+}
+
+func openSigningResignTreeRoot(treeRoot string) (rootfs.Root, *os.Root, error) {
+	root, err := rootfs.New(treeRoot)
+	if err != nil {
+		return rootfs.Root{}, nil, err
+	}
+	opened, err := root.OpenRoot()
+	if err != nil {
+		root.Close()
+		return rootfs.Root{}, nil, err
+	}
+	return root, opened, nil
+}
+
 func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	swiftSupportRoot := filepath.Join(treeRoot, "SwiftSupport")
-	info, err := os.Lstat(swiftSupportRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	return validateSigningResignSwiftSupportRoot(ctx, treeRoot, root)
+}
+
+func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string, root *os.Root) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	before, statErr := root.Lstat("SwiftSupport")
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect SwiftSupport directory: %w", statErr)
+	}
+	if statErr == nil && before.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("SwiftSupport directory is a symbolic link")
+	}
+	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		if before == nil {
+			return nil
+		}
+		return fmt.Errorf("SwiftSupport directory disappeared during rooted open")
 	}
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("SwiftSupport is not a regular directory")
+	defer swift.Close()
+	if info, statErr := root.Lstat("SwiftSupport"); statErr != nil || info.Mode()&os.ModeSymlink != 0 || before == nil || !os.SameFile(before, info) {
+		if statErr != nil {
+			return fmt.Errorf("inspect SwiftSupport directory: %w", statErr)
+		}
+		return fmt.Errorf("SwiftSupport directory changed during rooted open")
 	}
-	entries, err := os.ReadDir(swiftSupportRoot)
+	if after, statErr := swift.Stat("."); statErr != nil || !os.SameFile(before, after) {
+		return fmt.Errorf("SwiftSupport directory changed during rooted open")
+	}
+	swiftDir, err := swift.Open(".")
+	if err != nil {
+		return fmt.Errorf("read SwiftSupport directory: %w", err)
+	}
+	defer swiftDir.Close()
+	entries, err := swiftDir.ReadDir(-1)
 	if err != nil {
 		return fmt.Errorf("read SwiftSupport directory: %w", err)
 	}
 	if len(entries) != 1 || entries[0].Name() != "iphoneos" {
 		return fmt.Errorf("SwiftSupport must contain only the iphoneos directory")
 	}
-	swiftRoot := filepath.Join(swiftSupportRoot, "iphoneos")
-	platformInfo, err := os.Lstat(swiftRoot)
+	beforePlatform, statErr := swift.Lstat("iphoneos")
+	if statErr != nil {
+		return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", statErr)
+	}
+	if beforePlatform.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("SwiftSupport/iphoneos directory is a symbolic link")
+	}
+	platform, err := swift.OpenRoot("iphoneos")
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
 	}
-	if platformInfo.Mode()&os.ModeSymlink != 0 || !platformInfo.IsDir() {
-		return fmt.Errorf("SwiftSupport/iphoneos is not a regular directory")
+	defer platform.Close()
+	if info, statErr := swift.Lstat("iphoneos"); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(beforePlatform, info) {
+		if statErr != nil {
+			return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", statErr)
+		}
+		return fmt.Errorf("SwiftSupport/iphoneos directory changed during rooted open")
 	}
-	entries, err = os.ReadDir(swiftRoot)
+	if after, statErr := platform.Stat("."); statErr != nil || !os.SameFile(beforePlatform, after) {
+		return fmt.Errorf("SwiftSupport/iphoneos directory changed during rooted open")
+	}
+	platformDir, err := platform.Open(".")
 	if err != nil {
 		return fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
+	}
+	defer platformDir.Close()
+	entries, err = platformDir.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
+	}
+	// Complete structural validation before invoking codesign. Directory
+	// enumeration order is filesystem-specific, so an invalid later entry must
+	// not be hidden by an earlier unsigned dylib verification failure.
+	for _, entry := range entries {
+		if err := contextError(ctx); err != nil {
+			return err
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect SwiftSupport/iphoneos entry: %w", err)
+		}
+		if entryInfo.Mode()&os.ModeSymlink != 0 || !entryInfo.Mode().IsRegular() {
+			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
+		}
+		name := entry.Name()
+		if name == ".dylib" || !strings.HasSuffix(name, ".dylib") {
+			return fmt.Errorf("SwiftSupport/iphoneos contains an unsupported entry")
+		}
 	}
 	for _, entry := range entries {
 		if err := contextError(ctx); err != nil {
 			return err
 		}
 		name := entry.Name()
-		candidate := filepath.Join(swiftRoot, name)
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
+		file, _, err := openSigningResignRegularNoFollow(platform, name)
+		if err != nil {
+			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry: %w", err)
 		}
-		entryInfo, err := entry.Info()
-		if err != nil || !entryInfo.Mode().IsRegular() {
-			return fmt.Errorf("SwiftSupport/iphoneos contains a non-regular entry")
-		}
-		if name == ".dylib" || !strings.HasSuffix(name, ".dylib") {
-			return fmt.Errorf("SwiftSupport/iphoneos contains an unsupported entry")
-		}
-		if err := verifySigningResignPreservedExternalCode(ctx, candidate); err != nil {
+		if err := verifySigningResignPreservedExternalCodeOpen(ctx, file, treeRoot); err != nil {
+			file.Close()
 			return fmt.Errorf("verify preserved SwiftSupport code failed: %w", err)
 		}
+		file.Close()
 	}
 	return nil
 }
@@ -672,60 +894,109 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	watchRoot := filepath.Join(treeRoot, "WatchKitSupport2")
-	info, err := os.Lstat(watchRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	return validateSigningResignWatchKitSupportRoot(ctx, treeRoot, root)
+}
+
+func validateSigningResignWatchKitSupportRoot(ctx context.Context, treeRoot string, root *os.Root) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	before, statErr := root.Lstat("WatchKitSupport2")
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect WatchKitSupport2 directory: %w", statErr)
+	}
+	if statErr == nil && before.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WatchKitSupport2 directory is a symbolic link")
+	}
+	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		if before == nil {
+			return nil
+		}
+		return fmt.Errorf("WatchKitSupport2 directory disappeared during rooted open")
 	}
 	if err != nil {
 		return fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("WatchKitSupport2 is not a regular directory")
+	defer watch.Close()
+	if info, statErr := root.Lstat("WatchKitSupport2"); statErr != nil || info.Mode()&os.ModeSymlink != 0 || before == nil || !os.SameFile(before, info) {
+		if statErr != nil {
+			return fmt.Errorf("inspect WatchKitSupport2 directory: %w", statErr)
+		}
+		return fmt.Errorf("WatchKitSupport2 directory changed during rooted open")
 	}
-	entries, err := os.ReadDir(watchRoot)
+	if after, statErr := watch.Stat("."); statErr != nil || !os.SameFile(before, after) {
+		return fmt.Errorf("WatchKitSupport2 directory changed during rooted open")
+	}
+	watchDir, err := watch.Open(".")
+	if err != nil {
+		return fmt.Errorf("read WatchKitSupport2 directory: %w", err)
+	}
+	defer watchDir.Close()
+	entries, err := watchDir.ReadDir(-1)
 	if err != nil {
 		return fmt.Errorf("read WatchKitSupport2 directory: %w", err)
 	}
 	if len(entries) != 1 || entries[0].Name() != "WK" {
 		return fmt.Errorf("WatchKitSupport2 must contain only the WK binary")
 	}
-	entry := entries[0]
-	if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+	if entries[0].Type()&os.ModeSymlink != 0 {
 		return fmt.Errorf("WatchKitSupport2 contains a nested or symbolic-link entry")
 	}
-	entryInfo, err := entry.Info()
-	if err != nil || !entryInfo.Mode().IsRegular() {
-		return fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
+	file, info, err := openSigningResignRegularNoFollow(watch, "WK")
+	if err != nil {
+		return fmt.Errorf("WatchKitSupport2 contains a nested or symbolic-link entry: %w", err)
 	}
-	if entryInfo.Mode().Perm()&0o100 == 0 {
+	defer file.Close()
+	if info.Mode().Perm()&0o100 == 0 {
 		return fmt.Errorf("WatchKitSupport2/WK is missing the owner-execute permission")
 	}
-	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(watchRoot, "WK")); err != nil {
+	if err := verifySigningResignPreservedExternalCodeOpen(ctx, file, treeRoot); err != nil {
 		return fmt.Errorf("verify preserved WatchKitSupport2 code failed: %w", err)
 	}
 	return nil
 }
 
-func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
+func captureSigningResignWatchKitSupportInventoryRoot(ctx context.Context, root *os.Root) ([]signingResignSwiftSupportEntry, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	candidate := filepath.Join(treeRoot, "WatchKitSupport2", "WK")
-	entryInfo, err := os.Lstat(candidate)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	before, statErr := root.Lstat("WatchKitSupport2")
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect WatchKitSupport2 directory: %w", statErr)
 	}
+	if statErr == nil && before.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("WatchKitSupport2 directory is a symbolic link")
+	}
+	watch, err := root.OpenRoot("WatchKitSupport2")
+	if errors.Is(err, os.ErrNotExist) {
+		if before == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("WatchKitSupport2 directory disappeared during rooted open")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
+	}
+	defer watch.Close()
+	if after, statErr := watch.Stat("."); statErr != nil || before == nil || !os.SameFile(before, after) {
+		return nil, fmt.Errorf("WatchKitSupport2 directory changed during rooted open")
+	}
+	file, entryInfo, err := openSigningResignRegularNoFollow(watch, "WK")
 	if err != nil {
 		return nil, fmt.Errorf("inspect WatchKitSupport2 entry: %w", err)
 	}
-	if entryInfo.Mode()&os.ModeSymlink != 0 || !entryInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
-	}
+	defer file.Close()
 	if entryInfo.Size() > signingResignSwiftSupportMaxBytes {
 		return nil, fmt.Errorf("WatchKitSupport2 entry exceeds %d bytes", signingResignSwiftSupportMaxBytes)
 	}
-	digest, err := hashSigningResignFile(ctx, candidate, entryInfo.Size())
+	digest, err := hashSigningResignOpenFile(ctx, file, entryInfo.Size())
 	if err != nil {
 		return nil, fmt.Errorf("hash WatchKitSupport2 entry: %w", err)
 	}
@@ -740,21 +1011,33 @@ func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot 
 // validateSigningResignPreservedExternalDirectories checks every supported
 // distribution-side directory that is preserved instead of re-signed.
 func validateSigningResignPreservedExternalDirectories(ctx context.Context, treeRoot string) error {
-	if err := validateSigningResignSwiftSupport(ctx, treeRoot); err != nil {
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	if err := validateSigningResignSwiftSupportRoot(ctx, treeRoot, root); err != nil {
 		return err
 	}
-	return validateSigningResignWatchKitSupport(ctx, treeRoot)
+	return validateSigningResignWatchKitSupportRoot(ctx, treeRoot, root)
 }
 
 // captureSigningResignPreservedInventory records the sorted path, size,
 // digest, and mode of every preserved distribution-side runtime so repack can
 // be held to byte-for-byte equality.
 func captureSigningResignPreservedInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
-	swift, err := captureSigningResignSwiftSupportInventory(ctx, treeRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	swift, err := captureSigningResignSwiftSupportInventoryRoot(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	watch, err := captureSigningResignWatchKitSupportInventory(ctx, treeRoot)
+	watch, err := captureSigningResignWatchKitSupportInventoryRoot(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -768,29 +1051,82 @@ func captureSigningResignPreservedInventory(ctx context.Context, treeRoot string
 	return combined, nil
 }
 
+func captureSigningResignPreservedInventoryRoot(ctx context.Context, root *os.Root) ([]signingResignSwiftSupportEntry, error) {
+	swift, err := captureSigningResignSwiftSupportInventoryRoot(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	watch, err := captureSigningResignWatchKitSupportInventoryRoot(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	combined := append(swift, watch...)
+	sort.Slice(combined, func(i, j int) bool { return combined[i].RelativePath < combined[j].RelativePath })
+	if len(combined) == 0 {
+		return nil, nil
+	}
+	return combined, nil
+}
+
 func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	swiftRoot := filepath.Join(treeRoot, "SwiftSupport", "iphoneos")
-	info, err := os.Lstat(filepath.Join(treeRoot, "SwiftSupport"))
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	return captureSigningResignSwiftSupportInventoryRoot(ctx, root)
+}
+
+func captureSigningResignSwiftSupportInventoryRoot(ctx context.Context, root *os.Root) ([]signingResignSwiftSupportEntry, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	before, statErr := root.Lstat("SwiftSupport")
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect SwiftSupport directory: %w", statErr)
+	}
+	if statErr == nil && before.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("SwiftSupport directory is a symbolic link")
+	}
+	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		if before == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("SwiftSupport directory disappeared during rooted open")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect SwiftSupport directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("SwiftSupport is not a regular directory")
+	defer swift.Close()
+	if after, statErr := swift.Stat("."); statErr != nil || before == nil || !os.SameFile(before, after) {
+		return nil, fmt.Errorf("SwiftSupport directory changed during rooted open")
 	}
-	platformInfo, err := os.Lstat(swiftRoot)
+	platformBefore, statErr := swift.Lstat("iphoneos")
+	if statErr != nil {
+		return nil, fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", statErr)
+	}
+	if statErr == nil && platformBefore.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("SwiftSupport/iphoneos directory is a symbolic link")
+	}
+	platform, err := swift.OpenRoot("iphoneos")
 	if err != nil {
 		return nil, fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
 	}
-	if platformInfo.Mode()&os.ModeSymlink != 0 || !platformInfo.IsDir() {
-		return nil, fmt.Errorf("SwiftSupport/iphoneos is not a regular directory")
+	defer platform.Close()
+	if after, statErr := platform.Stat("."); statErr != nil || platformBefore == nil || !os.SameFile(platformBefore, after) {
+		return nil, fmt.Errorf("SwiftSupport/iphoneos directory changed during rooted open")
 	}
-	entries, err := os.ReadDir(swiftRoot)
+	dir, err := platform.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
 	}
@@ -799,20 +1135,18 @@ func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot str
 		if err := contextError(ctx); err != nil {
 			return nil, err
 		}
-		candidate := filepath.Join(swiftRoot, entry.Name())
-		entryInfo, err := os.Lstat(candidate)
+		file, entryInfo, err := openSigningResignRegularNoFollow(platform, entry.Name())
 		if err != nil {
-			return nil, fmt.Errorf("inspect SwiftSupport entry: %w", err)
-		}
-		if entryInfo.Mode()&os.ModeSymlink != 0 || !entryInfo.Mode().IsRegular() {
-			return nil, fmt.Errorf("SwiftSupport/iphoneos contains a non-regular entry")
+			return nil, fmt.Errorf("SwiftSupport/iphoneos contains a non-regular entry: %w", err)
 		}
 		if entryInfo.Size() > signingResignSwiftSupportMaxBytes {
+			file.Close()
 			return nil, fmt.Errorf("SwiftSupport entry exceeds %d bytes", signingResignSwiftSupportMaxBytes)
 		}
-		digest, err := hashSigningResignFile(ctx, candidate, entryInfo.Size())
-		if err != nil {
-			return nil, fmt.Errorf("hash SwiftSupport entry: %w", err)
+		digest, err := hashSigningResignOpenFile(ctx, file, entryInfo.Size())
+		closeErr := file.Close()
+		if err != nil || closeErr != nil {
+			return nil, fmt.Errorf("hash SwiftSupport entry: %w", errors.Join(err, closeErr))
 		}
 		inventory = append(inventory, signingResignSwiftSupportEntry{
 			RelativePath: filepath.ToSlash(filepath.Join("SwiftSupport", "iphoneos", entry.Name())),
@@ -940,6 +1274,17 @@ func signingResignContainerEntitlementsPath(treePath, container string, plans []
 	return versionedEntitlements
 }
 
+// readRootedSigningResignFile reads a bounded file beneath the selected
+// staging root without reopening an untrusted path outside that root.
+func readRootedSigningResignFile(rootPath, relativePath string, limit int64) ([]byte, error) {
+	root, err := rootfs.New(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.ReadFileLimited(relativePath, limit)
+}
+
 // isSigningResignCodeContainerName reports whether a directory name is a
 // supported nested code container whose signature must be refreshed after the
 // code inside it changes. App-like bundles (.app, .appex) are signed as
@@ -993,7 +1338,7 @@ func signingResignFrameworkContainers(treePath string, plans []signingResignCode
 	return containers
 }
 
-func verifySigningResignTree(ctx context.Context, treePath string, prepared signingResignPreparedTree, teamID, certificateSHA256 string) (resultErr error) {
+func verifySigningResignTree(ctx context.Context, treeRoot rootfs.Root, prepared signingResignPreparedTree, teamID, certificateSHA256 string) (resultErr error) {
 	defer func() {
 		resultErr = wrapSigningResignOperationalError(
 			signingResignStageVerification,
@@ -1001,16 +1346,29 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 			resultErr,
 		)
 	}()
+	treePath := treeRoot.Path()
+	if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+		return fmt.Errorf("verification tree identity changed: %w", err)
+	}
 	plans := append([]signingResignCodePlan(nil), prepared.CodePlans...)
 	for _, plan := range plans {
 		if err := verifySigningResignObject(ctx, plan.Path, teamID, false); err != nil {
 			return fmt.Errorf("verify nested code %s: %w", signingResignDisplayPath(treePath, plan.Path), err)
 		}
+		if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+			return fmt.Errorf("verification tree identity changed: %w", err)
+		}
 		if err := verifySigningResignCertificate(ctx, plan.Path, certificateSHA256); err != nil {
 			return fmt.Errorf("verify nested code certificate: %w", err)
 		}
+		if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+			return fmt.Errorf("verification tree identity changed: %w", err)
+		}
 		if err := validateSigningResignCodeEntitlements(ctx, plan); err != nil {
 			return fmt.Errorf("verify nested code entitlements: %w", err)
+		}
+		if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+			return fmt.Errorf("verification tree identity changed: %w", err)
 		}
 	}
 	for _, target := range prepared.Archive.Targets {
@@ -1018,12 +1376,21 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 		if err := verifySigningResignObject(ctx, targetPath, teamID, false); err != nil {
 			return fmt.Errorf("verify target %s: %w", target.BundleID, err)
 		}
+		if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+			return fmt.Errorf("verification tree identity changed: %w", err)
+		}
 		if err := verifySigningResignCertificate(ctx, targetPath, certificateSHA256); err != nil {
 			return fmt.Errorf("verify target %s certificate: %w", target.BundleID, err)
+		}
+		if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+			return fmt.Errorf("verification tree identity changed: %w", err)
 		}
 		entitlements, err := readSigningResignEntitlements(ctx, targetExecutablePath(treePath, target))
 		if err != nil {
 			return fmt.Errorf("read verified target %s entitlements: %w", target.BundleID, err)
+		}
+		if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+			return fmt.Errorf("verification tree identity changed: %w", err)
 		}
 		if strings.TrimSpace(target.EntitlementsPath) == "" {
 			return fmt.Errorf("target %s generated entitlements document is missing", target.BundleID)
@@ -1031,7 +1398,7 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 		if err := validateSigningResignEntitlementsAgainstDocumentAtStage(entitlements, target.EntitlementsPath, fmt.Sprintf("target %s signed entitlements", target.BundleID), signingResignStageVerification); err != nil {
 			return err
 		}
-		profileData, err := readRootedSigningResignFile(treePath, filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
+		profileData, err := treeRoot.ReadFileLimited(filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
 		if err != nil {
 			return fmt.Errorf("read verified target %s profile failed", target.BundleID)
 		}
@@ -1042,6 +1409,9 @@ func verifySigningResignTree(ctx context.Context, treePath string, prepared sign
 	mainPath := filepath.Join(treePath, filepath.FromSlash(prepared.Archive.MainPath))
 	if err := verifySigningResignObject(ctx, mainPath, teamID, true); err != nil {
 		return fmt.Errorf("verify complete main app: %w", err)
+	}
+	if err := checkSigningResignRootIdentity(treeRoot); err != nil {
+		return fmt.Errorf("verification tree identity changed: %w", err)
 	}
 	return nil
 }
@@ -1142,15 +1512,6 @@ func signingResignEntitlementValuesEqual(left, right any) bool {
 		return true
 	}
 	return reflect.DeepEqual(left, right)
-}
-
-func readRootedSigningResignFile(rootPath, relativePath string, limit int64) ([]byte, error) {
-	root, err := rootfs.New(rootPath)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	return root.ReadFileLimited(relativePath, limit)
 }
 
 func signingResignSHA256(data []byte) string {
@@ -1392,6 +1753,15 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 			fmt.Errorf("create final verification tree: %w", err),
 		)
 	}
+	packedTreeRoot, err := rootfs.New(filepath.Join(stageRoot.Path(), "packed-tree"))
+	if err != nil {
+		return wrapSigningResignOperationalError(
+			signingResignStageArtifact,
+			signingResignCodeFilesystem,
+			fmt.Errorf("bind final verification tree: %w", err),
+		)
+	}
+	defer packedTreeRoot.Close()
 	stageOS, err := stageRoot.OpenRoot()
 	if err != nil {
 		return wrapSigningResignOperationalError(
@@ -1401,7 +1771,7 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 		)
 	}
 	defer stageOS.Close()
-	packedTreeOS, err := stageOS.OpenRoot("packed-tree")
+	packedTreeOS, err := packedTreeRoot.OpenRoot()
 	if err != nil {
 		return wrapSigningResignOperationalError(
 			signingResignStageArtifact,
@@ -1417,19 +1787,13 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 			fmt.Errorf("materialize final verification tree: %w", err),
 		)
 	}
-	if err := validateSigningResignPreservedExternalDirectories(ctx, filepath.Join(stageRoot.Path(), "packed-tree")); err != nil {
+	if err := validateSigningResignSwiftSupportRoot(ctx, stageRoot.Path(), packedTreeOS); err != nil {
 		return fmt.Errorf("verify preserved SwiftSupport after repack: %w", err)
 	}
-	packedTreeRoot, err := rootfs.New(filepath.Join(stageRoot.Path(), "packed-tree"))
-	if err != nil {
-		return wrapSigningResignOperationalError(
-			signingResignStageArtifact,
-			signingResignCodeFilesystem,
-			fmt.Errorf("open final verification tree: %w", err),
-		)
+	if err := validateSigningResignWatchKitSupportRoot(ctx, stageRoot.Path(), packedTreeOS); err != nil {
+		return fmt.Errorf("verify preserved SwiftSupport after repack: %w", err)
 	}
-	defer packedTreeRoot.Close()
-	packedSwiftSupport, err := captureSigningResignPreservedInventory(ctx, packedTreeRoot.Path())
+	packedSwiftSupport, err := captureSigningResignPreservedInventoryRoot(ctx, packedTreeOS)
 	if err != nil {
 		return wrapSigningResignOperationalError(
 			signingResignStageArtifact,
@@ -1444,10 +1808,10 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 			err,
 		)
 	}
-	if err := validateSigningResignPackedCodeInventory(ctx, packedTreeRoot.Path(), originalTreePath, original); err != nil {
+	if err := validateSigningResignPackedCodeInventoryRoot(ctx, packedTreeOS, originalTreePath, original); err != nil {
 		return fmt.Errorf("verify packed Mach-O inventory: %w", err)
 	}
-	archive, err := discoverSigningResignArchive(ctx, reader, packedTreeRoot)
+	archive, err := discoverSigningResignArchiveRooted(ctx, reader, packedTreeRoot)
 	if err != nil {
 		return fmt.Errorf("inspect final verification targets: %w", err)
 	}
@@ -1459,7 +1823,7 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 		if target.Kind != want.Kind || target.RelativePath != want.RelativePath || target.BundleID != want.BundleID || target.Executable != want.Executable || target.ProfileMode.Perm() != want.ProfileMode.Perm() {
 			return fmt.Errorf("re-signed IPA target inventory changed during repack")
 		}
-		profileData, err := readRootedSigningResignFile(packedTreeRoot.Path(), filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
+		profileData, err := packedTreeRoot.ReadFileLimited(filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision")), signingResignProfileMaxBytes)
 		if err != nil || !strings.EqualFold(signingResignSHA256(profileData), want.Profile.SHA256) {
 			return fmt.Errorf("re-signed IPA target profile changed during repack")
 		}
@@ -1468,7 +1832,7 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 	if err != nil {
 		return fmt.Errorf("rebase final verification targets: %w", err)
 	}
-	if err := verifySigningResignTree(ctx, packedTreeRoot.Path(), finalPrepared, teamID, certificateSHA256); err != nil {
+	if err := verifySigningResignTree(ctx, packedTreeRoot, finalPrepared, teamID, certificateSHA256); err != nil {
 		return fmt.Errorf("verify re-signed IPA after repack: %w", err)
 	}
 	return nil
@@ -1488,6 +1852,21 @@ func validateSigningResignPackedCodeInventory(ctx context.Context, packedTreePat
 	packedRoot, err := filepath.Abs(filepath.Clean(packedTreePath))
 	if err != nil {
 		return fmt.Errorf("resolve packed verification tree: %w", err)
+	}
+	root, err := os.OpenRoot(packedRoot)
+	if err != nil {
+		return fmt.Errorf("open packed verification tree: %w", err)
+	}
+	defer root.Close()
+	return validateSigningResignPackedCodeInventoryRoot(ctx, root, originalTreePath, original)
+}
+
+func validateSigningResignPackedCodeInventoryRoot(ctx context.Context, packedRoot *os.Root, originalTreePath string, original signingResignPreparedTree) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if packedRoot == nil {
+		return fmt.Errorf("packed verification tree root is missing")
 	}
 	originalRoot, err := filepath.Abs(filepath.Clean(originalTreePath))
 	if err != nil {
@@ -1509,20 +1888,19 @@ func validateSigningResignPackedCodeInventory(ctx context.Context, packedTreePat
 		}
 		expected = append(expected, filepath.ToSlash(filepath.Clean(relative)))
 	}
-	currentPaths, err := enumerateSigningResignMachOFiles(ctx, packedRoot)
+	currentPaths, err := enumerateSigningResignMachOFilesRoot(ctx, packedRoot)
 	if err != nil {
 		return fmt.Errorf("enumerate packed Mach-O files: %w", err)
 	}
 	current := make([]string, 0, len(currentPaths))
-	for _, codePath := range currentPaths {
-		if isSigningResignPreservedExternalCodePath(packedRoot, codePath) {
+	for _, relative := range currentPaths {
+		if isSigningResignPreservedExternalCodeRelativePath(relative) {
 			continue
 		}
-		relative, err := filepath.Rel(packedRoot, codePath)
-		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		if relative == "." || relative == ".." || strings.HasPrefix(relative, "../") || !filepath.IsLocal(filepath.FromSlash(relative)) {
 			return fmt.Errorf("packed code path is outside the staging tree")
 		}
-		current = append(current, filepath.ToSlash(filepath.Clean(relative)))
+		current = append(current, path.Clean(relative))
 	}
 	sort.Strings(expected)
 	sort.Strings(current)
