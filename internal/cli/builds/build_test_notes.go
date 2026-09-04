@@ -428,7 +428,7 @@ func bindTestNotesBuildSelectorFlags(fs *flag.FlagSet) testNotesBuildSelectorFla
 			latestUsage:      "Resolve the latest matching build for --app context",
 			versionUsage:     "App version string (e.g., 1.2.3)",
 			buildNumberUsage: "Build number (CFBundleVersion)",
-			platformUsage:    "Platform: IOS, MAC_OS, TV_OS, VISION_OS",
+			platformUsage:    "Platform (required with --build-number): IOS, MAC_OS, TV_OS, VISION_OS",
 		}),
 	}
 }

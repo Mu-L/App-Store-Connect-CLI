@@ -52,7 +52,7 @@ func bindBuildSelectorFlags(fs *flag.FlagSet, opts buildSelectorFlagOptions) bui
 	}
 	platformUsage := strings.TrimSpace(opts.platformUsage)
 	if platformUsage == "" {
-		platformUsage = "Optional platform filter for --app selectors: IOS, MAC_OS, TV_OS, VISION_OS"
+		platformUsage = "Platform filter for --app selectors (required with --build-number): IOS, MAC_OS, TV_OS, VISION_OS"
 	}
 
 	return buildSelectorFlags{

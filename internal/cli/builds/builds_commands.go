@@ -802,7 +802,7 @@ func BuildsInfoCommand() *ffcli.Command {
 	latest := fs.Bool("latest", false, "Show details for the latest build in --app context")
 	version := fs.String("version", "", "Optional marketing version filter (CFBundleShortVersionString) for --app selectors")
 	buildNumber := fs.String("build-number", "", "Build number (CFBundleVersion) for --app unique lookup")
-	platform := fs.String("platform", "", "Optional platform filter for app-scoped selectors: IOS, MAC_OS, TV_OS, VISION_OS")
+	platform := fs.String("platform", "", "Platform filter for app-scoped selectors (required with --build-number): IOS, MAC_OS, TV_OS, VISION_OS")
 	processingState := fs.String("processing-state", "", "Optional processing state filter for --latest: VALID, PROCESSING, FAILED, INVALID, or all")
 	excludeExpired := fs.Bool("exclude-expired", false, "Exclude expired builds when resolving --latest")
 	notExpired := fs.Bool("not-expired", false, "Alias for --exclude-expired")
