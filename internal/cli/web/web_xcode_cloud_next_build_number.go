@@ -23,6 +23,7 @@ func webXcodeCloudNextBuildNumberCommand() *ffcli.Command {
 		FlagSet:    fs,
 		Subcommands: []*ffcli.Command{
 			webNextBuildNumberGroup(),
+			webVersionAliasesGroup(),
 		},
 		Exec: func(context.Context, []string) error { return flag.ErrHelp },
 	}

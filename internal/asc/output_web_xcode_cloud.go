@@ -5,6 +5,49 @@ import (
 	"strconv"
 )
 
+// WebXcodeCloudVersionAlias is the safe, scalar summary of one custom version alias.
+type WebXcodeCloudVersionAlias struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Locked         bool   `json:"locked"`
+	BuildName      string `json:"buildName,omitempty"`
+	BuildSupported bool   `json:"buildSupported"`
+}
+
+// WebXcodeCloudVersionAliasesResult is the computed alias list for one product.
+type WebXcodeCloudVersionAliasesResult struct {
+	ProductID      string                      `json:"productId"`
+	VersionAliases []WebXcodeCloudVersionAlias `json:"versionAliases"`
+}
+
+// WebXcodeCloudVersionAliasResult is one custom version alias and its product.
+type WebXcodeCloudVersionAliasResult struct {
+	ProductID    string                    `json:"productId"`
+	VersionAlias WebXcodeCloudVersionAlias `json:"versionAlias"`
+}
+
+func webXcodeCloudVersionAliasesRows(r *WebXcodeCloudVersionAliasesResult) ([]string, [][]string) {
+	h := []string{"ID", "Name", "Type", "Locked", "Build name", "Build supported"}
+	if r == nil {
+		return h, nil
+	}
+	rows := make([][]string, 0, len(r.VersionAliases))
+	for _, a := range r.VersionAliases {
+		rows = append(rows, []string{a.ID, a.Name, a.Type, strconv.FormatBool(a.Locked), a.BuildName, strconv.FormatBool(a.BuildSupported)})
+	}
+	return h, rows
+}
+
+func webXcodeCloudVersionAliasRows(r *WebXcodeCloudVersionAliasResult) ([]string, [][]string) {
+	h := []string{"ID", "Name", "Type", "Locked", "Build name", "Build supported"}
+	if r == nil {
+		return h, nil
+	}
+	a := r.VersionAlias
+	return h, [][]string{{a.ID, a.Name, a.Type, strconv.FormatBool(a.Locked), a.BuildName, strconv.FormatBool(a.BuildSupported)}}
+}
+
 // WebXcodeCloudNextBuildNumberResult is the current next-build-number setting
 // and, after a mutation, its previously observed value. Apple's TestFlight URL
 // is intentionally omitted because it may carry sensitive query parameters.
