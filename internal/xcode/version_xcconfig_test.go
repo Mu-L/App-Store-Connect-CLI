@@ -313,6 +313,20 @@ func TestXCConfigParserRejectsUnterminatedBlockComment(t *testing.T) {
 	}
 }
 
+func TestXCConfigParserPropagatesBlockCommentStateAcrossContinuation(t *testing.T) {
+	data := []byte("OTHER = \"SDK\\\n\" /* comment\nMARKETING_VERSION = 9.9.9 */\nCURRENT_PROJECT_VERSION = 2\n")
+	document, err := parseXCConfig(data)
+	if err != nil {
+		t.Fatalf("parseXCConfig() error = %v", err)
+	}
+	if len(document.assignments) != 2 {
+		t.Fatalf("assignments = %#v, want only OTHER and CURRENT_PROJECT_VERSION", document.assignments)
+	}
+	if document.assignments[0].key != "OTHER" || document.assignments[1].key != "CURRENT_PROJECT_VERSION" {
+		t.Fatalf("assignments = %#v, want comment-contained line ignored", document.assignments)
+	}
+}
+
 func TestXCConfigParserRejectsUnterminatedQuotedValues(t *testing.T) {
 	for _, input := range []string{
 		`DEVELOPMENT_TEAM = "BROKEN`,

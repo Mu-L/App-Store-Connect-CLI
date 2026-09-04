@@ -66,7 +66,7 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		line := lines[index]
 		body := strings.TrimSuffix(line, "\n")
 		body = strings.TrimSuffix(body, "\r")
-		masked, nextInBlock := maskXCConfigComments(body, inBlockComment)
+		masked, nextInBlock, nextQuote := maskXCConfigCommentsState(body, inBlockComment, 0)
 		inBlockComment = nextInBlock
 
 		if matches := xcconfigIncludePattern.FindStringSubmatch(masked); matches != nil {
@@ -87,13 +87,18 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 		valueStart, valueEnd := indices[12], indices[13]
 		joined := body[valueStart:valueEnd]
 		endIndex := index
+		continuationInBlock := nextInBlock
+		continuationQuote := nextQuote
 		logical, _ := maskXCConfigComments(joined, false)
 		value, quote, err := parseXCConfigValue(logical)
 		for err != nil && xcconfigValueHasLineContinuation(joined) && endIndex+1 < len(lines) {
 			endIndex++
 			nextBody := strings.TrimSuffix(lines[endIndex], "\n")
 			nextBody = strings.TrimSuffix(nextBody, "\r")
-			joined = trimXCConfigLineContinuation(joined) + nextBody
+			nextMasked, nextContinuationInBlock, nextContinuationQuote := maskXCConfigCommentsState(nextBody, continuationInBlock, continuationQuote)
+			joined = trimXCConfigLineContinuation(joined) + nextMasked
+			continuationInBlock = nextContinuationInBlock
+			continuationQuote = nextContinuationQuote
 			logical, _ = maskXCConfigComments(joined, false)
 			value, quote, err = parseXCConfigValue(logical)
 		}
@@ -113,6 +118,7 @@ func parseXCConfig(data []byte) (xcconfigDocument, error) {
 			valueEnd:      valueEnd,
 			continued:     endIndex > index || xcconfigValueHasLineContinuation(masked[valueStart:valueEnd]),
 		})
+		inBlockComment = continuationInBlock
 		index = endIndex
 	}
 
@@ -239,8 +245,12 @@ func splitLinesPreservingEndings(value string) []string {
 }
 
 func maskXCConfigComments(line string, inBlockComment bool) (string, bool) {
+	masked, nextInBlock, _ := maskXCConfigCommentsState(line, inBlockComment, 0)
+	return masked, nextInBlock
+}
+
+func maskXCConfigCommentsState(line string, inBlockComment bool, inQuote byte) (string, bool, byte) {
 	masked := []byte(line)
-	inQuote := byte(0)
 	escaped := false
 
 	for index := 0; index < len(masked); index++ {
@@ -290,7 +300,7 @@ func maskXCConfigComments(line string, inBlockComment bool) (string, bool) {
 			inBlockComment = true
 		}
 	}
-	return string(masked), inBlockComment
+	return string(masked), inBlockComment, inQuote
 }
 
 func xcconfigBaseKey(key string) string {
