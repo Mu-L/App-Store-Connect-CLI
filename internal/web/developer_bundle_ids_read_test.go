@@ -59,7 +59,8 @@ func TestListDeveloperBundleIDsUsesCapturedCollectionProxyContract(t *testing.T)
 					"links":{"self":"/bundleIds/bundle-1"}
 				}],
 				"included":[{"type":"bundleIdCapabilities","id":"cap-1","attributes":{"capabilityType":"ICLOUD"}}],
-				"links":{"self":"/bundleIds"}
+				"links":{"self":"/bundleIds","next":"/bundleIds?cursor=page-2"},
+				"meta":{"paging":{"total":2}}
 			}`, nil), nil
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
@@ -85,6 +86,16 @@ func TestListDeveloperBundleIDsUsesCapturedCollectionProxyContract(t *testing.T)
 	}
 	if got := result.Links["self"]; got != "/bundleIds" {
 		t.Fatalf("self link = %#v, want /bundleIds", got)
+	}
+	if links := result.GetLinks(); links == nil || links.Next != "/bundleIds?cursor=page-2" {
+		t.Fatalf("pagination links = %#v, want next continuation", links)
+	}
+	data, ok := result.GetData().([]DeveloperBundleID)
+	if !ok || len(data) != 1 {
+		t.Fatalf("pagination data = %#v, want one resource slice", result.GetData())
+	}
+	if !strings.Contains(string(result.GetMeta()), `"total":2`) {
+		t.Fatalf("pagination metadata = %s, want paging total", result.GetMeta())
 	}
 }
 

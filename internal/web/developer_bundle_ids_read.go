@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 const (
@@ -66,6 +68,52 @@ type DeveloperBundleIDsListResult struct {
 	// omitted from the encoded shape because MarshalJSON emits it verbatim when
 	// available, retaining unknown top-level members and explicitly empty ones.
 	Raw json.RawMessage `json:"-"`
+}
+
+var _ asc.PaginatedResponse = (*DeveloperBundleIDsListResult)(nil)
+
+// GetLinks exposes the collection continuation link to shared output and
+// pagination helpers while retaining the open-ended JSON:API links map for
+// raw JSON output.
+func (r *DeveloperBundleIDsListResult) GetLinks() *asc.Links {
+	if r == nil {
+		return nil
+	}
+	return &asc.Links{
+		Self:  developerBundleIDLinkString(r.Links, "self"),
+		First: developerBundleIDLinkString(r.Links, "first"),
+		Next:  developerBundleIDLinkString(r.Links, "next"),
+		Prev:  developerBundleIDLinkString(r.Links, "prev"),
+	}
+}
+
+// GetData exposes the collection items to shared pagination diagnostics.
+func (r *DeveloperBundleIDsListResult) GetData() any {
+	if r == nil {
+		return nil
+	}
+	return r.Data
+}
+
+// GetMeta exposes the parsed metadata to shared pagination diagnostics. The
+// original response remains authoritative for JSON output through Raw.
+func (r *DeveloperBundleIDsListResult) GetMeta() json.RawMessage {
+	if r == nil || r.Meta == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(r.Meta)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+func developerBundleIDLinkString(links map[string]any, key string) string {
+	value, ok := links[key].(string)
+	if !ok {
+		return ""
+	}
+	return value
 }
 
 // MarshalJSON preserves Apple's full collection envelope for JSON output.

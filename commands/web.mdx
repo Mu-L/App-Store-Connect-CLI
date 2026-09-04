@@ -216,7 +216,7 @@ asc web removed-apps list
 asc web removed-apps list --paginate --output table
 ```
 
-### [experimental] `asc web bundle-ids`
+### `asc web bundle-ids`
 
 Bundle ID operations that are only available through Apple web-session
 endpoints, including Developer Portal identifier reads, Developer Portal-only
@@ -229,11 +229,14 @@ Available commands:
 * `asc web bundle-ids capabilities enable` - enable a Developer Portal-only Bundle ID capability
 * `asc web bundle-ids capabilities sync-app-clip` - sync an App Clip capability with its parent Bundle ID
 
-This command family is experimental. The read commands use the cookie-authenticated Developer Portal JSON:API
+Only the `list` and `view` read leaves are experimental. The existing
+`capabilities` commands retain their established stability. The read commands
+use the cookie-authenticated Developer Portal JSON:API
 service, not the public App Store Connect API. The `view` detail request uses
 `X-HTTP-Method-Override: GET` on Apple's POST endpoint. `list` requests the first
 1000-resource iOS/Mac collection and does not expose pagination; if Apple
-returns `links.next`, it remains visible in JSON for a later slice. `view`
+returns `links.next`, it remains visible in JSON for a later slice and table or
+Markdown output warns that more pages exist. `view`
 accepts the opaque resource ID returned by `list` and includes the requested
 Bundle ID capability graph. `get` remains accepted as a deprecated compatibility
 alias with a warning. Both commands are read-only and do not require
@@ -247,8 +250,9 @@ or exact team name) when the Apple Account belongs to more than one portal
 team. `sync-app-clip` uses App Store Connect iris endpoints, not Developer
 Portal, so it does not take `--developer-team`.
 
-Both commands require `--confirm` because a changed App ID invalidates existing
-provisioning profiles. `sync-app-clip` reads the current capability graph first
+The capability commands that change an App ID require `--confirm` because a
+changed App ID invalidates existing provisioning profiles. `sync-app-clip` reads
+the current capability graph first
 and returns `changed: false` without sending a PATCH when the capability is
 already enabled with the requested `parentBundleId` and, if `--settings-json`
 is supplied, the requested settings already match.

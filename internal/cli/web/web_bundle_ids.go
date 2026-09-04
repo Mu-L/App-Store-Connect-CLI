@@ -589,6 +589,32 @@ func developerBundleIDRows(resources []webcore.DeveloperBundleID) [][]string {
 	return rows
 }
 
+func developerBundleIDDetailHeaders() []string {
+	return []string{
+		"ID",
+		"Name",
+		"Identifier",
+		"Platform",
+		"Seed ID",
+		"Wildcard",
+		"Delete",
+		"Edit",
+	}
+}
+
+func developerBundleIDDetailRows(resource webcore.DeveloperBundleID) [][]string {
+	return [][]string{{
+		shared.OrNA(resource.ID),
+		shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "name")),
+		shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "identifier")),
+		shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "platform")),
+		shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "seedId")),
+		shared.OrNA(developerBundleIDBoolAttribute(resource.Attributes, "wildcard")),
+		shared.OrNA(developerBundleIDBoolAttribute(resource.Attributes, "~permissions.delete")),
+		shared.OrNA(developerBundleIDBoolAttribute(resource.Attributes, "~permissions.edit")),
+	}}
+}
+
 func renderDeveloperBundleIDsTable(result *webcore.DeveloperBundleIDsListResult) error {
 	if result == nil {
 		asc.RenderTable(developerBundleIDHeaders(), nil)
@@ -609,19 +635,19 @@ func renderDeveloperBundleIDsMarkdown(result *webcore.DeveloperBundleIDsListResu
 
 func renderDeveloperBundleIDTable(result *webcore.DeveloperBundleIDGetResult) error {
 	if result == nil {
-		asc.RenderTable(developerBundleIDHeaders(), nil)
+		asc.RenderTable(developerBundleIDDetailHeaders(), nil)
 		return nil
 	}
-	asc.RenderTable(developerBundleIDHeaders(), developerBundleIDRows([]webcore.DeveloperBundleID{result.Data}))
+	asc.RenderTable(developerBundleIDDetailHeaders(), developerBundleIDDetailRows(result.Data))
 	return nil
 }
 
 func renderDeveloperBundleIDMarkdown(result *webcore.DeveloperBundleIDGetResult) error {
 	if result == nil {
-		asc.RenderMarkdown(developerBundleIDHeaders(), nil)
+		asc.RenderMarkdown(developerBundleIDDetailHeaders(), nil)
 		return nil
 	}
-	asc.RenderMarkdown(developerBundleIDHeaders(), developerBundleIDRows([]webcore.DeveloperBundleID{result.Data}))
+	asc.RenderMarkdown(developerBundleIDDetailHeaders(), developerBundleIDDetailRows(result.Data))
 	return nil
 }
 

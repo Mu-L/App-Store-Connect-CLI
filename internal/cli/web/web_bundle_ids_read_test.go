@@ -113,6 +113,47 @@ func TestWebBundleIDsListPrintsJSON(t *testing.T) {
 	}
 }
 
+func TestWebBundleIDsListWarnsWhenNextLinkExists(t *testing.T) {
+	for _, output := range []string{"table", "markdown"} {
+		t.Run(output, func(t *testing.T) {
+			restore := stubWebBundleIDReadDependencies(t)
+			defer restore()
+
+			listDeveloperBundleIDsFn = func(context.Context, *webcore.Client) (*webcore.DeveloperBundleIDsListResult, error) {
+				return &webcore.DeveloperBundleIDsListResult{
+					Data: []webcore.DeveloperBundleID{{
+						ID:   "bundle-1",
+						Type: "bundleIds",
+						Attributes: map[string]any{
+							"name":       "Example App",
+							"identifier": "com.example.app",
+						},
+					}},
+					Links: map[string]any{"next": "/bundleIds?cursor=page-2"},
+					Meta:  map[string]any{"paging": map[string]any{"total": float64(2)}},
+				}, nil
+			}
+
+			command := WebBundleIDsListCommand()
+			if err := command.FlagSet.Parse([]string{"--output", output}); err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			stdout, stderr := captureWebCommandOutput(t, func() {
+				if err := command.Exec(context.Background(), nil); err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			})
+			if stdout == "" {
+				t.Fatalf("expected %s output", output)
+			}
+			want := "Warning: showing 1 of 2 results; more pages exist (use --paginate or --next where supported)\n"
+			if stderr != want {
+				t.Fatalf("stderr = %q, want %q", stderr, want)
+			}
+		})
+	}
+}
+
 func TestWebBundleIDsViewPrintsTable(t *testing.T) {
 	restore := stubWebBundleIDReadDependencies(t)
 	defer restore()
@@ -122,11 +163,14 @@ func TestWebBundleIDsViewPrintsTable(t *testing.T) {
 			ID:   bundleID,
 			Type: "bundleIds",
 			Attributes: map[string]any{
-				"name":       "Example App",
-				"identifier": "com.example.app",
-				"platform":   "IOS",
-				"bundleType": "STANDARD",
-				"wildcard":   false,
+				"name":                "Example App",
+				"identifier":          "com.example.app",
+				"platform":            "IOS",
+				"bundleType":          "STANDARD",
+				"wildcard":            false,
+				"seedId":              "TEAM123456",
+				"~permissions.delete": true,
+				"~permissions.edit":   false,
 			},
 		}}, nil
 	}
@@ -143,10 +187,13 @@ func TestWebBundleIDsViewPrintsTable(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
-	for _, want := range []string{"ID", "Name", "Identifier", "Example App", "com.example.app", "STANDARD"} {
+	for _, want := range []string{"ID", "Name", "Identifier", "Platform", "Seed ID", "Wildcard", "Delete", "Edit", "Example App", "com.example.app", "IOS", "TEAM123456", "true", "false"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("table output %q does not contain %q", stdout, want)
 		}
+	}
+	if strings.Contains(stdout, "Bundle Type") {
+		t.Fatalf("detail table exposes list-only sparse fields: %q", stdout)
 	}
 }
 
