@@ -1710,6 +1710,88 @@ func TestStructuredVersion_CommitRejectsSameByteReplacementOfPinnedSource(t *tes
 	}
 }
 
+func TestStructuredVersion_CommitCapturesSourceIdentityBeforePublication(t *testing.T) {
+	requireStrictVersionMutationPlatform(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.xcconfig")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileRoot, err := rootfs.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	if err := commitVersionWrites([]preparedVersionWrite{{
+		path: path, root: fileRoot, name: filepath.Base(path),
+		original: []byte("old"), updated: []byte("new"), mode: 0o644,
+		strictIdentity: true,
+	}}); err != nil {
+		t.Fatalf("commitVersionWrites() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("committed contents = %q, want new", got)
+	}
+}
+
+func TestStructuredVersion_CommitRejectsReplacementAfterIdentityCapture(t *testing.T) {
+	requireStrictVersionMutationPlatform(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.xcconfig")
+	original := []byte("old")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileRoot, err := rootfs.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	previous := afterVersionSourceCaptureFn
+	t.Cleanup(func() { afterVersionSourceCaptureFn = previous })
+	afterVersionSourceCaptureFn = func([]preparedVersionWrite) error {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		return os.WriteFile(path, original, 0o644)
+	}
+	err = commitVersionWrites([]preparedVersionWrite{{
+		path: path, root: fileRoot, name: filepath.Base(path), original: original,
+		updated: []byte("new"), mode: 0o644, strictIdentity: true,
+	}})
+	if err == nil || !strings.Contains(err.Error(), "file identity changed") {
+		t.Fatalf("commit error = %v, want replacement rejection", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("replacement contents = %q, want original", got)
+	}
+}
+
+func TestStructuredVersion_CommitNoOpSkipsSourceIdentityCapture(t *testing.T) {
+	requireStrictVersionMutationPlatform(t)
+	dir := t.TempDir()
+	fileRoot, err := rootfs.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fileRoot.Close() })
+	const contents = "unchanged"
+	err = commitVersionWrites([]preparedVersionWrite{
+		{path: filepath.Join(dir, "missing.xcconfig"), root: fileRoot, name: "missing.xcconfig", original: []byte(contents), updated: []byte(contents), strictIdentity: true},
+	})
+	if err != nil {
+		t.Fatalf("no-op commit unexpectedly failed: %v", err)
+	}
+}
+
 func TestSetVersionKeepsProvenWindowsCaseDistinctXCConfigsSeparate(t *testing.T) {
 	previousOS := runtimeGOOS
 	runtimeGOOS = "windows"
