@@ -641,8 +641,8 @@ func capabilityRows() []Capability {
 			Area:       "review",
 			Capability: "Web-only review rejection inspection",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web review"},
-			Notes:      []string{"Reviewer-message and rejection-detail surfaces, plus next-version subscription and IAP attachment, are richer or only available in App Store Connect web-session flows."},
+			Commands:   []string{"asc web review", "asc web review reply"},
+			Notes:      []string{"Reviewer-message and rejection-detail surfaces, plus next-version subscription and IAP attachment, are richer or only available in App Store Connect web-session flows. The experimental reply path requires --confirm, has no attachment or CLI draft-lifecycle support, and does not automatically retry an ambiguous send; source capture has not proven provider acceptance."},
 		},
 	}
 }
