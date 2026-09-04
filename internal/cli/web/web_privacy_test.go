@@ -545,6 +545,32 @@ func TestPlanFromDesiredAndRemotePairsVerifiedIdentityFlipIntoUpdate(t *testing.
 	}
 }
 
+func TestCanPairAsUpdateAllowsBothIdentityDirections(t *testing.T) {
+	for _, tc := range []struct {
+		name, from, to string
+	}{
+		{name: "linked-to-not-linked", from: dataProtectionLinked, to: dataProtectionNotLinked},
+		{name: "not-linked-to-linked", from: dataProtectionNotLinked, to: dataProtectionLinked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			add := privacyPlanChange{
+				Category:       "EMAIL_ADDRESS",
+				Purpose:        "APP_FUNCTIONALITY",
+				DataProtection: tc.to,
+			}
+			deletion := privacyPlanChange{
+				Category:       "EMAIL_ADDRESS",
+				Purpose:        "APP_FUNCTIONALITY",
+				DataProtection: tc.from,
+				UsageID:        "usage-1",
+			}
+			if !canPairAsUpdate(add, deletion) {
+				t.Fatalf("canPairAsUpdate(%s -> %s) = false, want true", tc.from, tc.to)
+			}
+		})
+	}
+}
+
 func TestPlanFromDesiredAndRemoteNotCollectedRemainsDeleteCreate(t *testing.T) {
 	desired := map[string]privacyTuple{
 		privacyTupleKey(privacyTuple{DataProtection: dataProtectionNotCollected}): {
