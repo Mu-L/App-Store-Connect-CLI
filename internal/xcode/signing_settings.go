@@ -3237,8 +3237,18 @@ func signingXCConfigEntitlementAssignmentCandidatesWithExpansions(
 		composed = append(composed, resolved.value)
 	}
 	accumulated := map[string]string{}
-	if strings.TrimSpace(base.value) != "" {
+	accumulatedKnown := map[string]bool{}
+	if base.found {
 		accumulated["CODE_SIGN_ENTITLEMENTS"] = strings.TrimSpace(base.value)
+		accumulatedKnown["CODE_SIGN_ENTITLEMENTS"] = true
+	}
+	lookupAccumulated := func(selector string) (string, bool) {
+		previous, known := accumulated[selector], accumulatedKnown[selector]
+		if !known && previous == "" && selector != "CODE_SIGN_ENTITLEMENTS" {
+			previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
+			known = accumulatedKnown["CODE_SIGN_ENTITLEMENTS"]
+		}
+		return previous, known
 	}
 	for _, candidate := range active {
 		selector := candidate.selectorKey
@@ -3246,33 +3256,31 @@ func signingXCConfigEntitlementAssignmentCandidatesWithExpansions(
 		inheritedResolved := false
 		switch candidate.assignment.operator {
 		case "+=":
-			previous := accumulated[selector]
-			if previous == "" && selector != "CODE_SIGN_ENTITLEMENTS" {
-				previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
-			}
+			previous, previousKnown := lookupAccumulated(selector)
 			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
-				inheritedResolved = strings.TrimSpace(previous) != ""
+				inheritedResolved = previousKnown
 				value = strings.ReplaceAll(value, "$(inherited)", previous)
 				value = strings.ReplaceAll(value, "${inherited}", previous)
 				accumulated[selector] = strings.TrimSpace(value)
+				accumulatedKnown[selector] = true
 				break
 			}
 			accumulated[selector] = strings.TrimSpace(strings.TrimSpace(previous) + " " + value)
+			accumulatedKnown[selector] = true
 		case "?=":
-			if _, ok := accumulated[selector]; !ok {
+			if !accumulatedKnown[selector] {
 				accumulated[selector] = value
+				accumulatedKnown[selector] = true
 			}
 		default:
 			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
-				previous := accumulated[selector]
-				if previous == "" && selector != "CODE_SIGN_ENTITLEMENTS" {
-					previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
-				}
-				inheritedResolved = strings.TrimSpace(previous) != ""
+				previous, previousKnown := lookupAccumulated(selector)
+				inheritedResolved = previousKnown
 				value = strings.ReplaceAll(value, "$(inherited)", previous)
 				value = strings.ReplaceAll(value, "${inherited}", previous)
 			}
 			accumulated[selector] = strings.TrimSpace(value)
+			accumulatedKnown[selector] = true
 		}
 		path := normalizeSigningLexicalPath(candidate.path)
 		if expansions[path] == nil {
