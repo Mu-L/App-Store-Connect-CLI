@@ -45,8 +45,16 @@ func restoreReplacementMode(destination *os.File, info os.FileInfo) error {
 	if !ok {
 		return fmt.Errorf("inspect replacement mode: unsupported stat type %T", info.Sys())
 	}
-	if err := unix.Fchmod(int(destination.Fd()), uint32(stat.Mode)&0o7777); err != nil {
+	want := uint32(stat.Mode) & 0o7777
+	if err := unix.Fchmod(int(destination.Fd()), want); err != nil {
 		return fmt.Errorf("preserve replacement permissions: %w", err)
+	}
+	var actual unix.Stat_t
+	if err := unix.Fstat(int(destination.Fd()), &actual); err != nil {
+		return fmt.Errorf("verify replacement permissions: %w", err)
+	}
+	if got := uint32(actual.Mode) & 0o7777; got != want {
+		return fmt.Errorf("verify replacement permissions: got mode %#o, want %#o", got, want)
 	}
 	return nil
 }
