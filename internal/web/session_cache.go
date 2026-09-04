@@ -1489,8 +1489,8 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 }
 
 func samePersistedSessionIdentity(current persistedSession, loaded *AuthSession) bool {
-	if loaded.cachedGeneration != "" && current.Generation != "" {
-		return current.Generation == loaded.cachedGeneration
+	if loaded.cachedGeneration != "" || current.Generation != "" {
+		return loaded.cachedGeneration != "" && current.Generation != "" && current.Generation == loaded.cachedGeneration
 	}
 	return !loaded.cachedUpdatedAt.IsZero() && current.UpdatedAt.Equal(loaded.cachedUpdatedAt)
 }

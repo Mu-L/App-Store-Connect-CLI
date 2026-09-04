@@ -2667,3 +2667,18 @@ func TestSerializeCookieJarAssignsUniqueGeneration(t *testing.T) {
 		t.Fatalf("expected unique generations, got %q", a.Generation)
 	}
 }
+
+func TestSamePersistedSessionIdentityRejectsDifferentGenerationSameTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+	loaded := &AuthSession{cachedUpdatedAt: now, cachedGeneration: "old"}
+	if samePersistedSessionIdentity(persistedSession{UpdatedAt: now, Generation: "new"}, loaded) {
+		t.Fatal("different generations must not match even with equal timestamps")
+	}
+}
+
+func TestSamePersistedSessionIdentityRejectsGeneratedLegacyPair(t *testing.T) {
+	now := time.Now().UTC()
+	if samePersistedSessionIdentity(persistedSession{UpdatedAt: now}, &AuthSession{cachedUpdatedAt: now, cachedGeneration: "generated"}) {
+		t.Fatal("generated and legacy sessions must not match")
+	}
+}
