@@ -23,6 +23,7 @@ import (
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"howett.net/plist"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
@@ -3248,7 +3249,7 @@ func TestSigningResignCommandReceiptRenderFailureRetainsPublicationAmbiguity(t *
 }
 
 func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
-	treePath := filepath.Join(string(filepath.Separator), "stage", "tree")
+	treePath := t.TempDir()
 	plans := []signingResignCodePlan{
 		{Path: filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework", "Feature")},
 		{Path: filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Loadable.bundle", "Loadable")},
@@ -3270,6 +3271,120 @@ func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
 		if !seen {
 			t.Fatalf("containers %v are missing %q", containers, container)
 		}
+	}
+}
+
+func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
+	treePath := t.TempDir()
+	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	info, err := plist.Marshal(map[string]any{"CFBundleExecutable": "Feature"}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(container, "Info.plist"), info, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plans := []signingResignCodePlan{
+		{Path: filepath.Join(container, "Versions", "A", "Feature"), EntitlementsPath: "/stage/entitlements/version.plist"},
+		{Path: filepath.Join(container, "Feature"), EntitlementsPath: filepath.Join(t.TempDir(), "feature.plist")},
+	}
+	if got := signingResignContainerEntitlementsPath(treePath, container, plans); got != plans[1].EntitlementsPath {
+		t.Fatalf("container entitlements path = %q, want main executable document", got)
+	}
+	if got := signingResignContainerEntitlementsPath(treePath, filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Empty.bundle"), plans); got != "" {
+		t.Fatalf("unplanned container entitlements path = %q, want empty", got)
+	}
+	versioned := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Versioned.framework")
+	if err := os.MkdirAll(filepath.Join(versioned, "Versions", "A"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versioned, "Info.plist"), info, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	versionEntitlements := filepath.Join(t.TempDir(), "versioned.plist")
+	versionPlans := []signingResignCodePlan{
+		{Path: filepath.Join(versioned, "Versions", "A", "Feature"), EntitlementsPath: ""},
+		{Path: filepath.Join(versioned, "Versions", "B", "Feature"), EntitlementsPath: versionEntitlements},
+	}
+	if got := signingResignContainerEntitlementsPath(treePath, versioned, versionPlans); got != "" {
+		t.Fatalf("empty first version entitlements path = %q, want empty", got)
+	}
+	versionPlans[0].EntitlementsPath = versionEntitlements
+	if got := signingResignContainerEntitlementsPath(treePath, versioned, versionPlans); got != versionEntitlements {
+		t.Fatalf("versioned container entitlements path = %q, want %q", got, versionEntitlements)
+	}
+}
+
+func TestSigningResignContainerEntitlementsRejectAmplifiedInfoPlist(t *testing.T) {
+	treePath := t.TempDir()
+	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var info strings.Builder
+	info.WriteString(`<?xml version="1.0"?><plist><dict><key>CFBundleExecutable</key><string>Feature</string><key>Padding</key><array>`)
+	for range infoplist.MaxObjects {
+		info.WriteString(`<true/>`)
+	}
+	info.WriteString(`</array></dict></plist>`)
+	if err := os.WriteFile(filepath.Join(container, "Info.plist"), []byte(info.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entitlements := filepath.Join(t.TempDir(), "feature.plist")
+	plans := []signingResignCodePlan{{Path: filepath.Join(container, "Feature"), EntitlementsPath: entitlements}}
+	if got := signingResignContainerEntitlementsPath(treePath, container, plans); got != "" {
+		t.Fatalf("amplified container Info.plist selected entitlements path %q, want empty", got)
+	}
+}
+
+func TestSignSigningResignTreePreservesContainerMainEntitlements(t *testing.T) {
+	treePath := t.TempDir()
+	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	if err := os.MkdirAll(container, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := plist.Marshal(map[string]any{"CFBundleExecutable": "Feature"}, plist.XMLFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(container, "Info.plist"), info, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(container, "Feature")
+	if err := os.WriteFile(executable, []byte("nested executable"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entitlements := filepath.Join(t.TempDir(), "feature.entitlements")
+	if err := os.WriteFile(entitlements, []byte("permitted non-identity claim"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = original })
+	var calls [][]string
+	runSigningResignToolFn = func(_ context.Context, executable string, args ...string) (signingResignToolOutput, error) {
+		calls = append(calls, append([]string{executable}, args...))
+		return signingResignToolOutput{}, nil
+	}
+	prepared := signingResignPreparedTree{CodePlans: []signingResignCodePlan{{Path: executable, EntitlementsPath: entitlements}}}
+	if err := signSigningResignTree(context.Background(), treePath, prepared, "IDENTITY", "/tmp/keychain"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("codesign calls = %#v, want leaf and container passes", calls)
+	}
+	if got := strings.Join(calls[1], " "); !strings.Contains(got, "--entitlements "+entitlements) {
+		t.Fatalf("container signing call = %q, want prepared entitlements", got)
+	}
+	calls = nil
+	prepared.CodePlans[0].EntitlementsPath = ""
+	if err := signSigningResignTree(context.Background(), treePath, prepared, "IDENTITY", "/tmp/keychain"); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || strings.Contains(strings.Join(calls[1], " "), "--entitlements") {
+		t.Fatalf("empty container entitlements signing call = %#v, want no entitlements flag", calls)
 	}
 }
 
