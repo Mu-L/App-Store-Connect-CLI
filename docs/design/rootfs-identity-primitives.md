@@ -64,7 +64,7 @@ including the setuid, setgid and sticky bits, and the owning user and group,
 because a `chmod` of a special bit or a `chown` changes neither the ordinary
 permission bits nor the modification time. `preserveMetadata` would otherwise
 carry drifted ownership onto the replacement and silently drop the special
-bits. Access-control lists and extended attributes are copied from the
+bits. `preserveMetadata` deliberately preserves those special bits: after ACL/xattr copying and content writes, the complete source mode is reapplied immediately before publication. Access-control lists and extended attributes are copied from the
 identity-retained descriptor but are not yet part of the compared snapshot.
 
 The historical `os.FileInfo` methods remain compatibility adapters and do not

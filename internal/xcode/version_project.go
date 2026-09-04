@@ -1836,7 +1836,10 @@ func readRegularVersionFileCompatibility(target *preparedVersionWrite) (os.FileI
 	return info, data, nil
 }
 
-var atomicWriteVersionFileFn = atomicWritePreparedVersionFile
+var (
+	atomicWriteVersionFileFn    = atomicWritePreparedVersionFile
+	afterVersionSourceCaptureFn func([]preparedVersionWrite) error
+)
 
 var atomicWriteVersionFileInfoFn = atomicWritePreparedVersionFileInfo
 
@@ -1918,6 +1921,24 @@ func commitVersionWritesWithCreateChecks(
 		}
 		return writes[left].path < writes[right].path
 	})
+	// Capture source identities on the transaction-owned entries before the
+	// commit loop starts copying them by value.  A strict write may arrive from
+	// a caller that has only prepared its byte snapshot; in that case the
+	// descriptor must be retained through publication and rollback rather than
+	// reopening the path (which permits unlink-and-recreate identity reuse).
+	for index := range writes {
+		if writes[index].createOnly || !writes[index].strictIdentity || writes[index].originalIdentity != nil || bytes.Equal(writes[index].original, writes[index].updated) {
+			continue
+		}
+		if _, _, err := readRegularVersionFile(&writes[index]); err != nil {
+			return fmt.Errorf("verify source before commit: %w", err)
+		}
+	}
+	if afterVersionSourceCaptureFn != nil {
+		if err := afterVersionSourceCaptureFn(writes); err != nil {
+			return err
+		}
+	}
 	var committed []preparedVersionWrite
 	for _, write := range writes {
 		if !write.createOnly && string(write.original) == string(write.updated) {

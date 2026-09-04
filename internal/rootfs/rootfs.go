@@ -1519,6 +1519,11 @@ func (r Root) writeFromPreservingMetadata(
 	if err != nil {
 		return 0, err
 	}
+	if metadataSource != nil {
+		if err := restoreReplacementMode(temporary, metadataInfo); err != nil {
+			return 0, err
+		}
+	}
 	if err := temporary.Sync(); err != nil {
 		return 0, err
 	}
@@ -2106,6 +2111,11 @@ func (r Root) writeFileIfSame(
 	}
 	if written != int64(len(data)) {
 		return nil, errors.Join(io.ErrShortWrite, restoreQuarantine(quarantineName))
+	}
+	if preserveMetadata {
+		if err := restoreReplacementMode(temporary, quarantineInfo); err != nil {
+			return nil, errors.Join(err, restoreQuarantine(quarantineName))
+		}
 	}
 	if err := temporary.Sync(); err != nil {
 		return nil, errors.Join(err, restoreQuarantine(quarantineName))
