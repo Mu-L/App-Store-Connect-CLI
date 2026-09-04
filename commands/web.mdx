@@ -43,6 +43,8 @@ asc web apps declarations list --app "123456789" --output table
 asc web apps medical-device view --app "123456789"
 # Declare that an app is not a regulated medical device
 asc web apps medical-device set --app "123456789" --declared false
+# Declare the selected regions for a regulated medical device
+asc web apps medical-device set --app "123456789" --declared true --countries-or-regions "EEA,GBR" --confirm
 
 # Plan and apply privacy declaration changes
 asc web privacy plan --app "123456789" --file ./privacy.json
@@ -228,8 +230,8 @@ Notes:
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps declarations list` is read-only and reports each app-scoped requirement with its status; a required requirement still at `PENDING_COLLECTION` blocks App Store submission
-* `asc web apps medical-device set` currently supports only `--declared false`, reads the stored declaration first, and reports `changed: false` when no write was needed
-* Writes other than `medical-device set --declared false` remain website-only. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
+* `asc web apps medical-device set` supports `--declared true|false`. Affirmative writes require `--confirm` and accept `EEA`, `GBR`, and `USA`; omitting `--countries-or-regions` selects all three. Detailed regional registration, support, and contact fields remain in the web UI. The command re-reads the declaration and reports `changed: false` when it already matches.
+* Other app-regulation declaration forms remain managed in the App Store Connect website. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
 * `asc web apps distribution view` is read-only. Apple prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. Changing the distribution method and requesting unlisted distribution have Apple-side eligibility restrictions whose write contracts are not captured, so both stay in the App Store Connect web UI
 
