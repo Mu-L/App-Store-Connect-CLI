@@ -237,7 +237,7 @@ Examples:
 			}
 
 			if *territoryLimit != 0 && (*territoryLimit < 1 || *territoryLimit > 50) {
-				return fmt.Errorf("app-tags view: --territory-limit must be between 1 and 50")
+				return shared.UsageError("app-tags view: --territory-limit must be between 1 and 50")
 			}
 
 			fieldsValue, err := normalizeAppTagFields(*fields)
@@ -414,10 +414,10 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("app-tags territories: --limit must be between 1 and 200")
+				return shared.UsageError("app-tags territories: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("app-tags territories: %w", err)
+				return shared.UsageErrorf("app-tags territories: %v", err)
 			}
 
 			fieldsValue, err := normalizeTerritoryFields(*fields)
@@ -496,10 +496,10 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("app-tags territories-links: --limit must be between 1 and 200")
+				return shared.UsageError("app-tags territories-links: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("app-tags territories-links: %w", err)
+				return shared.UsageErrorf("app-tags territories-links: %v", err)
 			}
 
 			client, err := shared.GetASCClient()
@@ -568,10 +568,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("app-tags links: --limit must be between 1 and 200")
+				return shared.UsageError("app-tags links: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("app-tags links: %w", err)
+				return shared.UsageErrorf("app-tags links: %v", err)
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
@@ -618,26 +618,6 @@ Examples:
 			return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 		},
 	}
-}
-
-func DeprecatedAppTagsTerritoriesRelationshipsAliasCommand() *ffcli.Command {
-	return shared.DeprecatedAliasLeafCommand(
-		AppTagsTerritoriesRelationshipsCommand(),
-		"territories-relationships",
-		"asc app-tags territories-links --id TAG_ID [flags]",
-		"asc app-tags territories-links",
-		"Warning: `asc app-tags territories-relationships` is deprecated. Use `asc app-tags territories-links`.",
-	)
-}
-
-func DeprecatedAppTagsRelationshipsAliasCommand() *ffcli.Command {
-	return shared.DeprecatedAliasLeafCommand(
-		AppTagsRelationshipsCommand(),
-		"relationships",
-		"asc app-tags links --app APP_ID [flags]",
-		"asc app-tags links",
-		"Warning: `asc app-tags relationships` is deprecated. Use `asc app-tags links`.",
-	)
 }
 
 func normalizeAppTagVisibilityFilter(value string) ([]string, error) {

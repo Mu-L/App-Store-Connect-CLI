@@ -5,61 +5,62 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 type webSessionFlags struct {
 	appleID              *string
-	twoFactorCode        *string
 	twoFactorCodeCommand *string
 	providerID           *int64
 	publicProviderID     *string
 }
 
-const deprecatedTwoFactorCodeFlagName = "two-factor-code"
-
-func bindDeprecatedTwoFactorCodeFlag(fs *flag.FlagSet) *string {
-	return fs.String(deprecatedTwoFactorCodeFlagName, "", "Deprecated: direct 2FA code if verification is required; prefer --two-factor-code-command")
-}
-
 func bindWebSessionFlags(fs *flag.FlagSet) webSessionFlags {
 	return webSessionFlags{
 		appleID:              fs.String("apple-id", "", "Apple Account email used to scope a user-owned session cache (optional when a cached session exists)"),
-		twoFactorCode:        bindDeprecatedTwoFactorCodeFlag(fs),
 		twoFactorCodeCommand: fs.String("two-factor-code-command", "", "Shell command that prints the 2FA code to stdout if verification is required"),
 		providerID:           fs.Int64("provider-id", 0, "Numeric App Store Connect provider ID to select for this web session"),
 		publicProviderID:     fs.String("public-provider-id", "", "Public App Store Connect provider/team ID to select for this web session"),
 	}
 }
 
-func warnDeprecatedTwoFactorCodeFlag(twoFactorCode string) {
-	if strings.TrimSpace(twoFactorCode) == "" {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "Warning: `--%s` is deprecated. Use `--two-factor-code-command` or `%s` for automation.\n", deprecatedTwoFactorCodeFlagName, webTwoFactorCodeCommandEnv)
+// newWebRequestContext returns the bounded context for work that runs after web
+// authentication finished. It is derived from the untimed parent context, so the
+// timeout budget covers the request instead of the human in front of the prompt,
+// while parent cancellation (Ctrl-C) still propagates.
+func newWebRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return shared.ContextWithTimeout(shared.ContextWithoutTimeout(ctx))
 }
 
-func resolveWebSessionForCommand(ctx context.Context, flags webSessionFlags) (*webcore.AuthSession, error) {
-	warnDeprecatedTwoFactorCodeFlag(*flags.twoFactorCode)
+// resolveWebSessionForCommand resolves the web session for a command and returns
+// the request context that command must use for its own work.
+//
+// Session resolution can block on an interactive password prompt, an interactive
+// 2FA prompt, or a configured two-factor code command, none of which belong in a
+// request timeout budget. Callers therefore pass their parent context and receive
+// a request context whose timeout starts only once authentication is done; the
+// returned cancel func is never nil, so it is safe to defer before checking err.
+func resolveWebSessionForCommand(ctx context.Context, flags webSessionFlags) (*webcore.AuthSession, context.Context, context.CancelFunc, error) {
 	selection := providerSelectionFromFlags(flags)
 	session, _, err := callResolveSessionForProviderSelection(
 		ctx,
 		*flags.appleID,
 		"",
-		*flags.twoFactorCode,
+		"",
 		*flags.twoFactorCodeCommand,
 		selection,
 	)
+	requestCtx, cancel := newWebRequestContext(ctx)
 	if err != nil {
-		return nil, err
+		return nil, requestCtx, cancel, err
 	}
-	if err := selectResolvedWebSessionProvider(ctx, session, selection); err != nil {
-		return nil, err
+	if err := selectResolvedWebSessionProvider(requestCtx, session, selection); err != nil {
+		return nil, requestCtx, cancel, err
 	}
-	return session, nil
+	return session, requestCtx, cancel, nil
 }
 
 func providerSelectionFromFlags(flags webSessionFlags) webcore.ProviderSelection {

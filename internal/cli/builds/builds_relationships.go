@@ -70,7 +70,7 @@ func BuildsRelationshipsGetCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds links view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM]) --type \"RELATIONSHIP\" [flags]",
+		ShortUsage: "asc builds links view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION]) --type \"RELATIONSHIP\" [flags]",
 		ShortHelp:  "View relationship linkages for a build.",
 		LongHelp: `View relationship linkages for a build.
 
@@ -81,14 +81,11 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("builds links view: --limit must be between 1 and 200")
+				return shared.UsageError("builds links view: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("builds links view: %w", err)
+				return shared.UsageErrorf("builds links view: %v", err)
 			}
 
 			relationshipType := strings.TrimSpace(*relType)

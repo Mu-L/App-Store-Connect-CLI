@@ -62,10 +62,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center leaderboard-sets members list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center leaderboard-sets members list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center leaderboard-sets members list: %w", err)
+				return shared.UsageErrorf("game-center leaderboard-sets members list: %v", err)
 			}
 
 			id := strings.TrimSpace(*setID)
@@ -120,17 +120,17 @@ func GameCenterLeaderboardSetMembersSetCommand() *ffcli.Command {
 
 	setID := fs.String("set-id", "", "Game Center leaderboard set ID")
 	leaderboardIDs := shared.BindOnceCSVFlag(fs, "leaderboard-ids", "Comma-separated list of leaderboard IDs to set as members")
-	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing all members")
+	confirm := fs.Bool("confirm", false, "Confirm replacing all members (required)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "set",
-		ShortUsage: "asc game-center leaderboard-sets members set --set-id \"SET_ID\" --leaderboard-ids \"id1,id2,id3\" [--confirm]",
+		ShortUsage: "asc game-center leaderboard-sets members set --set-id \"SET_ID\" --leaderboard-ids \"id1,id2,id3\" --confirm",
 		ShortHelp:  "Replace all leaderboard members in a leaderboard set.",
 		LongHelp: `Replace all leaderboard members in a leaderboard set.
 
 This command replaces ALL members of a leaderboard set with the specified leaderboard IDs.
-Because replacement can remove existing members, pass --confirm now; it will be required in 5.0.0.
+Because replacement can remove existing members, --confirm is required.
 To remove all members, pass an empty string for --leaderboard-ids with --confirm.
 
 Examples:

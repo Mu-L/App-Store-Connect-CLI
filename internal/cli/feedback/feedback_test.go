@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"testing"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
-func TestFeedbackCommand_MissingApp(t *testing.T) {
+func TestListCommand_MissingApp(t *testing.T) {
 	t.Setenv("ASC_APP_ID", "")
-	cmd := FeedbackCommand()
+	cmd := NewListCommand(shared.ListCommandConfig{Name: "list"})
 
 	if err := cmd.FlagSet.Parse([]string{}); err != nil {
 		t.Fatalf("failed to parse flags: %v", err)
@@ -19,32 +21,39 @@ func TestFeedbackCommand_MissingApp(t *testing.T) {
 	}
 }
 
-func TestFeedbackCommand_InvalidLimit(t *testing.T) {
-	cmd := FeedbackCommand()
+func TestListCommand_InvalidLimit(t *testing.T) {
+	cmd := NewListCommand(shared.ListCommandConfig{Name: "list"})
 
 	if err := cmd.FlagSet.Parse([]string{"--limit", "201", "--app", "123"}); err != nil {
 		t.Fatalf("failed to parse flags: %v", err)
 	}
 	err := cmd.Exec(context.Background(), nil)
-	if err == nil || errors.Is(err, flag.ErrHelp) {
-		t.Fatalf("expected validation error for --limit, got %v", err)
+	if err == nil || !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("expected usage error for --limit, got %v", err)
 	}
 }
 
-func TestFeedbackCommand_InvalidSort(t *testing.T) {
-	cmd := FeedbackCommand()
+func TestListCommand_InvalidSort(t *testing.T) {
+	cmd := NewListCommand(shared.ListCommandConfig{Name: "list"})
 
 	if err := cmd.FlagSet.Parse([]string{"--sort", "invalid", "--app", "123"}); err != nil {
 		t.Fatalf("failed to parse flags: %v", err)
 	}
 	err := cmd.Exec(context.Background(), nil)
-	if err == nil || errors.Is(err, flag.ErrHelp) {
+	if err == nil || !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("expected sort validation error, got %v", err)
 	}
 }
 
-func TestCommandWrapper(t *testing.T) {
-	if got := FeedbackCommand(); got == nil {
-		t.Fatal("expected Command wrapper to return a command")
+func TestListCommand_DefaultsNameAndUsageFunc(t *testing.T) {
+	cmd := NewListCommand(shared.ListCommandConfig{})
+	if cmd.Name != "feedback" {
+		t.Fatalf("expected default name feedback, got %q", cmd.Name)
+	}
+	if cmd.UsageFunc == nil {
+		t.Fatal("expected default usage func")
+	}
+	if cmd.FlagSet.Lookup("build") != nil {
+		t.Fatal("expected removed --build alias to be unregistered")
 	}
 }

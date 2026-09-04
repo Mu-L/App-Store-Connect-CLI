@@ -7,6 +7,10 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+	webcmd "github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/web"
+	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
 func TestRootUsageIncludesWebSessionGroup(t *testing.T) {
@@ -70,10 +74,70 @@ func TestWebAppsMedicalDeviceSetSubcommandIsRegistered(t *testing.T) {
 	}
 }
 
+func TestWebAppsMedicalDeviceViewSubcommandIsRegistered(t *testing.T) {
+	root := RootCommand("1.2.3")
+	if sub := findSubcommand(root, "web", "apps", "medical-device", "view"); sub == nil {
+		t.Fatalf("expected web apps medical-device view to be registered")
+	}
+}
+
+func TestWebAppsDeclarationsListSubcommandIsRegistered(t *testing.T) {
+	root := RootCommand("1.2.3")
+	if sub := findSubcommand(root, "web", "apps", "declarations", "list"); sub == nil {
+		t.Fatalf("expected web apps declarations list to be registered")
+	}
+}
+
 func TestWebBundleIDCapabilitiesSyncAppClipSubcommandIsRegistered(t *testing.T) {
 	root := RootCommand("1.2.3")
-	if sub := findSubcommand(root, "web", "bundle-ids", "capabilities", "sync-app-clip"); sub == nil {
+	sub := findSubcommand(root, "web", "bundle-ids", "capabilities", "sync-app-clip")
+	if sub == nil {
 		t.Fatalf("expected web bundle-ids capabilities sync-app-clip to be registered")
+	}
+	for _, flagName := range []string{"bundle-id", "parent-bundle-id", "capability", "settings-json", "confirm", "apple-id", "output"} {
+		if sub.FlagSet.Lookup(flagName) == nil {
+			t.Fatalf("expected --%s flag", flagName)
+		}
+	}
+	if !strings.Contains(sub.ShortUsage, "--confirm") {
+		t.Fatalf("expected --confirm in short usage, got %q", sub.ShortUsage)
+	}
+}
+
+func TestWebBundleIDCapabilitiesSyncAppClipMissingConfirmFailsBeforeSession(t *testing.T) {
+	restore := webcmd.SetResolveWebSession(func(context.Context, string, string, string) (*webcore.AuthSession, string, error) {
+		t.Fatal("web session must not be resolved when --confirm is missing")
+		return nil, "", nil
+	})
+	defer restore()
+	restoreSync := webcmd.SetSyncAppClipBundleIDCapability(func(context.Context, *webcore.Client, webcore.AppClipBundleIDCapabilitySyncRequest) (*webcore.AppClipBundleIDCapabilitySyncResult, error) {
+		t.Fatal("sync must not run when --confirm is missing")
+		return nil, nil
+	})
+	defer restoreSync()
+
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "bundle-ids", "capabilities", "sync-app-clip", "--bundle-id", "clip-1", "--parent-bundle-id", "parent-1", "--capability", "PUSH_NOTIFICATIONS"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "Warning: web bundle-ids capabilities sync-app-clip now requires --confirm") {
+		t.Fatalf("expected migration warning, got %q", stderr)
+	}
+	if !strings.Contains(stderr, "Error: --confirm is required") {
+		t.Fatalf("expected missing --confirm error, got %q", stderr)
 	}
 }
 
@@ -108,6 +172,60 @@ func TestWebXcodeCloudWorkflowsCreateSubcommandIsRegistered(t *testing.T) {
 	root := RootCommand("1.2.3")
 	if sub := findSubcommand(root, "web", "xcode-cloud", "workflows", "create"); sub == nil {
 		t.Fatalf("expected web xcode-cloud workflows create to be registered")
+	}
+}
+
+func TestWebXcodeCloudWorkflowsListSubcommandIsRegistered(t *testing.T) {
+	root := RootCommand("1.2.3")
+	sub := findSubcommand(root, "web", "xcode-cloud", "workflows", "list")
+	if sub == nil {
+		t.Fatalf("expected web xcode-cloud workflows list to be registered")
+	}
+	if sub.FlagSet.Lookup("product-id") == nil {
+		t.Fatal("expected --product-id flag on web xcode-cloud workflows list")
+	}
+	if sub.FlagSet.Lookup("paginate") != nil {
+		t.Fatal("did not expect --paginate on web xcode-cloud workflows list; the CI client does not page")
+	}
+}
+
+func TestWebXcodeCloudWorkflowsListMissingRequiredFlags(t *testing.T) {
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "xcode-cloud", "workflows", "list"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "Error: --product-id is required") {
+		t.Fatalf("expected missing --product-id error, got %q", stderr)
+	}
+}
+
+func TestWebXcodeCloudWorkflowsListRejectsPositionalArguments(t *testing.T) {
+	root := RootCommand("1.2.3")
+	root.FlagSet.SetOutput(io.Discard)
+
+	var runErr error
+	_, stderr := captureOutput(t, func() {
+		if err := root.Parse([]string{"web", "xcode-cloud", "workflows", "list", "--product-id", "prod-1", "extra"}); err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		runErr = root.Run(context.Background())
+	})
+
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected ErrHelp, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "web xcode-cloud workflows list does not accept positional arguments") {
+		t.Fatalf("expected positional-args error, got %q", stderr)
 	}
 }
 
@@ -183,7 +301,7 @@ func TestWebXcodeCloudWorkflowsCreateMissingRequiredFlags(t *testing.T) {
 	}
 }
 
-func TestWebAuthLoginExposesDeprecatedTwoFactorAliasWithoutPlaintextPasswordFlag(t *testing.T) {
+func TestWebAuthLoginOmitsPlaintextPasswordAndRemovedTwoFactorCodeFlags(t *testing.T) {
 	root := RootCommand("1.2.3")
 	cmd := findSubcommand(root, "web", "auth", "login")
 	if cmd == nil {
@@ -196,16 +314,14 @@ func TestWebAuthLoginExposesDeprecatedTwoFactorAliasWithoutPlaintextPasswordFlag
 	if cmd.FlagSet.Lookup("password-stdin") != nil {
 		t.Fatal("did not expect --password-stdin flag on web auth login")
 	}
-	twoFactorCodeFlag := cmd.FlagSet.Lookup("two-factor-code")
-	if twoFactorCodeFlag == nil {
-		t.Fatal("expected deprecated --two-factor-code flag on web auth login")
-		return
-	}
-	if !strings.Contains(twoFactorCodeFlag.Usage, "Deprecated:") {
-		t.Fatalf("expected deprecated help text for --two-factor-code, got %q", twoFactorCodeFlag.Usage)
+	if cmd.FlagSet.Lookup("two-factor-code") != nil {
+		t.Fatal("removed --two-factor-code alias is still registered on web auth login")
 	}
 	if cmd.FlagSet.Lookup("two-factor-code-command") == nil {
 		t.Fatal("expected --two-factor-code-command flag on web auth login")
+	}
+	if strings.Contains(cmd.LongHelp, "--two-factor-code ") || strings.Contains(cmd.LongHelp, "--two-factor-code\n") || strings.Contains(cmd.LongHelp, "deprecated") {
+		t.Fatalf("web auth login help still documents the removed --two-factor-code alias: %q", cmd.LongHelp)
 	}
 	for _, phrase := range []string{
 		"Phone-code fallback (including SMS):",
@@ -220,44 +336,49 @@ func TestWebAuthLoginExposesDeprecatedTwoFactorAliasWithoutPlaintextPasswordFlag
 	}
 }
 
-func TestWebAppsCreateExposesDeprecatedTwoFactorAlias(t *testing.T) {
-	root := RootCommand("1.2.3")
-	cmd := findSubcommand(root, "web", "apps", "create")
-	if cmd == nil {
-		t.Fatal("expected web apps create command")
-		return
-	}
-
-	twoFactorCodeFlag := cmd.FlagSet.Lookup("two-factor-code")
-	if twoFactorCodeFlag == nil {
-		t.Fatal("expected deprecated --two-factor-code flag on web apps create")
-		return
-	}
-	if !strings.Contains(twoFactorCodeFlag.Usage, "Deprecated:") {
-		t.Fatalf("expected deprecated help text for --two-factor-code, got %q", twoFactorCodeFlag.Usage)
-	}
-	if cmd.FlagSet.Lookup("two-factor-code-command") == nil {
-		t.Fatal("expected --two-factor-code-command flag on web apps create")
+func TestWebCommandsOmitRemovedTwoFactorCodeAlias(t *testing.T) {
+	for _, path := range [][]string{
+		{"web", "apps", "create"},
+		{"web", "sandbox", "create"},
+	} {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
+			root := RootCommand("1.2.3")
+			cmd := findSubcommand(root, path...)
+			if cmd == nil {
+				t.Fatalf("expected %s command", strings.Join(path, " "))
+				return
+			}
+			if cmd.FlagSet.Lookup("two-factor-code") != nil {
+				t.Fatalf("removed --two-factor-code alias is still registered on %s", strings.Join(path, " "))
+			}
+			if cmd.FlagSet.Lookup("two-factor-code-command") == nil {
+				t.Fatalf("expected --two-factor-code-command flag on %s", strings.Join(path, " "))
+			}
+			if strings.Contains(cmd.LongHelp, "--two-factor-code ") || strings.Contains(cmd.LongHelp, "deprecated compatibility alias") {
+				t.Fatalf("%s help still documents the removed --two-factor-code alias: %q", strings.Join(path, " "), cmd.LongHelp)
+			}
+		})
 	}
 }
 
-func TestWebSandboxCreateExposesDeprecatedTwoFactorAlias(t *testing.T) {
-	root := RootCommand("1.2.3")
-	cmd := findSubcommand(root, "web", "sandbox", "create")
-	if cmd == nil {
-		t.Fatal("expected web sandbox create command")
-		return
+func TestWebAuthLoginRejectsRemovedTwoFactorCodeFlagAsUnknown(t *testing.T) {
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = rootcmd.Run([]string{"web", "auth", "login", "--apple-id", "user@example.com", "--two-factor-code", "123456"}, "1.2.3")
+	})
+	if code != rootcmd.ExitUsage {
+		t.Fatalf("exit code = %d, want %d; stderr=%q", code, rootcmd.ExitUsage, stderr)
 	}
-
-	twoFactorCodeFlag := cmd.FlagSet.Lookup("two-factor-code")
-	if twoFactorCodeFlag == nil {
-		t.Fatal("expected deprecated --two-factor-code flag on web sandbox create")
-		return
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
 	}
-	if !strings.Contains(twoFactorCodeFlag.Usage, "Deprecated:") {
-		t.Fatalf("expected deprecated help text for --two-factor-code, got %q", twoFactorCodeFlag.Usage)
+	if !strings.Contains(stderr, "unknown flag `--two-factor-code` for `asc web auth login`") {
+		t.Fatalf("stderr = %q, want unknown-flag diagnostic", stderr)
 	}
-	if cmd.FlagSet.Lookup("two-factor-code-command") == nil {
-		t.Fatal("expected --two-factor-code-command flag on web sandbox create")
+	if !strings.Contains(stderr, "--two-factor-code-command") {
+		t.Fatalf("stderr = %q, want --two-factor-code-command suggestion", stderr)
+	}
+	if strings.Contains(stderr, "deprecated") {
+		t.Fatalf("stderr still carries deprecation wording: %q", stderr)
 	}
 }

@@ -24,9 +24,6 @@ const (
 	webSessionCacheDirEnv     = "ASC_WEB_SESSION_CACHE_DIR"
 	webSessionBackendEnv      = "ASC_WEB_SESSION_CACHE_BACKEND"
 
-	legacyIrisSessionCacheEnabledEnv = "ASC_IRIS_SESSION_CACHE"
-	legacyIrisSessionCacheDirEnv     = "ASC_IRIS_SESSION_CACHE_DIR"
-
 	webSessionCacheVersion = 1
 
 	webSessionKeyringService = "asc-web-session"
@@ -48,6 +45,17 @@ const (
 	sessionBackendFile
 )
 
+// sessionEntryOrigin records which backend a cached entry was actually read
+// from. A conditional delete needs it: the entry whose stamp matched is the
+// only one proven stale, and the other backend may hold a newer session.
+type sessionEntryOrigin int
+
+const (
+	sessionEntryOriginNone sessionEntryOrigin = iota
+	sessionEntryOriginKeychain
+	sessionEntryOriginFile
+)
+
 type backendSelection struct {
 	backend          sessionBackend
 	fallbackFile     bool
@@ -55,10 +63,11 @@ type backendSelection struct {
 }
 
 type persistedSession struct {
-	Version   int                  `json:"version"`
-	UpdatedAt time.Time            `json:"updated_at"`
-	UserEmail string               `json:"user_email,omitempty"`
-	Cookies   map[string][]pCookie `json:"cookies"`
+	Version         int                  `json:"version"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+	UserEmail       string               `json:"user_email,omitempty"`
+	DeveloperTeamID string               `json:"developer_team_id,omitempty"`
+	Cookies         map[string][]pCookie `json:"cookies"`
 }
 
 type persistedSessionStore struct {
@@ -101,6 +110,11 @@ var (
 		})
 	}
 	sessionInfoFetcher = getSessionInfo
+
+	// sessionCompareDeleteBarrier runs between the stamp comparison and the
+	// delete in DeleteSessionIfMatches. Tests set it to schedule a concurrent
+	// persist inside that window; it is nil in production.
+	sessionCompareDeleteBarrier func()
 )
 
 func webSessionCacheEnabled() bool {
@@ -151,32 +165,6 @@ func webSessionCacheDir() (string, error) {
 	return filepath.Join(home, ".asc", "web"), nil
 }
 
-func legacyIrisSessionCacheEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv(legacyIrisSessionCacheEnabledEnv))
-	if raw == "" {
-		return true
-	}
-	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
-}
-
-func legacyIrisSessionCacheDir() (string, error) {
-	if custom := strings.TrimSpace(os.Getenv(legacyIrisSessionCacheDirEnv)); custom != "" {
-		return custom, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(home, ".asc", "iris"), nil
-}
-
 func webSessionCacheKey(username string) string {
 	normalized := strings.ToLower(strings.TrimSpace(username))
 	sum := sha256.Sum256([]byte(normalized))
@@ -193,22 +181,6 @@ func webSessionFilePath(key string) (string, error) {
 
 func webSessionLastFilePath() (string, error) {
 	dir, err := webSessionCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "last.json"), nil
-}
-
-func legacyIrisSessionFilePath(key string) (string, error) {
-	dir, err := legacyIrisSessionCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "session-"+key+".json"), nil
-}
-
-func legacyIrisLastFilePath() (string, error) {
-	dir, err := legacyIrisSessionCacheDir()
 	if err != nil {
 		return "", err
 	}
@@ -611,183 +583,18 @@ func readLastKeyFromFile() (string, bool, error) {
 	return strings.TrimSpace(last.Key), true, nil
 }
 
-func readLegacyIrisSessionFromFile(key string) (persistedSession, bool, error) {
-	return readLegacyIrisSessionFromFileWithCleanup(key, true)
-}
-
-func readLegacyIrisSessionFromFileReadOnly(key string) (persistedSession, bool, error) {
-	return readLegacyIrisSessionFromFileWithCleanup(key, false)
-}
-
-func readLegacyIrisSessionFromFileWithCleanup(key string, cleanupMalformed bool) (persistedSession, bool, error) {
-	if !legacyIrisSessionCacheEnabled() {
-		return persistedSession{}, false, nil
-	}
-	path, err := legacyIrisSessionFilePath(key)
-	if err != nil {
-		return persistedSession{}, false, err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return persistedSession{}, false, nil
-		}
-		return persistedSession{}, false, err
-	}
-	var sess persistedSession
-	if err := json.Unmarshal(raw, &sess); err != nil {
-		if cleanupMalformed {
-			_ = deleteLegacyIrisSessionFromFile(key)
-		}
-		return persistedSession{}, false, nil
-	}
-	if sess.Version != webSessionCacheVersion {
-		return persistedSession{}, false, nil
-	}
-	return sess, true, nil
-}
-
-func readLegacyIrisLastKeyFromFile() (string, bool, error) {
-	return readLegacyIrisLastKeyFromFileWithCleanup(true)
-}
-
-func readLegacyIrisLastKeyFromFileReadOnly() (string, bool, error) {
-	return readLegacyIrisLastKeyFromFileWithCleanup(false)
-}
-
-func readLegacyIrisLastKeyFromFileWithCleanup(cleanupMalformed bool) (string, bool, error) {
-	if !legacyIrisSessionCacheEnabled() {
-		return "", false, nil
-	}
-	path, err := legacyIrisLastFilePath()
-	if err != nil {
-		return "", false, err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	var last persistedLastSession
-	if err := json.Unmarshal(raw, &last); err != nil {
-		if cleanupMalformed {
-			_ = deleteLegacyIrisLastKeyFromFile()
-		}
-		return "", false, nil
-	}
-	if last.Version != webSessionCacheVersion || strings.TrimSpace(last.Key) == "" {
-		return "", false, nil
-	}
-	return strings.TrimSpace(last.Key), true, nil
-}
-
-// TODO(next-release-cycle): remove legacy IRIS session import after the apps-create deprecation window.
-func deleteLegacyIrisSessionFromFile(key string) error {
-	path, err := legacyIrisSessionFilePath(key)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func deleteLegacyIrisLastKeyFromFile() error {
-	path, err := legacyIrisLastFilePath()
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func deleteLegacyIrisSessionArtifacts(key string) error {
-	if !legacyIrisSessionCacheEnabled() {
-		return nil
-	}
-	if err := deleteLegacyIrisSessionFromFile(key); err != nil {
-		return err
-	}
-	lastKey, ok, err := readLegacyIrisLastKeyFromFile()
-	if err != nil {
-		_ = deleteLegacyIrisLastKeyFromFile()
-		return nil
-	}
-	if ok && lastKey == key {
-		return deleteLegacyIrisLastKeyFromFile()
-	}
-	return nil
-}
-
-func deleteAllLegacyIrisFromFile() error {
-	if !legacyIrisSessionCacheEnabled() {
-		return nil
-	}
-	dir, err := legacyIrisSessionCacheDir()
-	if err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if (strings.HasPrefix(name, "session-") && strings.HasSuffix(name, ".json")) || name == "last.json" {
-			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func migrateLegacyIrisSessionByKey(ctx context.Context, selection backendSelection, key string) (*AuthSession, bool, error) {
-	if selection.backend == sessionBackendOff {
-		return nil, false, nil
-	}
-	sess, ok, err := readLegacyIrisSessionFromFile(key)
-	if err != nil || !ok {
-		return nil, false, err
-	}
-
-	resumed, ok, err := resumeFromPersistedSession(ctx, sess)
-	if err != nil {
-		if errors.Is(err, ErrCachedSessionExpired) {
-			_ = deleteLegacyIrisSessionArtifacts(key)
-		}
-		return nil, false, err
-	}
-	if !ok || resumed == nil {
-		return nil, false, nil
-	}
-	// Migration bookkeeping is best-effort after the resumed session is already valid.
-	_ = PersistSession(resumed)
-	_ = deleteLegacyIrisSessionArtifacts(key)
-	return resumed, true, nil
-}
-
-func migrateLegacyIrisSessionByUsername(ctx context.Context, selection backendSelection, username string) (*AuthSession, bool, error) {
-	return migrateLegacyIrisSessionByKey(ctx, selection, webSessionCacheKey(username))
-}
-
-func migrateLegacyIrisLastSession(ctx context.Context, selection backendSelection) (*AuthSession, bool, error) {
-	key, ok, err := readLegacyIrisLastKeyFromFile()
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	return migrateLegacyIrisSessionByKey(ctx, selection, key)
-}
-
 func persistSessionBySelection(selection backendSelection, key string, sess persistedSession) error {
+	if selection.backend == sessionBackendOff {
+		return nil
+	}
+	// Hold the entry lock so a concurrent conditional delete cannot compare a
+	// stamp before this write and delete the entry it produces.
+	return withSessionEntryLock(key, func() error {
+		return persistSessionBySelectionLocked(selection, key, sess)
+	})
+}
+
+func persistSessionBySelectionLocked(selection backendSelection, key string, sess persistedSession) error {
 	switch selection.backend {
 	case sessionBackendOff:
 		return nil
@@ -807,25 +614,37 @@ func persistSessionBySelection(selection backendSelection, key string, sess pers
 }
 
 func readSessionFromFileWithKeychainFallback(key string, fallbackKeychain bool) (persistedSession, bool, error) {
+	sess, _, ok, err := readSessionFromFileWithKeychainFallbackOrigin(key, fallbackKeychain)
+	return sess, ok, err
+}
+
+func readSessionFromFileWithKeychainFallbackOrigin(key string, fallbackKeychain bool) (persistedSession, sessionEntryOrigin, bool, error) {
 	sess, ok, err := readSessionFromFile(key)
 	if err == nil && (ok || !fallbackKeychain) {
-		return sess, ok, nil
+		return sess, sessionEntryOriginWhenFound(sessionEntryOriginFile, ok), ok, nil
 	}
 	if err != nil && !fallbackKeychain {
-		return persistedSession{}, false, err
+		return persistedSession{}, sessionEntryOriginNone, false, err
 	}
 
 	sess, ok, keychainErr := readSessionFromKeychain(key)
 	if keychainErr != nil {
 		if err != nil {
-			return persistedSession{}, false, err
+			return persistedSession{}, sessionEntryOriginNone, false, err
 		}
-		return persistedSession{}, false, nil
+		return persistedSession{}, sessionEntryOriginNone, false, nil
 	}
 	if err != nil && !ok {
-		return persistedSession{}, false, err
+		return persistedSession{}, sessionEntryOriginNone, false, err
 	}
-	return sess, ok, nil
+	return sess, sessionEntryOriginWhenFound(sessionEntryOriginKeychain, ok), ok, nil
+}
+
+func sessionEntryOriginWhenFound(origin sessionEntryOrigin, found bool) sessionEntryOrigin {
+	if !found {
+		return sessionEntryOriginNone
+	}
+	return origin
 }
 
 func readSessionFromFileIgnoringErrors(key string) (persistedSession, bool, error) {
@@ -845,26 +664,36 @@ func readLastSessionFromFileIgnoringErrors() (persistedSession, bool, error) {
 }
 
 func readSessionBySelection(selection backendSelection, key string) (persistedSession, bool, error) {
+	sess, _, ok, err := readSessionBySelectionWithOrigin(selection, key)
+	return sess, ok, err
+}
+
+func readSessionBySelectionWithOrigin(selection backendSelection, key string) (persistedSession, sessionEntryOrigin, bool, error) {
 	switch selection.backend {
 	case sessionBackendOff:
-		return persistedSession{}, false, nil
+		return persistedSession{}, sessionEntryOriginNone, false, nil
 	case sessionBackendKeychain:
 		sess, ok, err := readSessionFromKeychain(key)
 		if err != nil {
 			if selection.fallbackFile && isKeyringUnavailable(err) {
-				return readSessionFromFileIgnoringErrors(key)
+				return readSessionFromFileIgnoringErrorsWithOrigin(key)
 			}
-			return persistedSession{}, false, err
+			return persistedSession{}, sessionEntryOriginNone, false, err
 		}
 		if !ok && selection.fallbackFile {
-			return readSessionFromFileIgnoringErrors(key)
+			return readSessionFromFileIgnoringErrorsWithOrigin(key)
 		}
-		return sess, ok, nil
+		return sess, sessionEntryOriginWhenFound(sessionEntryOriginKeychain, ok), ok, nil
 	case sessionBackendFile:
-		return readSessionFromFileWithKeychainFallback(key, selection.fallbackKeychain)
+		return readSessionFromFileWithKeychainFallbackOrigin(key, selection.fallbackKeychain)
 	default:
-		return persistedSession{}, false, nil
+		return persistedSession{}, sessionEntryOriginNone, false, nil
 	}
+}
+
+func readSessionFromFileIgnoringErrorsWithOrigin(key string) (persistedSession, sessionEntryOrigin, bool, error) {
+	sess, ok, err := readSessionFromFileIgnoringErrors(key)
+	return sess, sessionEntryOriginWhenFound(sessionEntryOriginFile, ok), ok, err
 }
 
 func readLastSessionFromKeychain() (persistedSession, bool, error) {
@@ -1073,6 +902,7 @@ func resumeFromPersistedSession(ctx context.Context, sess persistedSession) (*Au
 	}
 	session := &AuthSession{Client: client}
 	applySessionInfo(session, info)
+	session.DeveloperTeamID = strings.TrimSpace(sess.DeveloperTeamID)
 	return session, true, nil
 }
 
@@ -1099,6 +929,7 @@ func resumeFromPersistedSessionReadOnly(ctx context.Context, sess persistedSessi
 	}
 	session := &AuthSession{Client: client, UserEmail: strings.TrimSpace(sess.UserEmail)}
 	applySessionInfo(session, info)
+	session.DeveloperTeamID = strings.TrimSpace(sess.DeveloperTeamID)
 	return session, true, nil
 }
 
@@ -1123,8 +954,10 @@ func loadSessionFromPersistedSession(sess persistedSession) (*AuthSession, bool,
 		return nil, false, nil
 	}
 	return &AuthSession{
-		Client:    newWebHTTPClient(jar),
-		UserEmail: strings.TrimSpace(sess.UserEmail),
+		Client:          newWebHTTPClient(jar),
+		UserEmail:       strings.TrimSpace(sess.UserEmail),
+		DeveloperTeamID: strings.TrimSpace(sess.DeveloperTeamID),
+		cachedUpdatedAt: sess.UpdatedAt,
 	}, true, nil
 }
 
@@ -1145,6 +978,7 @@ func PersistSession(session *AuthSession) error {
 
 	key := webSessionCacheKey(username)
 	serialized := serializeCookieJar(session.Client.Jar, username)
+	serialized.DeveloperTeamID = strings.TrimSpace(session.DeveloperTeamID)
 	return persistSessionBySelection(selection, key, serialized)
 }
 
@@ -1188,9 +1022,6 @@ func ResumeCachedSessionWithoutPersist(ctx context.Context, username string) (*A
 
 	key := webSessionCacheKey(username)
 	sess, ok, err := readSessionBySelection(selection, key)
-	if err == nil && !ok {
-		sess, ok, err = readLegacyIrisSessionFromFileReadOnly(key)
-	}
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -1217,11 +1048,8 @@ func TryResumeSession(ctx context.Context, username string) (*AuthSession, bool,
 
 	key := webSessionCacheKey(username)
 	sess, ok, err := readSessionBySelection(selection, key)
-	if err != nil {
+	if err != nil || !ok {
 		return nil, false, err
-	}
-	if !ok {
-		return migrateLegacyIrisSessionByUsername(ctx, selection, username)
 	}
 	resumed, ok, err := resumeFromPersistedSession(ctx, sess)
 	if err != nil || !ok || resumed == nil {
@@ -1260,15 +1088,6 @@ func ResumeLastCachedSessionWithoutPersist(ctx context.Context) (*AuthSession, b
 	}
 
 	sess, ok, err := readLastSessionBySelection(selection)
-	if err == nil && !ok {
-		key, legacyOK, legacyErr := readLegacyIrisLastKeyFromFileReadOnly()
-		if legacyErr != nil {
-			return nil, false, legacyErr
-		}
-		if legacyOK {
-			sess, ok, err = readLegacyIrisSessionFromFileReadOnly(key)
-		}
-	}
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -1287,11 +1106,8 @@ func TryResumeLastSession(ctx context.Context) (*AuthSession, bool, error) {
 	}
 
 	sess, ok, err := readLastSessionBySelection(selection)
-	if err != nil {
+	if err != nil || !ok {
 		return nil, false, err
-	}
-	if !ok {
-		return migrateLegacyIrisLastSession(ctx, selection)
 	}
 	resumed, ok, err := resumeFromPersistedSession(ctx, sess)
 	if err != nil || !ok || resumed == nil {
@@ -1310,6 +1126,18 @@ func DeleteSession(username string) error {
 	}
 	key := webSessionCacheKey(username)
 	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendOff {
+		return deleteSessionEntryLocked(selection, key)
+	}
+	return withSessionEntryLock(key, func() error {
+		return deleteSessionEntryLocked(selection, key)
+	})
+}
+
+// deleteSessionEntryLocked removes every cached entry for key. Callers already
+// holding the entry lock use it directly so a nested acquisition cannot stall
+// behind the lock they hold.
+func deleteSessionEntryLocked(selection backendSelection, key string) error {
 	var err error
 	switch selection.backend {
 	case sessionBackendOff:
@@ -1336,7 +1164,127 @@ func DeleteSession(username string) error {
 	default:
 		err = nil
 	}
-	return joinDeleteErrors(err, deleteLegacyIrisSessionArtifacts(key))
+	return err
+}
+
+// DeleteSessionIfMatches removes the cached web session for username only while
+// the stored entry is still the one loaded carries. A caller that proves its
+// loaded cookie jar unusable would otherwise delete by Apple ID alone and take
+// out a valid replacement that a concurrent process persisted while it was
+// working through 2FA, leaving no cached session at all. Reporting whether the
+// delete happened lets the caller stay quiet when a newer entry was preserved.
+//
+// The comparison and the delete it authorizes run under the entry lock that
+// persistence also takes, so a replacement written between them is no longer
+// deleted by a decision made before it existed. Only the entry whose stamp
+// matched is removed: the other backend can hold a newer session persisted by
+// a process configured with a different ASC_WEB_SESSION_CACHE_BACKEND, and it
+// is removed only when it carries the same stamp.
+//
+// When the current entry cannot be read, or the caller has no stamp to
+// compare, the unconditional delete stands: a proven-stale jar left on disk is
+// reloaded by the next invocation and burns another 2FA code against the same
+// failure.
+func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return false, nil
+	}
+	if loaded == nil || loaded.cachedUpdatedAt.IsZero() {
+		return true, DeleteSession(username)
+	}
+
+	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendOff {
+		return false, nil
+	}
+	key := webSessionCacheKey(username)
+	deleted := false
+	err := withSessionEntryLock(key, func() error {
+		current, origin, ok, err := readSessionBySelectionWithOrigin(selection, key)
+		if err != nil {
+			deleted = true
+			return deleteSessionEntryLocked(selection, key)
+		}
+		if !ok {
+			return nil
+		}
+		if !current.UpdatedAt.Equal(loaded.cachedUpdatedAt) {
+			return nil
+		}
+		if sessionCompareDeleteBarrier != nil {
+			sessionCompareDeleteBarrier()
+		}
+		deleted = true
+		return deleteMatchedSessionEntryLocked(selection, key, origin, current.UpdatedAt)
+	})
+	return deleted, err
+}
+
+// deleteMatchedSessionEntryLocked removes the cache entry whose stamp matched
+// the loaded session, plus the mirrored entry in the other backend only when
+// that one carries the same stamp and is therefore the same proven-stale
+// session. Legacy artifacts are always cleared: nothing writes them any more,
+// so they can only hold a session at least as stale as the matched one.
+func deleteMatchedSessionEntryLocked(selection backendSelection, key string, origin sessionEntryOrigin, stamp time.Time) error {
+	var err error
+	switch origin {
+	case sessionEntryOriginFile:
+		if deleteErr := deleteSessionFromFile(key); deleteErr != nil {
+			err = deleteErr
+		} else {
+			err = clearLastKeyInFileIfMatches(key)
+		}
+		if sessionMirrorEnabled(selection) && keychainSessionCarriesStamp(key, stamp) {
+			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteSessionFromKeychain(key)))
+		}
+	case sessionEntryOriginKeychain:
+		if deleteErr := deleteSessionFromKeychain(key); deleteErr != nil && (!selection.fallbackFile || !isKeyringUnavailable(deleteErr)) {
+			err = deleteErr
+		}
+		if sessionMirrorEnabled(selection) && fileSessionCarriesStamp(key, stamp) {
+			err = joinDeleteErrors(err, deleteMirroredSessionFromFile(key))
+		}
+	default:
+		return nil
+	}
+	return err
+}
+
+// sessionMirrorEnabled reports whether the selection keeps entries in both
+// backends, which is what makes a mirrored entry possible at all.
+func sessionMirrorEnabled(selection backendSelection) bool {
+	switch selection.backend {
+	case sessionBackendFile:
+		return selection.fallbackKeychain
+	case sessionBackendKeychain:
+		return selection.fallbackFile
+	default:
+		return false
+	}
+}
+
+// fileSessionCarriesStamp reports whether the file entry is the same session as
+// the matched one. An unreadable entry counts: it cannot be the valid
+// replacement this guard exists to protect, and leaving a corrupt file behind
+// only makes the next invocation fall back to a staler backend.
+func fileSessionCarriesStamp(key string, stamp time.Time) bool {
+	sess, ok, err := readSessionFromFile(key)
+	if err != nil {
+		return true
+	}
+	return ok && sess.UpdatedAt.Equal(stamp)
+}
+
+// keychainSessionCarriesStamp reports whether the keychain entry is the same
+// session as the matched one. A keychain that cannot be read is left alone
+// rather than cleared blindly: unavailability says nothing about the entry.
+func keychainSessionCarriesStamp(key string, stamp time.Time) bool {
+	sess, ok, err := readSessionFromKeychain(key)
+	if err != nil {
+		return false
+	}
+	return ok && sess.UpdatedAt.Equal(stamp)
 }
 
 // DeleteAllSessions removes all cached web sessions.
@@ -1368,17 +1316,17 @@ func DeleteAllSessions() error {
 	default:
 		err = nil
 	}
-	return joinDeleteErrors(err, deleteAllLegacyIrisFromFile())
+	return err
 }
 
-func joinDeleteErrors(primaryErr, legacyErr error) error {
+func joinDeleteErrors(primaryErr, secondaryErr error) error {
 	if primaryErr == nil {
-		return legacyErr
+		return secondaryErr
 	}
-	if legacyErr == nil {
+	if secondaryErr == nil {
 		return primaryErr
 	}
-	return errors.Join(primaryErr, legacyErr)
+	return errors.Join(primaryErr, secondaryErr)
 }
 
 func ignoreUnavailableKeyringError(err error) error {

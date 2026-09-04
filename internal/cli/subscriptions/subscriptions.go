@@ -60,8 +60,6 @@ Examples:
 			SubscriptionsOffersCommand(),
 			SubscriptionsReviewCommand(),
 			SubscriptionsPromotedPurchasesCommand(),
-			SubscriptionsLocalizationsCommand(),
-			SubscriptionsImagesCommand(),
 			SubscriptionsVersionsCommand(),
 			SubscriptionsGracePeriodsCommand(),
 		},
@@ -94,7 +92,6 @@ Examples:
 			SubscriptionsGroupsGetCommand(),
 			SubscriptionsGroupsUpdateCommand(),
 			SubscriptionsGroupsDeleteCommand(),
-			SubscriptionsGroupsLocalizationsCommand(),
 			SubscriptionsGroupsVersionsCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
@@ -133,10 +130,10 @@ Examples:
 				return err
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("subscriptions groups list: --limit must be between 1 and 200")
+				return shared.UsageErrorCtx(ctx, "subscriptions groups list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("subscriptions groups list: %w", err)
+				return shared.UsageErrorfCtx(ctx, "subscriptions groups list: %v", err)
 			}
 			if strings.TrimSpace(*next) != "" && subscriptionGroupAnyFlagSet(fs, "app") {
 				return shared.UsageError("subscriptions groups list: --next cannot be combined with --app")
@@ -447,7 +444,6 @@ func SubscriptionsListCommand() *ffcli.Command {
 	versionFields := fs.String("version-fields", "", "Sparse fields for included subscriptionVersions")
 	include := fs.String("include", "", "Include relationships (supports versions)")
 	versionsLimit := fs.Int("versions-limit", 0, "Maximum included versions (1-50)")
-	legacyVersionLimit := shared.BindDeprecatedIntFlagAlias(fs, "version-limit", "versions-limit")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -467,17 +463,14 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := legacyVersionLimit.Apply(versionsLimit); err != nil {
-				return err
-			}
 			if err := rejectUnexpectedArgs(args); err != nil {
 				return err
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("subscriptions list: --limit must be between 1 and 200")
+				return shared.UsageErrorCtx(ctx, "subscriptions list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("subscriptions list: %w", err)
+				return shared.UsageErrorfCtx(ctx, "subscriptions list: %v", err)
 			}
 			if err := validateRelationshipLimit("--versions-limit", *versionsLimit); err != nil {
 				return err
@@ -499,7 +492,7 @@ Examples:
 				flagConflict{"--fields", flagWasProvided(fs, "fields")},
 				flagConflict{"--version-fields", flagWasProvided(fs, "version-fields")},
 				flagConflict{"--include", flagWasProvided(fs, "include")},
-				flagConflict{"--versions-limit", flagWasProvided(fs, "versions-limit") || legacyVersionLimit.WasProvided()},
+				flagConflict{"--versions-limit", flagWasProvided(fs, "versions-limit")},
 				flagConflict{"--limit", flagWasProvided(fs, "limit")},
 			); err != nil {
 				return err
@@ -713,12 +706,10 @@ func SubscriptionsGetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 
 	subID := fs.String("id", "", "Subscription ID")
-	legacySubscriptionID := shared.BindDeprecatedStringFlagAlias(fs, "subscription-id", "id")
 	fields := fs.String("fields", "", "Sparse fields for subscriptions")
 	versionFields := fs.String("version-fields", "", "Sparse fields for included subscriptionVersions")
 	include := fs.String("include", "", "Include relationships (supports versions)")
 	versionsLimit := fs.Int("versions-limit", 0, "Maximum included versions (1-50)")
-	legacyVersionLimit := shared.BindDeprecatedIntFlagAlias(fs, "version-limit", "versions-limit")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -733,13 +724,7 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := legacyVersionLimit.Apply(versionsLimit); err != nil {
-				return err
-			}
 			if err := rejectUnexpectedArgs(args); err != nil {
-				return err
-			}
-			if err := legacySubscriptionID.Apply(subID); err != nil {
 				return err
 			}
 			id := strings.TrimSpace(*subID)
@@ -1036,10 +1021,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("subscriptions prices list: --limit must be between 1 and 200")
+				return shared.UsageErrorCtx(ctx, "subscriptions prices list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("subscriptions prices list: %w", err)
+				return shared.UsageErrorfCtx(ctx, "subscriptions prices list: %v", err)
 			}
 			if *resolved && strings.TrimSpace(*next) != "" {
 				fmt.Fprintln(os.Stderr, "Error: --resolved cannot be combined with --next")
@@ -1612,6 +1597,7 @@ func SubscriptionsAvailabilityCommand() *ffcli.Command {
 Deprecated: the underlying Subscription availability resource is deprecated in
 App Store Connect API 4.4 in favor of Subscription plan availability. These
 commands keep working for now; for plan-based availability use
+` + "`asc subscriptions pricing plan-availability`" + ` (show/set) or
 ` + "`asc subscriptions pricing monthly-commitment`" + ` (enable/disable/list).
 
 Examples:

@@ -959,6 +959,40 @@ func TestPersistAndResumeSessionFromKeychain(t *testing.T) {
 	}
 }
 
+func TestPersistSessionRoundTripsDeveloperTeamID(t *testing.T) {
+	withSessionInfoStub(t)
+	t.Setenv(webSessionBackendEnv, "file")
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionCacheDirEnv, t.TempDir())
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: "token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	if err := PersistSession(&AuthSession{
+		Client:          &http.Client{Jar: jar},
+		UserEmail:       "user@example.com",
+		DeveloperTeamID: "TEAMTWO456",
+	}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+
+	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
+	if err != nil {
+		t.Fatalf("TryResumeSession error: %v", err)
+	}
+	if !ok || resumed == nil {
+		t.Fatal("expected resumed session")
+	}
+	if resumed.DeveloperTeamID != "TEAMTWO456" {
+		t.Fatalf("DeveloperTeamID = %q, want TEAMTWO456", resumed.DeveloperTeamID)
+	}
+}
+
 func TestTryResumeSessionPersistsRefreshedCookies(t *testing.T) {
 	withArraySessionKeyring(t)
 	t.Setenv(webSessionBackendEnv, "keychain")
@@ -1305,522 +1339,6 @@ func TestTryResumeLastSessionMigratesLegacyKeychainEntriesToSharedStore(t *testi
 	}
 }
 
-func TestTryResumeSessionMigratesLegacyIrisFileCache(t *testing.T) {
-	withSessionInfoStub(t)
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {
-				{Name: "myacinfo", Value: "legacy-iris-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
-			},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), raw, 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-
-	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
-	if err != nil {
-		t.Fatalf("TryResumeSession error: %v", err)
-	}
-	if !ok || resumed == nil {
-		t.Fatal("expected resumed migrated iris session")
-	}
-	if resumed.UserEmail != "user@example.com" || resumed.ProviderID != 42 {
-		t.Fatalf("unexpected resumed migrated iris session: %+v", resumed)
-	}
-
-	stored, ok, err := readSessionBySelection(resolveBackendSelection(), key)
-	if err != nil {
-		t.Fatalf("readSessionBySelection error: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected migrated session in web cache")
-	}
-	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "legacy-iris-token" {
-		t.Fatalf("expected migrated legacy cookie value, got %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris session file to be removed after migration, stat err=%v", err)
-	}
-}
-
-func TestTryResumeSessionMigratesLegacyIrisFileCacheKeepsResumedSessionWhenPersistFails(t *testing.T) {
-	withSessionInfoStub(t)
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-	if err := os.MkdirAll(webDir, 0o700); err != nil {
-		t.Fatalf("mkdir web dir: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(webDir, 0o700)
-	})
-
-	key := webSessionCacheKey("user@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {
-				{Name: "myacinfo", Value: "legacy-iris-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
-			},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), raw, 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-	if err := os.Chmod(webDir, 0o500); err != nil {
-		t.Fatalf("chmod web dir: %v", err)
-	}
-
-	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
-	if err != nil {
-		t.Fatalf("TryResumeSession error: %v", err)
-	}
-	if !ok || resumed == nil {
-		t.Fatal("expected resumed migrated iris session")
-	}
-	if resumed.UserEmail != "user@example.com" || resumed.ProviderID != 42 {
-		t.Fatalf("unexpected resumed migrated iris session: %+v", resumed)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris session file to be removed after migration, stat err=%v", err)
-	}
-	if err := os.Chmod(webDir, 0o700); err != nil {
-		t.Fatalf("restore web dir perms: %v", err)
-	}
-}
-
-func TestTryResumeSessionMigratesLegacyIrisFileCacheKeepsUnrelatedLastMarker(t *testing.T) {
-	withSessionInfoStub(t)
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(legacyDir, 0o700)
-	})
-
-	firstKey := webSessionCacheKey("first@example.com")
-	secondKey := webSessionCacheKey("second@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {
-				{Name: "myacinfo", Value: "legacy-iris-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
-			},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+firstKey+".json"), raw, 0o600); err != nil {
-		t.Fatalf("write first legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+secondKey+".json"), raw, 0o600); err != nil {
-		t.Fatalf("write second legacy iris session: %v", err)
-	}
-	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: secondKey})
-	if err != nil {
-		t.Fatalf("marshal unrelated last marker: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "last.json"), lastRaw, 0o600); err != nil {
-		t.Fatalf("write unrelated last marker: %v", err)
-	}
-
-	resumed, ok, err := TryResumeSession(context.Background(), "first@example.com")
-	if err != nil {
-		t.Fatalf("TryResumeSession error: %v", err)
-	}
-	if !ok || resumed == nil {
-		t.Fatal("expected resumed migrated iris session")
-	}
-
-	lastKey, ok, err := readLegacyIrisLastKeyFromFile()
-	if err != nil {
-		t.Fatalf("readLegacyIrisLastKeyFromFile error: %v", err)
-	}
-	if !ok || lastKey != secondKey {
-		t.Fatalf("expected unrelated legacy last marker to remain %q, got %q (ok=%v)", secondKey, lastKey, ok)
-	}
-}
-
-func TestTryResumeSessionTreatsMalformedLegacyIrisFileCacheAsMiss(t *testing.T) {
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	sessionPath := filepath.Join(legacyDir, "session-"+key+".json")
-	if err := os.WriteFile(sessionPath, []byte(`not-json`), 0o600); err != nil {
-		t.Fatalf("write malformed legacy iris session: %v", err)
-	}
-
-	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
-	if err != nil {
-		t.Fatalf("TryResumeSession error: %v", err)
-	}
-	if ok || resumed != nil {
-		t.Fatalf("expected malformed legacy iris session to behave like cache miss, got ok=%v resumed=%v", ok, resumed)
-	}
-	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
-		t.Fatalf("expected malformed legacy iris session removed, stat err=%v", err)
-	}
-}
-
-func TestTryResumeLastSessionMigratesLegacyIrisLastFileCache(t *testing.T) {
-	withSessionInfoStub(t)
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {
-				{Name: "myacinfo", Value: "legacy-last-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
-			},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), raw, 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-
-	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
-	if err != nil {
-		t.Fatalf("marshal legacy iris last marker: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "last.json"), lastRaw, 0o600); err != nil {
-		t.Fatalf("write legacy iris last marker: %v", err)
-	}
-
-	resumed, ok, err := TryResumeLastSession(context.Background())
-	if err != nil {
-		t.Fatalf("TryResumeLastSession error: %v", err)
-	}
-	if !ok || resumed == nil {
-		t.Fatal("expected resumed migrated iris last session")
-	}
-	if resumed.UserEmail != "user@example.com" || resumed.ProviderID != 42 {
-		t.Fatalf("unexpected resumed migrated iris last session: %+v", resumed)
-	}
-
-	lastKey, ok, err := readLastKeyFromFile()
-	if err != nil {
-		t.Fatalf("readLastKeyFromFile error: %v", err)
-	}
-	if !ok || lastKey != key {
-		t.Fatalf("expected migrated last key %q, got %q (ok=%v)", key, lastKey, ok)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "last.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris last-session marker to be removed after migration, stat err=%v", err)
-	}
-}
-
-func TestTryResumeLastSessionTreatsMalformedLegacyIrisLastMarkerAsMiss(t *testing.T) {
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	lastPath := filepath.Join(legacyDir, "last.json")
-	if err := os.WriteFile(lastPath, []byte(`not-json`), 0o600); err != nil {
-		t.Fatalf("write malformed legacy iris last marker: %v", err)
-	}
-
-	resumed, ok, err := TryResumeLastSession(context.Background())
-	if err != nil {
-		t.Fatalf("TryResumeLastSession error: %v", err)
-	}
-	if ok || resumed != nil {
-		t.Fatalf("expected malformed legacy iris last marker to behave like cache miss, got ok=%v resumed=%v", ok, resumed)
-	}
-	if _, err := os.Stat(lastPath); !os.IsNotExist(err) {
-		t.Fatalf("expected malformed legacy iris last marker removed, stat err=%v", err)
-	}
-}
-
-func TestTryResumeSessionMigratesLegacyIrisFileCacheKeepsResumedSessionWhenCleanupFails(t *testing.T) {
-	withSessionInfoStub(t)
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {
-				{Name: "myacinfo", Value: "legacy-iris-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
-			},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy iris session: %v", err)
-	}
-	sessionPath := filepath.Join(legacyDir, "session-"+key+".json")
-	if err := os.WriteFile(sessionPath, raw, 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-	if err := os.Chmod(legacyDir, 0o500); err != nil {
-		t.Fatalf("chmod legacy dir: %v", err)
-	}
-
-	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
-	if err != nil {
-		t.Fatalf("TryResumeSession error: %v", err)
-	}
-	if !ok || resumed == nil {
-		t.Fatal("expected resumed migrated iris session")
-	}
-	if resumed.UserEmail != "user@example.com" || resumed.ProviderID != 42 {
-		t.Fatalf("unexpected resumed migrated iris session: %+v", resumed)
-	}
-	if _, err := os.Stat(sessionPath); err != nil {
-		t.Fatalf("expected cleanup failure to leave legacy session file behind, stat err=%v", err)
-	}
-	if err := os.Chmod(legacyDir, 0o700); err != nil {
-		t.Fatalf("restore legacy dir perms: %v", err)
-	}
-}
-
-func TestTryResumeSessionDoesNotPersistExpiredLegacyIrisCache(t *testing.T) {
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {
-				{Name: "myacinfo", Value: "expired-legacy-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
-			},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), raw, 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-
-	prev := sessionInfoFetcher
-	sessionInfoFetcher = func(ctx context.Context, client *http.Client) (*sessionInfo, error) {
-		return nil, &sessionInfoStatusError{Status: http.StatusUnauthorized}
-	}
-	t.Cleanup(func() {
-		sessionInfoFetcher = prev
-	})
-
-	resumed, ok, err := TryResumeSession(context.Background(), "user@example.com")
-	if err == nil {
-		t.Fatal("expected expired cached-session error")
-	}
-	if !errors.Is(err, ErrCachedSessionExpired) {
-		t.Fatalf("expected ErrCachedSessionExpired, got %v", err)
-	}
-	if errors.Unwrap(err) != nil {
-		t.Fatalf("expected bare ErrCachedSessionExpired sentinel, got wrapped error %v", err)
-	}
-	if ok || resumed != nil {
-		t.Fatalf("did not expect resumed legacy session, got %+v ok=%v", resumed, ok)
-	}
-
-	if _, ok, err := readSessionBySelection(resolveBackendSelection(), key); err != nil {
-		t.Fatalf("readSessionBySelection error: %v", err)
-	} else if ok {
-		t.Fatal("did not expect expired legacy session to be persisted into web cache")
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("expected expired legacy iris session file to be removed, stat err=%v", err)
-	}
-}
-
-func TestDeleteSessionRemovesLegacyIrisCache(t *testing.T) {
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), []byte(`{"version":1,"updated_at":"2026-03-16T00:00:00Z","cookies":{}}`), 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
-	if err != nil {
-		t.Fatalf("marshal legacy iris last marker: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "last.json"), lastRaw, 0o600); err != nil {
-		t.Fatalf("write legacy iris last marker: %v", err)
-	}
-
-	if err := DeleteSession("user@example.com"); err != nil {
-		t.Fatalf("DeleteSession error: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris session file removed, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "last.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris last marker removed, stat err=%v", err)
-	}
-}
-
-func TestDeleteSessionIgnoresMalformedLegacyLastMarker(t *testing.T) {
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "off")
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), []byte(`{"version":1,"updated_at":"2026-03-16T00:00:00Z","cookies":{}}`), 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "last.json"), []byte("{"), 0o600); err != nil {
-		t.Fatalf("write malformed legacy iris last marker: %v", err)
-	}
-
-	if err := DeleteSession("user@example.com"); err != nil {
-		t.Fatalf("DeleteSession error: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris session file removed, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "last.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected malformed legacy iris last marker removed, stat err=%v", err)
-	}
-}
-
-func TestDeleteAllSessionsRemovesLegacyIrisCache(t *testing.T) {
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	if err := os.WriteFile(filepath.Join(legacyDir, "session-"+key+".json"), []byte(`{"version":1,"updated_at":"2026-03-16T00:00:00Z","cookies":{}}`), 0o600); err != nil {
-		t.Fatalf("write legacy iris session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "last.json"), []byte(`{"version":1,"key":"`+key+`"}`), 0o600); err != nil {
-		t.Fatalf("write legacy iris last marker: %v", err)
-	}
-
-	if err := DeleteAllSessions(); err != nil {
-		t.Fatalf("DeleteAllSessions error: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris session file removed, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(legacyDir, "last.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy iris last marker removed, stat err=%v", err)
-	}
-}
-
 func TestDeleteAllSessionsDefaultBackendIgnoresUnavailableKeychainFallback(t *testing.T) {
 	withUnavailableSessionKeyring(t)
 	t.Setenv(webSessionCacheEnabledEnv, "1")
@@ -1920,89 +1438,101 @@ func TestDeleteAllSessionsKeychainBackendSurfacesMirroredFileDeleteError(t *test
 	}
 }
 
-func TestDeleteSessionJoinsLegacyCleanupError(t *testing.T) {
-	webCachePath := filepath.Join(t.TempDir(), "web-cache-file")
-	if err := os.WriteFile(webCachePath, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatalf("write web cache file: %v", err)
-	}
-	legacyCachePath := filepath.Join(t.TempDir(), "legacy-cache-file")
-	if err := os.WriteFile(legacyCachePath, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatalf("write legacy cache file: %v", err)
-	}
-
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webCachePath)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyCachePath)
-
-	err := DeleteSession("user@example.com")
-	if err == nil {
-		t.Fatal("expected delete session error")
-	}
-	if !strings.Contains(err.Error(), webCachePath) {
-		t.Fatalf("expected primary error to mention %q, got %v", webCachePath, err)
-	}
-	if !strings.Contains(err.Error(), legacyCachePath) {
-		t.Fatalf("expected joined legacy cleanup error to mention %q, got %v", legacyCachePath, err)
-	}
-}
-
-func TestDeleteAllSessionsJoinsLegacyCleanupError(t *testing.T) {
-	webCachePath := filepath.Join(t.TempDir(), "web-cache-file")
-	if err := os.WriteFile(webCachePath, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatalf("write web cache file: %v", err)
-	}
-	legacyCachePath := filepath.Join(t.TempDir(), "legacy-cache-file")
-	if err := os.WriteFile(legacyCachePath, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatalf("write legacy cache file: %v", err)
-	}
-
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionCacheDirEnv, webCachePath)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyCachePath)
-
-	err := DeleteAllSessions()
-	if err == nil {
-		t.Fatal("expected delete-all sessions error")
-	}
-	if !strings.Contains(err.Error(), webCachePath) {
-		t.Fatalf("expected primary error to mention %q, got %v", webCachePath, err)
-	}
-	if !strings.Contains(err.Error(), legacyCachePath) {
-		t.Fatalf("expected joined legacy cleanup error to mention %q, got %v", legacyCachePath, err)
-	}
-}
-
-func TestDeleteSessionSkipsLegacyCleanupWhenDisabled(t *testing.T) {
-	legacyCachePath := filepath.Join(t.TempDir(), "legacy-cache-file")
-	if err := os.WriteFile(legacyCachePath, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatalf("write legacy cache file: %v", err)
-	}
+func TestDeleteSessionWithCachingOffCreatesNoState(t *testing.T) {
+	root := t.TempDir()
+	cacheDir := filepath.Join(root, "web-cache")
+	sharedRoot := filepath.Join(root, "shared-lock-root")
+	withStubbedSessionSharedLockRoot(t, sharedRoot)
 
 	t.Setenv(webSessionBackendEnv, "off")
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "0")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyCachePath)
+	t.Setenv(webSessionCacheDirEnv, cacheDir)
 
 	if err := DeleteSession("user@example.com"); err != nil {
-		t.Fatalf("expected disabled legacy cleanup to be skipped, got %v", err)
+		t.Fatalf("expected disabled session caching to delete nothing, got %v", err)
+	}
+	for _, path := range []string{cacheDir, sharedRoot} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected disabled session caching not to create %q, stat error: %v", path, err)
+		}
 	}
 }
 
-func TestDeleteAllSessionsSkipsLegacyCleanupWhenDisabled(t *testing.T) {
-	legacyCachePath := filepath.Join(t.TempDir(), "legacy-cache-file")
-	if err := os.WriteFile(legacyCachePath, []byte("not-a-directory"), 0o600); err != nil {
-		t.Fatalf("write legacy cache file: %v", err)
+// The legacy ~/.asc/iris file cache and its ASC_IRIS_SESSION_CACHE* environment
+// variables are no longer read: a session that exists only there is a cache
+// miss, is never migrated, and is left untouched by delete operations.
+func TestSessionCacheIgnoresLegacyIrisFileCacheAndEnvironment(t *testing.T) {
+	withSessionInfoStub(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	webDir := filepath.Join(t.TempDir(), "web-cache")
+	t.Setenv(webSessionBackendEnv, "file")
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionCacheDirEnv, webDir)
+
+	key := webSessionCacheKey("user@example.com")
+	legacy := persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC(),
+		UserEmail: "user@example.com",
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "legacy-iris-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)}},
+		},
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy session: %v", err)
+	}
+	last, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
+	if err != nil {
+		t.Fatalf("marshal legacy last marker: %v", err)
 	}
 
-	t.Setenv(webSessionBackendEnv, "off")
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "0")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyCachePath)
+	legacyDirs := []string{
+		filepath.Join(home, ".asc", "iris"),
+		filepath.Join(t.TempDir(), "custom-iris-cache"),
+	}
+	t.Setenv("ASC_IRIS_SESSION_CACHE", "1")
+	t.Setenv("ASC_IRIS_SESSION_CACHE_DIR", legacyDirs[1])
+	for _, dir := range legacyDirs {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir legacy dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "session-"+key+".json"), raw, 0o600); err != nil {
+			t.Fatalf("write legacy session: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "last.json"), last, 0o600); err != nil {
+			t.Fatalf("write legacy last marker: %v", err)
+		}
+	}
 
+	if resumed, ok, err := TryResumeSession(context.Background(), "user@example.com"); err != nil || ok || resumed != nil {
+		t.Fatalf("TryResumeSession = (%+v, %t, %v), want cache miss", resumed, ok, err)
+	}
+	if resumed, ok, err := TryResumeLastSession(context.Background()); err != nil || ok || resumed != nil {
+		t.Fatalf("TryResumeLastSession = (%+v, %t, %v), want cache miss", resumed, ok, err)
+	}
+	if resumed, ok, err := ResumeCachedSessionWithoutPersist(context.Background(), "user@example.com"); err != nil || ok || resumed != nil {
+		t.Fatalf("ResumeCachedSessionWithoutPersist = (%+v, %t, %v), want cache miss", resumed, ok, err)
+	}
+	if resumed, ok, err := ResumeLastCachedSessionWithoutPersist(context.Background()); err != nil || ok || resumed != nil {
+		t.Fatalf("ResumeLastCachedSessionWithoutPersist = (%+v, %t, %v), want cache miss", resumed, ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(webDir, "session-"+key+".json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy session was migrated into the web cache, stat err=%v", err)
+	}
+
+	if err := DeleteSession("user@example.com"); err != nil {
+		t.Fatalf("DeleteSession error: %v", err)
+	}
 	if err := DeleteAllSessions(); err != nil {
-		t.Fatalf("expected disabled legacy cleanup to be skipped, got %v", err)
+		t.Fatalf("DeleteAllSessions error: %v", err)
+	}
+	for _, dir := range legacyDirs {
+		for _, name := range []string{"session-" + key + ".json", "last.json"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				t.Fatalf("legacy file %s in %s was removed or unreadable: %v", name, dir, err)
+			}
+		}
 	}
 }
 
@@ -2062,116 +1592,6 @@ func TestResumeCachedSessionWithoutPersistNeverOpensKeychain(t *testing.T) {
 	}
 	if opened != 0 {
 		t.Fatalf("keychain opened %d times", opened)
-	}
-}
-
-func TestResumeCachedSessionWithoutPersistReadsLegacyWithoutMigrating(t *testing.T) {
-	withSessionInfoStub(t)
-	webDir := filepath.Join(t.TempDir(), "web-cache")
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheDirEnv, webDir)
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	legacy := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: time.Now().UTC(),
-		UserEmail: "user@example.com",
-		Cookies: map[string][]pCookie{
-			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "legacy-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)}},
-		},
-	}
-	raw, err := json.Marshal(legacy)
-	if err != nil {
-		t.Fatalf("marshal legacy session: %v", err)
-	}
-	legacyPath := filepath.Join(legacyDir, "session-"+key+".json")
-	if err := os.WriteFile(legacyPath, raw, 0o600); err != nil {
-		t.Fatalf("write legacy session: %v", err)
-	}
-
-	resumed, ok, err := ResumeCachedSessionWithoutPersist(context.Background(), "user@example.com")
-	if err != nil || !ok || resumed == nil {
-		t.Fatalf("resume = (%+v, %t, %v), want legacy session", resumed, ok, err)
-	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		t.Fatalf("legacy session was changed or removed: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(webDir, "session-"+key+".json")); !os.IsNotExist(err) {
-		t.Fatalf("read-only resume migrated the legacy session, stat err=%v", err)
-	}
-}
-
-func TestResumeCachedSessionWithoutPersistPreservesMalformedLegacyCache(t *testing.T) {
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	key := webSessionCacheKey("user@example.com")
-	legacyPath, err := legacyIrisSessionFilePath(key)
-	if err != nil {
-		t.Fatalf("legacy session path: %v", err)
-	}
-	raw := []byte("{malformed")
-	if err := os.WriteFile(legacyPath, raw, 0o600); err != nil {
-		t.Fatalf("write malformed legacy session: %v", err)
-	}
-
-	resumed, ok, err := ResumeCachedSessionWithoutPersist(context.Background(), "user@example.com")
-	if err != nil || ok || resumed != nil {
-		t.Fatalf("resume = (%+v, %t, %v), want ignored malformed cache", resumed, ok, err)
-	}
-	after, err := os.ReadFile(legacyPath)
-	if err != nil {
-		t.Fatalf("read preserved legacy session: %v", err)
-	}
-	if string(after) != string(raw) {
-		t.Fatalf("legacy session changed: %q", after)
-	}
-}
-
-func TestResumeLastCachedSessionWithoutPersistPreservesMalformedLegacyMarker(t *testing.T) {
-	legacyDir := filepath.Join(t.TempDir(), "iris-cache")
-	t.Setenv(webSessionCacheEnabledEnv, "1")
-	t.Setenv(webSessionBackendEnv, "file")
-	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "1")
-	t.Setenv(legacyIrisSessionCacheDirEnv, legacyDir)
-	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
-		t.Fatalf("mkdir legacy dir: %v", err)
-	}
-
-	legacyPath, err := legacyIrisLastFilePath()
-	if err != nil {
-		t.Fatalf("legacy marker path: %v", err)
-	}
-	raw := []byte("{malformed")
-	if err := os.WriteFile(legacyPath, raw, 0o600); err != nil {
-		t.Fatalf("write malformed legacy marker: %v", err)
-	}
-
-	resumed, ok, err := ResumeLastCachedSessionWithoutPersist(context.Background())
-	if err != nil || ok || resumed != nil {
-		t.Fatalf("resume last = (%+v, %t, %v), want ignored malformed marker", resumed, ok, err)
-	}
-	after, err := os.ReadFile(legacyPath)
-	if err != nil {
-		t.Fatalf("read preserved legacy marker: %v", err)
-	}
-	if string(after) != string(raw) {
-		t.Fatalf("legacy marker changed: %q", after)
 	}
 }
 
@@ -2276,4 +1696,336 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// A process that proves its loaded jar unusable must not delete by Apple ID
+// alone: another process can persist a valid replacement while the first is
+// still working through 2FA, and deleting that leaves no cached session at all.
+func TestDeleteSessionIfMatchesPreservesAConcurrentlyRefreshedSession(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	persist := func(token string) {
+		t.Helper()
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			t.Fatalf("cookiejar.New error: %v", err)
+		}
+		targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+		jar.SetCookies(targetURL, []*http.Cookie{
+			{Name: "myacinfo", Value: token, Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+		})
+		if err := PersistSession(&AuthSession{Client: &http.Client{Jar: jar}, UserEmail: "user@example.com"}); err != nil {
+			t.Fatalf("PersistSession error: %v", err)
+		}
+	}
+
+	persist("stale-token")
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+	if loaded.cachedUpdatedAt.IsZero() {
+		t.Fatal("expected the loaded session to carry the cached entry stamp")
+	}
+
+	// A concurrent process replaces the entry while this one is busy.
+	time.Sleep(2 * time.Millisecond)
+	persist("fresh-token")
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected the newer cached session to be preserved")
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil || !ok {
+		t.Fatalf("expected the replacement session to survive, ok=%v error=%v", ok, err)
+	}
+}
+
+// The proven-stale entry itself must still go, or the next invocation reloads
+// it and burns another 2FA code against the same failure.
+func TestDeleteSessionIfMatchesRemovesTheEntryItLoaded(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: "stale-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	if err := PersistSession(&AuthSession{Client: &http.Client{Jar: jar}, UserEmail: "user@example.com"}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the unchanged stale entry to be deleted")
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil {
+		t.Fatalf("LoadCachedSession error: %v", err)
+	} else if ok {
+		t.Fatal("expected the stale cached session to be gone")
+	}
+}
+
+// A caller with no stamp to compare (a freshly logged-in session) keeps the
+// unconditional delete rather than silently skipping it.
+func TestDeleteSessionIfMatchesFallsBackWhenNoStampIsAvailable(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: "stale-token", Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	if err := PersistSession(&AuthSession{Client: &http.Client{Jar: jar}, UserEmail: "user@example.com"}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", &AuthSession{UserEmail: "user@example.com"})
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the unconditional delete without a stamp to compare")
+	}
+	if _, ok, err := LoadCachedSession("user@example.com"); err != nil {
+		t.Fatalf("LoadCachedSession error: %v", err)
+	} else if ok {
+		t.Fatal("expected the cached session to be gone")
+	}
+}
+
+func webTestSessionJar(t *testing.T, token string) http.CookieJar {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New error: %v", err)
+	}
+	targetURL, _ := url.Parse("https://appstoreconnect.apple.com/")
+	jar.SetCookies(targetURL, []*http.Cookie{
+		{Name: "myacinfo", Value: token, Path: "/", Expires: time.Now().Add(24 * time.Hour)},
+	})
+	return jar
+}
+
+const webTestSessionEmail = "user@example.com"
+
+func webTestPersistedSession(t *testing.T, token string, updatedAt time.Time) persistedSession {
+	t.Helper()
+	sess := serializeCookieJar(webTestSessionJar(t, token), webTestSessionEmail)
+	sess.UpdatedAt = updatedAt
+	return sess
+}
+
+// The compare and the delete must happen under one lock: a replacement
+// persisted between them would otherwise be the entry that gets removed.
+func TestDeleteSessionIfMatchesSerializesWithAConcurrentPersist(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	if err := PersistSession(&AuthSession{
+		Client:    &http.Client{Jar: webTestSessionJar(t, "stale-token")},
+		UserEmail: webTestSessionEmail,
+	}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+
+	persistDone := make(chan struct{})
+	persistErr := make(chan error, 1)
+	prev := sessionCompareDeleteBarrier
+	t.Cleanup(func() { sessionCompareDeleteBarrier = prev })
+	sessionCompareDeleteBarrier = func() {
+		go func() {
+			defer close(persistDone)
+			persistErr <- PersistSession(&AuthSession{
+				Client:    &http.Client{Jar: webTestSessionJar(t, "fresh-token")},
+				UserEmail: "user@example.com",
+			})
+		}()
+		// Give the concurrent persist every chance to land inside the window.
+		select {
+		case <-persistDone:
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+
+	if _, err := DeleteSessionIfMatches("user@example.com", loaded); err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+
+	select {
+	case <-persistDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the concurrent persist never completed")
+	}
+	if err := <-persistErr; err != nil {
+		t.Fatalf("concurrent PersistSession error: %v", err)
+	}
+
+	stored, ok, err := readSessionFromFile(webSessionCacheKey("user@example.com"))
+	if err != nil || !ok {
+		t.Fatalf("expected the replacement persisted during the compare-and-delete window to survive, ok=%v error=%v", ok, err)
+	}
+	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "fresh-token" {
+		t.Fatalf("expected the replacement cookie to survive, got %q", got)
+	}
+}
+
+// Two processes configured with different backends need no race at all: a
+// matching file entry must not take out a newer keychain entry.
+func TestDeleteSessionIfMatchesKeepsAFresherKeychainEntry(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	if err := PersistSession(&AuthSession{
+		Client:    &http.Client{Jar: webTestSessionJar(t, "stale-token")},
+		UserEmail: webTestSessionEmail,
+	}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+
+	key := webSessionCacheKey("user@example.com")
+	fresh := webTestPersistedSession(t, "fresh-token", loaded.cachedUpdatedAt.Add(time.Minute))
+	if err := writeSessionToKeychain(key, fresh); err != nil {
+		t.Fatalf("writeSessionToKeychain error: %v", err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the matched file entry to be deleted")
+	}
+	if _, ok, err := readSessionFromFile(key); err != nil || ok {
+		t.Fatalf("expected the matched file entry to be gone, ok=%v error=%v", ok, err)
+	}
+	stored, ok, err := readSessionFromKeychain(key)
+	if err != nil || !ok {
+		t.Fatalf("expected the newer keychain entry to survive, ok=%v error=%v", ok, err)
+	}
+	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "fresh-token" {
+		t.Fatalf("expected the newer keychain cookie to survive, got %q", got)
+	}
+}
+
+// The mirror direction is symmetric: a matching keychain entry must not take
+// out a newer file entry another process persisted.
+func TestDeleteSessionIfMatchesKeepsAFresherFileEntry(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	if err := PersistSession(&AuthSession{
+		Client:    &http.Client{Jar: webTestSessionJar(t, "stale-token")},
+		UserEmail: webTestSessionEmail,
+	}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+
+	key := webSessionCacheKey("user@example.com")
+	fresh := webTestPersistedSession(t, "fresh-token", loaded.cachedUpdatedAt.Add(time.Minute))
+	if err := writeSessionToFile(key, fresh); err != nil {
+		t.Fatalf("writeSessionToFile error: %v", err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the matched keychain entry to be deleted")
+	}
+	if _, ok, err := readSessionFromKeychain(key); err != nil || ok {
+		t.Fatalf("expected the matched keychain entry to be gone, ok=%v error=%v", ok, err)
+	}
+	stored, ok, err := readSessionFromFile(key)
+	if err != nil || !ok {
+		t.Fatalf("expected the newer file entry to survive, ok=%v error=%v", ok, err)
+	}
+	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "fresh-token" {
+		t.Fatalf("expected the newer file cookie to survive, got %q", got)
+	}
+}
+
+// A mirror carrying the same stamp is the same proven-stale session, so it
+// still goes: leaving it behind reloads it on the next invocation.
+func TestDeleteSessionIfMatchesRemovesAMirrorCarryingTheSameStamp(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	if err := PersistSession(&AuthSession{
+		Client:    &http.Client{Jar: webTestSessionJar(t, "stale-token")},
+		UserEmail: webTestSessionEmail,
+	}); err != nil {
+		t.Fatalf("PersistSession error: %v", err)
+	}
+	loaded, ok, err := LoadCachedSession("user@example.com")
+	if err != nil || !ok {
+		t.Fatalf("LoadCachedSession ok=%v error=%v", ok, err)
+	}
+
+	key := webSessionCacheKey("user@example.com")
+	mirror := webTestPersistedSession(t, "stale-token", loaded.cachedUpdatedAt)
+	if err := writeSessionToFile(key, mirror); err != nil {
+		t.Fatalf("writeSessionToFile error: %v", err)
+	}
+
+	deleted, err := DeleteSessionIfMatches("user@example.com", loaded)
+	if err != nil {
+		t.Fatalf("DeleteSessionIfMatches error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected the matched keychain entry to be deleted")
+	}
+	if _, ok, err := readSessionFromKeychain(key); err != nil || ok {
+		t.Fatalf("expected the matched keychain entry to be gone, ok=%v error=%v", ok, err)
+	}
+	if _, ok, err := readSessionFromFile(key); err != nil || ok {
+		t.Fatalf("expected the identically stamped file mirror to be gone, ok=%v error=%v", ok, err)
+	}
 }

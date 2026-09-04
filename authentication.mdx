@@ -391,7 +391,7 @@ asc auth logout --all --confirm
 
 `--all` always attempts config cleanup and also attempts keychain cleanup. If config cleanup succeeds, a keychain cleanup error is treated as non-fatal.
 
-For compatibility, logout still runs without `--confirm` after printing a deprecation warning. Confirmation will be required in 5.0.0.
+`--confirm` is required. Running logout without it is a usage error and no credentials are removed.
 
 ## Security best practices
 
@@ -479,7 +479,7 @@ Ensure your `.p8` file:
 
 ### JWT generation failed
 
-Verify all three credentials are correct:
+Verify the credentials for your key type are correct. Team keys need a key ID, issuer ID, and private key. Individual keys need a key ID and private key with `--key-type individual`; they do not use an issuer ID.
 
 ```bash  theme={null}
 asc auth doctor
@@ -487,7 +487,9 @@ asc auth doctor
 
 Common issues:
 
-* Key ID and Issuer ID don't match the `.p8` file
+* Key ID doesn't match the `.p8` file
+* Issuer ID is wrong for a team key, or was supplied for an individual key
+* `--key-type individual` was omitted for an individual key (the default is `team`)
 * Private key file is corrupted or incomplete
 
 ## Next steps

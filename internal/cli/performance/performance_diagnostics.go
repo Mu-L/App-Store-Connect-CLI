@@ -43,7 +43,6 @@ func PerformanceDiagnosticsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("diagnostics list", flag.ExitOnError)
 
 	buildID := fs.String("build-id", "", "Build ID to list diagnostics for")
-	legacyBuildID := shared.BindDeprecatedStringFlagAlias(fs, "build", "build-id")
 	diagnosticType := fs.String("diagnostic-type", "", "Diagnostic type filter (comma-separated: "+strings.Join(diagnosticSignatureTypeList(), ", ")+")")
 	fields := fs.String("fields", "", "Fields to return (comma-separated: "+strings.Join(diagnosticSignatureFieldList(), ", ")+")")
 	limit := fs.Int("limit", 0, "Limit number of signatures (max 200)")
@@ -63,17 +62,13 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := legacyBuildID.Apply(buildID); err != nil {
-				return err
-			}
-
 			trimmedBuildID := strings.TrimSpace(*buildID)
 			if trimmedBuildID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
 				return shared.MissingRequiredUsageError("--build-id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("performance diagnostics list: --limit must be between 1 and 200")
+				return shared.UsageError("performance diagnostics list: --limit must be between 1 and 200")
 			}
 
 			diagnosticTypes, err := normalizeDiagnosticSignatureTypes(shared.SplitCSVUpper(*diagnosticType))
@@ -153,7 +148,7 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("performance diagnostics view: --limit must be between 1 and 200")
+				return shared.UsageError("performance diagnostics view: --limit must be between 1 and 200")
 			}
 
 			client, err := shared.GetASCClient()

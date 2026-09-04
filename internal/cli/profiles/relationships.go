@@ -111,15 +111,15 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("profiles links certificates: --limit must be between 1 and 200")
+				return shared.UsageError("profiles links certificates: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("profiles links certificates: %w", err)
+				return shared.UsageErrorf("profiles links certificates: %v", err)
 			}
 			if idValue == "" && strings.TrimSpace(*next) != "" {
 				derivedID, err := extractProfileIDFromNextURL(*next, "certificates")
 				if err != nil {
-					return fmt.Errorf("profiles links certificates: %w", err)
+					return shared.UsageErrorf("profiles links certificates: %v", err)
 				}
 				idValue = derivedID
 			}
@@ -196,15 +196,15 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("profiles links devices: --limit must be between 1 and 200")
+				return shared.UsageError("profiles links devices: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("profiles links devices: %w", err)
+				return shared.UsageErrorf("profiles links devices: %v", err)
 			}
 			if idValue == "" && strings.TrimSpace(*next) != "" {
 				derivedID, err := extractProfileIDFromNextURL(*next, "devices")
 				if err != nil {
-					return fmt.Errorf("profiles links devices: %w", err)
+					return shared.UsageErrorf("profiles links devices: %v", err)
 				}
 				idValue = derivedID
 			}
@@ -266,45 +266,4 @@ func extractProfileIDFromNextURL(nextURL string, relationship string) (string, e
 		return "", fmt.Errorf("invalid --next URL")
 	}
 	return parts[2], nil
-}
-
-// DeprecatedProfilesRelationshipsAliasCommand preserves the legacy
-// relationships surface as a hidden compatibility alias.
-func DeprecatedProfilesRelationshipsAliasCommand() *ffcli.Command {
-	fs := flag.NewFlagSet("relationships", flag.ExitOnError)
-
-	return &ffcli.Command{
-		Name:       "relationships",
-		ShortUsage: "asc profiles links <bundle-id|certificates|devices> [flags]",
-		ShortHelp:  "DEPRECATED: use `asc profiles links ...`.",
-		LongHelp:   "Deprecated compatibility alias for `asc profiles links ...`.",
-		FlagSet:    fs,
-		UsageFunc:  shared.DeprecatedUsageFunc,
-		Subcommands: []*ffcli.Command{
-			shared.DeprecatedAliasLeafCommand(
-				ProfilesRelationshipsBundleIDCommand(),
-				"bundle-id",
-				"asc profiles links bundle-id --id \"PROFILE_ID\"",
-				"asc profiles links bundle-id",
-				"Warning: `asc profiles relationships bundle-id` is deprecated. Use `asc profiles links bundle-id`.",
-			),
-			shared.DeprecatedAliasLeafCommand(
-				ProfilesRelationshipsCertificatesCommand(),
-				"certificates",
-				"asc profiles links certificates --id \"PROFILE_ID\" [flags]",
-				"asc profiles links certificates",
-				"Warning: `asc profiles relationships certificates` is deprecated. Use `asc profiles links certificates`.",
-			),
-			shared.DeprecatedAliasLeafCommand(
-				ProfilesRelationshipsDevicesCommand(),
-				"devices",
-				"asc profiles links devices --id \"PROFILE_ID\" [flags]",
-				"asc profiles links devices",
-				"Warning: `asc profiles relationships devices` is deprecated. Use `asc profiles links devices`.",
-			),
-		},
-		Exec: func(ctx context.Context, args []string) error {
-			return flag.ErrHelp
-		},
-	}
 }

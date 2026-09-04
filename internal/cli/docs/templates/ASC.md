@@ -167,7 +167,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `publish` - High-level publish workflows; use `publish testflight` for TestFlight.
 - `release` - Run high-level App Store release workflows.
 - `workflow` - Run multi-step automation workflows.
-- `xcode` - Produce deterministic `.xcarchive` and `.ipa` artifacts with local Xcode build/export helpers (macOS only).
+- `xcode` - Build, archive, and export with local Xcode on macOS; manage project versions; and plan or apply deterministic signing settings. Planning is cross-platform, while apply fails closed on Windows before changing project or receipt files.
 - `distribute` - Plan, execute, inspect, and publish provider-neutral iOS release-testing bundles (experimental).
 - `versions` - Manage App Store versions.
 - `product-pages` - Manage custom product pages and product page experiments.
@@ -178,7 +178,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `pre-orders` - Manage app pre-orders.
 - `localizations` - Manage App Store localization metadata.
 - `metadata` - Pull, validate, push, and keyword-sync canonical metadata workflows.
-- `screenshots` - Upload and manage App Store screenshots; local capture/frame workflow is `[experimental]`.
+- `screenshots` - Upload and manage App Store screenshots; local capture/frame/matrix workflow is `[experimental]`.
 - `background-assets` - Manage background assets.
 - `build-localizations` - Manage build release notes localizations.
 - `sandbox` - Manage sandbox testers in App Store Connect.
@@ -229,7 +229,6 @@ Use `asc <command> --help` for subcommands and flags.
 - `ASC_STOREKIT_BYPASS_KEYCHAIN` - Disable StoreKit keychain usage and use config-backed storage
 - Web password environment variable (`ASC_WEB` + `_PASSWORD`) - Password source for `asc web auth login` and `asc web apps create`
 - `ASC_WEB_SESSION_CACHE`, `ASC_WEB_SESSION_CACHE_DIR`, `ASC_WEB_SESSION_CACHE_BACKEND` - Web-session cache controls for web flows
-- `ASC_IRIS_SESSION_CACHE`, `ASC_IRIS_SESSION_CACHE_DIR` - Deprecated legacy app-create cache settings; imported into the web session cache during the transition window
 - `ASC_SPINNER_DISABLED` - Disable interactive stderr spinner
 - `ASC_SKILLS_AUTO_CHECK` - Automatic skills update checks (`true`/`1`/`yes`/`y`/`on` enables, `false`/`0`/`no`/`n`/`off` disables; default enabled)
 

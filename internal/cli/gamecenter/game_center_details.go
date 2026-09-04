@@ -61,9 +61,6 @@ func GameCenterDetailsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
-	fs.Int("limit", 0, "Deprecated: unsupported for the single Game Center detail; omit --limit")
-	fs.String("next", "", "Deprecated: unsupported for the single Game Center detail; omit --next")
-	fs.Bool("paginate", false, "Deprecated: unsupported for the single Game Center detail; omit --paginate")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -72,29 +69,13 @@ func GameCenterDetailsListCommand() *ffcli.Command {
 		ShortHelp:  "List Game Center details.",
 		LongHelp: `List Game Center details.
 
-Each app has at most one Game Center detail. The legacy --limit, --next, and
---paginate flags remain registered during their deprecation window, but using
-one returns migration guidance because the underlying lookup is not paginated.
+Each app has at most one Game Center detail, so the lookup is not paginated.
 
 Examples:
   asc game-center details list --app "APP_ID"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			deprecatedFlag := ""
-			fs.Visit(func(parsed *flag.Flag) {
-				switch parsed.Name {
-				case "limit", "next", "paginate":
-					if deprecatedFlag == "" {
-						deprecatedFlag = "--" + parsed.Name
-					}
-				}
-			})
-			if deprecatedFlag != "" {
-				message := fmt.Sprintf("%s is deprecated and unsupported because each app has a single Game Center detail; omit %s", deprecatedFlag, deprecatedFlag)
-				return fmt.Errorf("game-center details list: %w", shared.UsageError(message))
-			}
-
 			resolvedAppID := shared.ResolveAppID(*appID)
 			if resolvedAppID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
@@ -189,7 +170,6 @@ func GameCenterDetailsCreateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
-	challengeEnabled := fs.String("challenge-enabled", "", "Deprecated: no longer supported by App Store Connect")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -207,12 +187,6 @@ Examples:
 			if resolvedAppID == "" {
 				fmt.Fprintln(os.Stderr, "Error: --app is required (or set ASC_APP_ID)")
 				return shared.MissingRequiredUsageError("--app")
-			}
-
-			ceVal := strings.TrimSpace(*challengeEnabled)
-			if ceVal != "" {
-				fmt.Fprintln(os.Stderr, "Error: --challenge-enabled is deprecated and no longer supported by App Store Connect")
-				return flag.ErrHelp
 			}
 
 			client, err := shared.GetASCClient()
@@ -238,7 +212,6 @@ func GameCenterDetailsUpdateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 
 	detailID := fs.String("id", "", "Game Center detail ID")
-	challengeEnabled := fs.String("challenge-enabled", "", "Deprecated: no longer supported by App Store Connect")
 	gameCenterGroupID := fs.String("game-center-group-id", "", "Game Center group ID to associate")
 	defaultLeaderboardID := fs.String("default-leaderboard-id", "", "Default leaderboard ID")
 	output := shared.BindOutputFlags(fs)
@@ -263,12 +236,6 @@ Examples:
 
 			var rels *asc.GameCenterDetailUpdateRelationships
 			hasUpdate := false
-
-			ceVal := strings.TrimSpace(*challengeEnabled)
-			if ceVal != "" {
-				fmt.Fprintln(os.Stderr, "Error: --challenge-enabled is deprecated and no longer supported by App Store Connect")
-				return flag.ErrHelp
-			}
 
 			gcGroupID := strings.TrimSpace(*gameCenterGroupID)
 			if gcGroupID != "" {
@@ -368,10 +335,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details app-versions list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details app-versions list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details app-versions list: %w", err)
+				return shared.UsageErrorf("game-center details app-versions list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -536,10 +503,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details achievements-v2 list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details achievements-v2 list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details achievements-v2 list: %w", err)
+				return shared.UsageErrorf("game-center details achievements-v2 list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -635,10 +602,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details leaderboards-v2 list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details leaderboards-v2 list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details leaderboards-v2 list: %w", err)
+				return shared.UsageErrorf("game-center details leaderboards-v2 list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -734,10 +701,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details leaderboard-sets-v2 list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details leaderboard-sets-v2 list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details leaderboard-sets-v2 list: %w", err)
+				return shared.UsageErrorf("game-center details leaderboard-sets-v2 list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -833,10 +800,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details achievement-releases list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details achievement-releases list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details achievement-releases list: %w", err)
+				return shared.UsageErrorf("game-center details achievement-releases list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -932,10 +899,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details leaderboard-releases list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details leaderboard-releases list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details leaderboard-releases list: %w", err)
+				return shared.UsageErrorf("game-center details leaderboard-releases list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -1031,10 +998,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("game-center details leaderboard-set-releases list: --limit must be between 1 and 200")
+				return shared.UsageError("game-center details leaderboard-set-releases list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("game-center details leaderboard-set-releases list: %w", err)
+				return shared.UsageErrorf("game-center details leaderboard-set-releases list: %v", err)
 			}
 
 			id := strings.TrimSpace(*detailID)
@@ -1165,10 +1132,10 @@ Examples:
 
 func runDetailsMetrics(ctx context.Context, name string, detailID *string, granularity *string, groupBy *string, filterResult *string, sort *string, limit *int, next *string, paginate *bool, output *string, pretty *bool, fetch func(client *asc.Client, ctx context.Context, id string, opts ...asc.GCMatchmakingMetricsOption) (*asc.GameCenterMetricsResponse, error)) error {
 	if *limit != 0 && (*limit < 1 || *limit > 200) {
-		return fmt.Errorf("game-center details metrics %s: --limit must be between 1 and 200", name)
+		return shared.UsageErrorf("game-center details metrics %s: --limit must be between 1 and 200", name)
 	}
 	if err := shared.ValidateNextURL(*next); err != nil {
-		return fmt.Errorf("game-center details metrics %s: %w", name, err)
+		return shared.UsageErrorf("game-center details metrics %s: %v", name, err)
 	}
 
 	id := strings.TrimSpace(*detailID)

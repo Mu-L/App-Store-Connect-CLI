@@ -81,7 +81,6 @@ func EncryptionDeclarationsListCommand() *ffcli.Command {
 
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID)")
 	builds := fs.String("build-id", "", "Filter by build IDs (comma-separated)")
-	legacyBuilds := shared.BindDeprecatedStringFlagAlias(fs, "build", "build-id")
 	fields := fs.String("fields", "", "Fields to include: "+strings.Join(encryptionDeclarationFieldList(), ", "))
 	documentFields := fs.String("document-fields", "", "Document fields to include: "+strings.Join(encryptionDocumentFieldList(), ", "))
 	include := fs.String("include", "", "Include relationships: "+strings.Join(encryptionDeclarationIncludeList(), ", "))
@@ -104,30 +103,27 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := legacyBuilds.Apply(builds); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("encryption declarations list: --limit must be between 1 and 200")
+				return shared.UsageError("encryption declarations list: --limit must be between 1 and 200")
 			}
 			if *buildLimit != 0 && (*buildLimit < 1 || *buildLimit > 50) {
-				return fmt.Errorf("encryption declarations list: --build-limit must be between 1 and 50")
+				return shared.UsageError("encryption declarations list: --build-limit must be between 1 and 50")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("encryption declarations list: %w", err)
+				return shared.UsageErrorf("encryption declarations list: %v", err)
 			}
 
 			fieldsValue, err := normalizeEncryptionDeclarationFields(*fields)
 			if err != nil {
-				return fmt.Errorf("encryption declarations list: %w", err)
+				return shared.UsageErrorf("encryption declarations list: %v", err)
 			}
 			documentFieldsValue, err := normalizeEncryptionDocumentFields(*documentFields, "--document-fields")
 			if err != nil {
-				return fmt.Errorf("encryption declarations list: %w", err)
+				return shared.UsageErrorf("encryption declarations list: %v", err)
 			}
 			includeValue, err := normalizeEncryptionDeclarationInclude(*include)
 			if err != nil {
-				return fmt.Errorf("encryption declarations list: %w", err)
+				return shared.UsageErrorf("encryption declarations list: %v", err)
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
@@ -212,20 +208,20 @@ Examples:
 				return shared.MissingRequiredUsageError("--id")
 			}
 			if *buildLimit != 0 && (*buildLimit < 1 || *buildLimit > 50) {
-				return fmt.Errorf("encryption declarations view: --build-limit must be between 1 and 50")
+				return shared.UsageError("encryption declarations view: --build-limit must be between 1 and 50")
 			}
 
 			fieldsValue, err := normalizeEncryptionDeclarationFields(*fields)
 			if err != nil {
-				return fmt.Errorf("encryption declarations view: %w", err)
+				return shared.UsageErrorf("encryption declarations view: %v", err)
 			}
 			documentFieldsValue, err := normalizeEncryptionDocumentFields(*documentFields, "--document-fields")
 			if err != nil {
-				return fmt.Errorf("encryption declarations view: %w", err)
+				return shared.UsageErrorf("encryption declarations view: %v", err)
 			}
 			includeValue, err := normalizeEncryptionDeclarationInclude(*include)
 			if err != nil {
-				return fmt.Errorf("encryption declarations view: %w", err)
+				return shared.UsageErrorf("encryption declarations view: %v", err)
 			}
 
 			client, err := shared.GetASCClient()
@@ -546,7 +542,6 @@ func EncryptionDeclarationsAssignBuildsCommand() *ffcli.Command {
 
 	declarationID := fs.String("id", "", "Encryption declaration ID (required)")
 	builds := shared.BindOnceCSVFlag(fs, "build-id", "Build IDs to assign (comma-separated)")
-	legacyBuilds := shared.BindDeprecatedStringFlagAlias(fs, "build", "build-id")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -561,18 +556,13 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			buildValue := builds.String()
-			if err := legacyBuilds.Apply(&buildValue); err != nil {
-				return err
-			}
-
 			declarationValue := strings.TrimSpace(*declarationID)
 			if declarationValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --id is required")
 				return shared.MissingRequiredUsageError("--id")
 			}
 
-			buildIDs := shared.SplitCSV(buildValue)
+			buildIDs := shared.SplitCSV(builds.String())
 			if len(buildIDs) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
 				return shared.MissingRequiredUsageError("--build-id")
@@ -651,7 +641,7 @@ Examples:
 
 			fieldsValue, err := normalizeEncryptionDocumentFields(*fields, "--fields")
 			if err != nil {
-				return fmt.Errorf("encryption documents view: %w", err)
+				return shared.UsageErrorf("encryption documents view: %v", err)
 			}
 
 			client, err := shared.GetASCClient()

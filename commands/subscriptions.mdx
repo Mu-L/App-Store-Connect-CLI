@@ -72,9 +72,9 @@ asc subscriptions groups delete \
 
 ### Version-Scoped Group Localizations
 
-Manage group display names through a subscription group version. The old
-group-scoped `asc subscriptions groups localizations ...` commands are
-deprecated; create or resolve a group version and use its version ID.
+Manage group display names through a subscription group version. Create or
+resolve a group version and use its version ID; the product-scoped v1
+`asc subscriptions groups localizations ...` commands were removed in 5.0.0.
 
 ```bash  theme={null}
 # Create localization
@@ -99,9 +99,9 @@ asc subscriptions groups versions localizations delete \
   --confirm
 ```
 
-The deprecated `asc subscriptions groups localizations sync` command has no
-one-command version-scoped replacement. Reconcile metadata with the group
-version-localization `list`, `create`, `update`, and `delete` commands.
+There is no one-command sync for group localizations. Reconcile metadata with
+the group version-localization `list`, `create`, `update`, and `delete`
+commands.
 
 ### Subscription Group Versions (API 4.4.1)
 
@@ -236,11 +236,10 @@ versions linkage accepts only `--group-id`; the localizations linkage accepts
 only `--version-id`.
 
 <Note>
-  `asc subscriptions groups localizations ...` is the deprecated v1,
-  group-scoped compatibility workflow. Use
   `asc subscriptions groups versions localizations ...` with a group version
-  ID for the v2 resource. The deprecated commands are not redirected or
-  removed during this transition.
+  ID is the only localization workflow for subscription groups. The
+  group-scoped v1 `asc subscriptions groups localizations ...` commands were
+  removed in 5.0.0 and now fail as unknown commands.
 </Note>
 
 ## Subscriptions
@@ -336,9 +335,9 @@ asc subscriptions delete --id "SUB_ID" --confirm
 
 App Store Connect API 4.4.1 adds version-scoped metadata for subscriptions.
 A subscription version ID is distinct from a subscription product ID. The
-old `asc subscriptions localizations` and `asc subscriptions images` command
-trees remain product-scoped v1 compatibility workflows, but are deprecated.
-Use the commands below for new version-scoped automation.
+product-scoped v1 `asc subscriptions localizations ...` and
+`asc subscriptions images ...` command trees were removed in 5.0.0; use the
+version-scoped commands below.
 
 <Warning>
   Resolve versions before creating them. Apple exposes no subscription-version
@@ -711,6 +710,19 @@ Optional selectors include `--territory`, `--subscription-id`, `--fields`,
 `--include territory`, `--territory-fields currency`, `--limit`, and
 `--paginate`.
 
+This is the public API-key command and the default for scripts and CI. It
+prints Apple's unmodified JSON:API collection, so public responses can include
+`proceeds`, `proceedsYear2`, relationship links, included territory currency,
+and pagination metadata. It does not emit the web command's computed
+`status`/`available` fields or its normalized `missingTerritories` result.
+
+For Apple's web-session `/iris` MONTHLY matrix, especially when an equalization
+failure needs the normalized missing-territory diagnostic, use
+`asc web subscriptions pricing adjusted-equalizations view` instead. That
+command requires a web session and does not require
+`--upfront-price-point-id`; its output shape and 409 handling are intentionally
+different.
+
 ## Availability
 
 Control which territories can purchase your subscriptions.
@@ -719,6 +731,7 @@ Control which territories can purchase your subscriptions.
   The underlying Subscription availability resource is deprecated in App Store
   Connect API 4.4 in favor of Subscription plan availability. These commands
   keep working for now; for plan-based availability use
+  `asc subscriptions pricing plan-availability` or
   `asc subscriptions pricing monthly-commitment`.
 </Note>
 
@@ -754,6 +767,50 @@ asc subscriptions pricing availability available-territories \
   --availability-id "AVAILABILITY_ID" \
   --paginate
 ```
+
+### Plan Availability
+
+`subscriptionPlanAvailabilities` is the App Store Connect API 4.4 replacement
+for the deprecated Subscription availability resource. Each subscription has one
+plan availability per billing plan: `UPFRONT` and `MONTHLY`.
+
+```bash  theme={null}
+asc subscriptions pricing plan-availability show \
+  --subscription-id "SUB_ID"
+
+asc subscriptions pricing plan-availability set \
+  --subscription-id "SUB_ID" \
+  --plan-type UPFRONT \
+  --territories "United States,Canada" \
+  --confirm
+```
+
+`show` prints `GET /v1/subscriptions/{id}/planAvailabilities` with
+`include=availableTerritories`. Apple caps the included linkages at 50 per plan
+availability and reports the real count in the response paging metadata. When
+that cap truncates the included list, `show` warns on stderr; do not pass the
+truncated include to `set --territories`. `set` reads the complete relationship
+before replacing it.
+
+`set` is a desired-state write. The complete `--territories` list replaces the
+plan's territories: territories missing from the list are removed and new ones
+are added. Before writing, the CLI reads the plan's current territories through
+`GET /v1/subscriptionPlanAvailabilities/{id}/relationships/availableTerritories`
+and reports the diff; when the plan already matches the request it makes no
+write and reports `changed: false`. After writing it re-reads the territories and
+the plan availability resource and fails if they do not match the request.
+
+**Flags:**
+
+* `--plan-type` - Required: `UPFRONT` or `MONTHLY`
+* `--territories` - Required: the complete desired territory list
+* `--available-in-new-territories` - `UPFRONT` plans only
+* `--confirm` - Required, because the write can remove territories
+
+Emptying availability is rejected; removing a subscription from sale runs
+through `asc web subscriptions availability remove-from-sale`. USA and Singapore
+are removed from `MONTHLY` requests with a warning because Apple excludes those
+storefronts.
 
 ### Monthly With 12-Month Commitment
 
@@ -816,11 +873,6 @@ asc subscriptions offers promotional list \
   --subscription-id "SUBSCRIPTION_SELECTOR" \
   --subscription-fields versions
 
-# Include subscription-group versions with deprecated v1 group localizations
-asc subscriptions groups localizations list \
-  --group-id "GROUP_ID" \
-  --group-fields versions
-
 # Include adjusted equalizations with offer prices
 asc subscriptions offers promotional prices \
   --id "OFFER_ID" \
@@ -834,8 +886,8 @@ asc subscriptions pricing price-points view \
 
 Related sparse fields automatically add the required include relationship. Do
 not combine them with `--next`; the next-page URL already contains the server's
-query state. The product-scoped v1 localization and image commands remain
-deprecated: use the version-scoped commands below for writes and new workflows.
+query state. Use the version-scoped commands below for localization and image
+writes.
 
 Monthly with 12-Month Commitment is available only outside the United States and
 Singapore, requires devices on OS version 26.4 or later, excludes watchOS, and
@@ -844,8 +896,9 @@ requires apps built with SDK 26.5 or later.
 ## Version-Scoped Localizations
 
 Manage subscription display names and descriptions through a subscription
-version. The product-scoped `asc subscriptions localizations ...` commands are
-deprecated. Create or resolve a subscription version, then use its version ID.
+version. Create or resolve a subscription version, then use its version ID; the
+product-scoped `asc subscriptions localizations ...` commands were removed in
+5.0.0.
 Always keep a non-empty description, and do not delete the version's final
 required localization; these live-service rules are stricter than the nullable
 OpenAPI request schema.
@@ -873,15 +926,15 @@ asc subscriptions versions localizations delete \
   --confirm
 ```
 
-The deprecated `asc subscriptions localizations sync` command has no
-one-command version-scoped replacement. Reconcile metadata with the
-version-localization `list`, `create`, `update`, and `delete` commands.
+There is no one-command sync for subscription localizations. Reconcile metadata
+with the version-localization `list`, `create`, `update`, and `delete`
+commands.
 
 ## Version-Scoped Promotional Images
 
-Upload promotional images for subscription versions. The product-scoped
-`asc subscriptions images ...` commands are deprecated; create or resolve a
-subscription version and use the version image resource.
+Upload promotional images for subscription versions. Create or resolve a
+subscription version and use the version image resource; the product-scoped
+`asc subscriptions images ...` commands were removed in 5.0.0.
 
 ```bash  theme={null}
 # Upload image
@@ -907,9 +960,10 @@ asc subscriptions versions images delete --id "IMAGE_ID" --confirm
 
 Offer discounted pricing to new subscribers.
 
-`--territory ALL` remains accepted as a deprecated compatibility spelling for
-`--all-territories` and prints a migration warning. Use `--all-territories` in
-new scripts; combining both spellings is invalid.
+Use `--all-territories` to create the offer in every available territory.
+`--territory` accepts a single territory only; `--territory ALL` is rejected as
+an invalid territory, and combining `--territory` with `--all-territories` is
+invalid.
 
 `--dry-run` prints a summary and creates nothing, in either territory mode.
 Single-territory dry runs normalize the territory locally and make no network

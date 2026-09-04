@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 )
 
 func runPhase38InvalidNextURLCases(
@@ -57,22 +59,10 @@ func runPhase38InvalidNextURLCases(
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			expectedWarning := ""
-			if len(argsPrefix) > 0 {
-				switch argsPrefix[0] {
-				case "feedback":
-					expectedWarning = feedbackRootDeprecationWarning
-				case "crashes":
-					expectedWarning = crashesRootDeprecationWarning
-				}
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
 			}
-			if expectedWarning == "" {
-				if stderr != "" {
-					t.Fatalf("expected empty stderr, got %q", stderr)
-				}
-			} else {
-				requireStderrContainsWarning(t, stderr, expectedWarning)
-			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -138,21 +128,8 @@ func runPhase38PaginateFromNext(
 		}
 	})
 
-	expectedWarning := ""
-	if len(argsPrefix) > 0 {
-		switch argsPrefix[0] {
-		case "feedback":
-			expectedWarning = feedbackRootDeprecationWarning
-		case "crashes":
-			expectedWarning = crashesRootDeprecationWarning
-		}
-	}
-	if expectedWarning == "" {
-		if stderr != "" {
-			t.Fatalf("expected empty stderr, got %q", stderr)
-		}
-	} else {
-		requireStderrContainsWarning(t, stderr, expectedWarning)
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
 	for _, id := range wantIDs {
 		needle := `"id":"` + id + `"`

@@ -48,7 +48,7 @@ func BuildsMetricsBetaUsagesCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "beta-usages",
-		ShortUsage: "asc builds metrics beta-usages (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM]) [flags]",
+		ShortUsage: "asc builds metrics beta-usages (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION]) [flags]",
 		ShortHelp:  "Fetch beta build usage metrics for a build.",
 		LongHelp: `Fetch beta build usage metrics for a build.
 
@@ -59,15 +59,12 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				fmt.Fprintln(os.Stderr, "Error: --limit must be between 1 and 200")
 				return flag.ErrHelp
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("builds metrics beta-usages: %w", err)
+				return shared.UsageErrorf("builds metrics beta-usages: %v", err)
 			}
 
 			nextValue := strings.TrimSpace(*next)

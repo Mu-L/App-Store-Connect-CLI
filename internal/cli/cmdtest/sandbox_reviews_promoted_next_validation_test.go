@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 )
 
 func TestSandboxListRejectsInvalidNextURL(t *testing.T) {
@@ -49,7 +51,10 @@ func TestSandboxListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			assertOnlyDeprecatedCommandWarnings(t, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -108,7 +113,7 @@ func TestSandboxListPaginateFromNext(t *testing.T) {
 		}
 	})
 
-	assertOnlyDeprecatedCommandWarnings(t, stderr)
+	assertEmptyStderr(t, stderr)
 	if !strings.Contains(stdout, `"id":"sandbox-next-1"`) || !strings.Contains(stdout, `"id":"sandbox-next-2"`) {
 		t.Fatalf("expected paginated sandbox testers in output, got %q", stdout)
 	}
@@ -154,9 +159,10 @@ func TestPromotedPurchasesListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if stderr != "" {
-				t.Fatalf("expected empty stderr, got %q", stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
 			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -264,9 +270,10 @@ func TestReviewsListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if stderr != "" {
-				t.Fatalf("expected empty stderr, got %q", stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
 			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -374,7 +381,10 @@ func TestReviewsSummarizationsRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			assertOnlyDeprecatedCommandWarnings(t, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -434,7 +444,7 @@ func TestReviewsSummarizationsPaginateFromNextWithoutApp(t *testing.T) {
 		}
 	})
 
-	assertOnlyDeprecatedCommandWarnings(t, stderr)
+	assertEmptyStderr(t, stderr)
 	if !strings.Contains(stdout, `"id":"summary-next-1"`) || !strings.Contains(stdout, `"id":"summary-next-2"`) {
 		t.Fatalf("expected paginated summarizations in output, got %q", stdout)
 	}

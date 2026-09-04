@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
 )
 
 func TestPassTypeIDsListRejectsInvalidNextURL(t *testing.T) {
@@ -49,7 +51,10 @@ func TestPassTypeIDsListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			assertOnlyDeprecatedCommandWarnings(t, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -108,7 +113,7 @@ func TestPassTypeIDsListPaginateFromNext(t *testing.T) {
 		}
 	})
 
-	assertOnlyDeprecatedCommandWarnings(t, stderr)
+	assertEmptyStderr(t, stderr)
 	if !strings.Contains(stdout, `"id":"pass-next-1"`) || !strings.Contains(stdout, `"id":"pass-next-2"`) {
 		t.Fatalf("expected paginated pass type IDs in output, got %q", stdout)
 	}
@@ -154,7 +159,10 @@ func TestMerchantIDsListRejectsInvalidNextURL(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			assertOnlyDeprecatedCommandWarnings(t, stderr)
+			if got := rootcmd.ExitCodeFromError(runErr); got != rootcmd.ExitUsage {
+				t.Fatalf("exit code = %d, want %d", got, rootcmd.ExitUsage)
+			}
+			assertUsageDiagnosticFirstLine(t, stderr, test.wantErr)
 		})
 	}
 }
@@ -213,7 +221,7 @@ func TestMerchantIDsListPaginateFromNext(t *testing.T) {
 		}
 	})
 
-	assertOnlyDeprecatedCommandWarnings(t, stderr)
+	assertEmptyStderr(t, stderr)
 	if !strings.Contains(stdout, `"id":"merchant-next-1"`) || !strings.Contains(stdout, `"id":"merchant-next-2"`) {
 		t.Fatalf("expected paginated merchant IDs in output, got %q", stdout)
 	}

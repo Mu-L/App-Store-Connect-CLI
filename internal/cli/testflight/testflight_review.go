@@ -69,13 +69,13 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.WithDiagnostic(
-					shared.NewValidationError(fmt.Errorf("testflight review view: --limit must be between 1 and 200")),
+					shared.UsageErrorCtx(ctx, "testflight review view: --limit must be between 1 and 200"),
 					shared.DiagnosticInvalidInput,
 					"--limit",
 				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("testflight review view: %w", err)
+				return shared.UsageErrorfCtx(ctx, "testflight review view: %v", err)
 			}
 
 			resolvedAppID := shared.ResolveAppID(*appID)
@@ -223,7 +223,7 @@ Examples:
 func TestFlightReviewSubmitCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("submit", flag.ExitOnError)
 
-	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID")
+	buildID := fs.String("build-id", "", "Build ID")
 	confirm := fs.Bool("confirm", false, "Confirm submission")
 	output := shared.BindOutputFlags(fs)
 
@@ -238,9 +238,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			if strings.TrimSpace(*buildID) == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
 				return shared.MissingRequiredUsageError("--build-id")
@@ -364,7 +361,7 @@ Examples:
 func TestFlightReviewSubmissionsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("submissions list", flag.ExitOnError)
 
-	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID to filter")
+	buildID := fs.String("build-id", "", "Build ID to filter")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
@@ -382,9 +379,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			buildValue := strings.TrimSpace(*buildID)
 			if buildValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --build-id is required")
@@ -392,13 +386,13 @@ Examples:
 			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.WithDiagnostic(
-					shared.NewValidationError(fmt.Errorf("testflight review submissions list: --limit must be between 1 and 200")),
+					shared.UsageErrorCtx(ctx, "testflight review submissions list: --limit must be between 1 and 200"),
 					shared.DiagnosticInvalidInput,
 					"--limit",
 				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("testflight review submissions list: %w", err)
+				return shared.UsageErrorfCtx(ctx, "testflight review submissions list: %v", err)
 			}
 
 			client, err := shared.GetASCClient()
@@ -558,7 +552,7 @@ Examples:
 func TestFlightBetaDetailsGetCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("view", flag.ExitOnError)
 
-	buildID, legacyBuildID := bindBuildIDFlag(fs, "Build ID")
+	buildID := fs.String("build-id", "", "Build ID")
 	output := shared.BindOutputFlags(fs)
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
@@ -577,18 +571,15 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := applyLegacyBuildIDAlias(buildID, legacyBuildID); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.WithDiagnostic(
-					shared.NewValidationError(fmt.Errorf("testflight beta-details view: --limit must be between 1 and 200")),
+					shared.UsageErrorCtx(ctx, "testflight beta-details view: --limit must be between 1 and 200"),
 					shared.DiagnosticInvalidInput,
 					"--limit",
 				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("testflight beta-details view: %w", err)
+				return shared.UsageErrorfCtx(ctx, "testflight beta-details view: %v", err)
 			}
 
 			trimmedBuildID := strings.TrimSpace(*buildID)
@@ -692,7 +683,6 @@ func TestFlightBetaDetailsUpdateCommand() *ffcli.Command {
 
 	id := fs.String("id", "", "Build beta detail ID")
 	autoNotify := fs.Bool("auto-notify", false, "Enable auto-notify for external testers")
-	externalTesting := fs.Bool("external-testing", false, "DEPRECATED: unsupported; use builds add-groups or builds remove-groups")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -704,10 +694,9 @@ func TestFlightBetaDetailsUpdateCommand() *ffcli.Command {
 Examples:
   asc testflight beta-details update --id "DETAIL_ID" --auto-notify
 
-Deprecated:
-  --external-testing is retained only for migration and always exits before HTTP.
-  Use asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm to enable external distribution.
-  Use asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm to remove group assignments.`,
+External distribution is managed through group assignment:
+  asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm
+  asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -715,21 +704,6 @@ Deprecated:
 			fs.Visit(func(f *flag.Flag) {
 				visited[f.Name] = true
 			})
-			if visited["external-testing"] {
-				fmt.Fprintln(os.Stderr, "Warning: `--external-testing` is deprecated and cannot be applied safely; App Store Connect does not support editing `externalBuildState`.")
-				if *externalTesting {
-					return shared.WithDiagnostic(
-						shared.UsageError(`--external-testing=true cannot select a beta group or safely infer review submission. Use asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm.`),
-						shared.DiagnosticInvalidInput,
-						"--external-testing",
-					)
-				}
-				return shared.WithDiagnostic(
-					shared.UsageError(`--external-testing=false cannot identify which beta groups to remove. Use asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm.`),
-					shared.DiagnosticInvalidInput,
-					"--external-testing",
-				)
-			}
 
 			detailID := strings.TrimSpace(*id)
 			if detailID == "" {
@@ -865,18 +839,18 @@ Examples:
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.WithDiagnostic(
-					shared.NewValidationError(fmt.Errorf("testflight recruitment options: --limit must be between 1 and 200")),
+					shared.UsageErrorCtx(ctx, "testflight recruitment options: --limit must be between 1 and 200"),
 					shared.DiagnosticInvalidInput,
 					"--limit",
 				)
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("testflight recruitment options: %w", err)
+				return shared.UsageErrorfCtx(ctx, "testflight recruitment options: %v", err)
 			}
 
 			fieldsValue, err := normalizeBetaRecruitmentCriterionOptionsFields(*fields)
 			if err != nil {
-				return fmt.Errorf("testflight recruitment options: %w", err)
+				return usageErrorFromValidation(ctx, "testflight recruitment options: %v", err)
 			}
 
 			client, err := shared.GetASCClient()
@@ -930,7 +904,7 @@ Examples:
 
 			filterValues, err := parseDeviceFamilyOsVersionFilters(*filters)
 			if err != nil {
-				return fmt.Errorf("testflight recruitment set: %w", err)
+				return usageErrorFromValidation(ctx, "testflight recruitment set: %v", err)
 			}
 			if len(filterValues) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: --os-version-filter is required")

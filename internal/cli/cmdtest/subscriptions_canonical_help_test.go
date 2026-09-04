@@ -2,6 +2,8 @@ package cmdtest
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -280,9 +282,14 @@ func TestSubscriptionsHelpShowsCanonicalCommerceSubcommands(t *testing.T) {
 		return
 	}
 	reviewUsage := reviewCmd.UsageFunc(reviewCmd)
-	for _, expected := range []string{"screenshots", "app-store-screenshot", "submit", "submit-group"} {
+	for _, expected := range []string{"screenshots", "app-store-screenshot"} {
 		if !usageListsSubcommand(reviewUsage, expected) {
 			t.Fatalf("expected subscriptions review help to list %s, got %q", expected, reviewUsage)
+		}
+	}
+	for _, removed := range []string{"submit", "submit-group"} {
+		if usageListsSubcommand(reviewUsage, removed) {
+			t.Fatalf("expected subscriptions review help to drop removed %s shim, got %q", removed, reviewUsage)
 		}
 	}
 
@@ -357,6 +364,11 @@ func TestCanonicalWrapperErrorsUseCanonicalPaths(t *testing.T) {
 		name    string
 		args    []string
 		wantErr string
+		// usageError marks a pre-request flag check converted to a usage
+		// error (#518). Such a check reports itself while the command is
+		// still running, so the canonical path must already be in the
+		// printed diagnostic rather than only in the returned error.
+		usageError bool
 	}{
 		{
 			name:    "subscriptions offers win-back next validation",
@@ -364,14 +376,16 @@ func TestCanonicalWrapperErrorsUseCanonicalPaths(t *testing.T) {
 			wantErr: "subscriptions offers win-back list: --next must be an App Store Connect URL",
 		},
 		{
-			name:    "subscriptions promoted-purchases next validation",
-			args:    []string{"subscriptions", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
-			wantErr: "subscriptions promoted-purchases list: --next must be an App Store Connect URL",
+			name:       "subscriptions promoted-purchases next validation",
+			args:       []string{"subscriptions", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
+			wantErr:    "subscriptions promoted-purchases list: --next must be an App Store Connect URL",
+			usageError: true,
 		},
 		{
-			name:    "iap promoted-purchases next validation",
-			args:    []string{"iap", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
-			wantErr: "iap promoted-purchases list: --next must be an App Store Connect URL",
+			name:       "iap promoted-purchases next validation",
+			args:       []string{"iap", "promoted-purchases", "list", "--next", "http://api.appstoreconnect.apple.com/v1/apps/app-1/promotedPurchases?cursor=AQ"},
+			wantErr:    "iap promoted-purchases list: --next must be an App Store Connect URL",
+			usageError: true,
 		},
 		{
 			name:    "subscriptions offers offer-codes values auth error",
@@ -379,9 +393,10 @@ func TestCanonicalWrapperErrorsUseCanonicalPaths(t *testing.T) {
 			wantErr: "subscriptions offers offer-codes values:",
 		},
 		{
-			name:    "subscriptions pricing prices next validation",
-			args:    []string{"subscriptions", "pricing", "prices", "list", "--next", "http://api.appstoreconnect.apple.com/v1/subscriptions/sub-1/prices?cursor=AQ"},
-			wantErr: "subscriptions pricing prices list: --next must be an App Store Connect URL",
+			name:       "subscriptions pricing prices next validation",
+			args:       []string{"subscriptions", "pricing", "prices", "list", "--next", "http://api.appstoreconnect.apple.com/v1/subscriptions/sub-1/prices?cursor=AQ"},
+			wantErr:    "subscriptions pricing prices list: --next must be an App Store Connect URL",
+			usageError: true,
 		},
 	}
 
@@ -407,6 +422,15 @@ func TestCanonicalWrapperErrorsUseCanonicalPaths(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
+			if test.usageError {
+				if !errors.Is(runErr, flag.ErrHelp) {
+					t.Fatalf("expected flag.ErrHelp, got %v", runErr)
+				}
+				if !strings.Contains(stderr, "Error: "+test.wantErr) {
+					t.Fatalf("expected stderr to contain %q, got %q", "Error: "+test.wantErr, stderr)
+				}
+				return
+			}
 			if stderr != "" {
 				t.Fatalf("expected empty stderr, got %q", stderr)
 			}
@@ -414,7 +438,7 @@ func TestCanonicalWrapperErrorsUseCanonicalPaths(t *testing.T) {
 	}
 }
 
-func TestSubscriptionsDocsOnlyMentionDeprecatedIntroductoryOfferAliasInMigrationNote(t *testing.T) {
+func TestSubscriptionsDocsOnlyMentionRemovedIntroductoryOfferAliasAsRejected(t *testing.T) {
 	docsPath := filepath.Join("..", "..", "..", "commands", "subscriptions.mdx")
 	docs, err := os.ReadFile(docsPath)
 	if err != nil {
@@ -422,12 +446,15 @@ func TestSubscriptionsDocsOnlyMentionDeprecatedIntroductoryOfferAliasInMigration
 	}
 
 	content := string(docs)
-	const deprecatedAlias = "--territory ALL"
-	if got := strings.Count(content, deprecatedAlias); got != 1 {
-		t.Fatalf("expected subscriptions docs to mention deprecated alias once in the migration note, got %d occurrences", got)
+	const removedAlias = "--territory ALL"
+	if got := strings.Count(content, removedAlias); got != 1 {
+		t.Fatalf("expected subscriptions docs to mention the removed alias once as rejected input, got %d occurrences", got)
 	}
-	if !strings.Contains(content, "`--territory ALL` remains accepted as a deprecated compatibility spelling") {
-		t.Fatal("expected subscriptions docs to retain the deprecated alias migration note")
+	if !strings.Contains(content, "`--territory ALL` is rejected as\nan invalid territory") {
+		t.Fatal("expected subscriptions docs to describe --territory ALL as rejected")
+	}
+	if strings.Contains(content, "remains accepted as a deprecated compatibility spelling") {
+		t.Fatal("subscriptions docs still present --territory ALL as an accepted compatibility spelling")
 	}
 }
 

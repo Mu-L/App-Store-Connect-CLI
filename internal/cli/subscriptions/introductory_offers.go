@@ -83,10 +83,10 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
-				return fmt.Errorf("subscriptions introductory-offers list: --limit must be between 1 and 200")
+				return shared.UsageErrorCtx(ctx, "subscriptions introductory-offers list: --limit must be between 1 and 200")
 			}
 			if err := shared.ValidateNextURL(*next); err != nil {
-				return fmt.Errorf("subscriptions introductory-offers list: %w", err)
+				return shared.UsageErrorfCtx(ctx, "subscriptions introductory-offers list: %v", err)
 			}
 			if err := validateNextExclusiveFlags(fs, *next, "subscription-id", "app", "limit", "subscription-fields", "price-point-fields"); err != nil {
 				return err
@@ -353,16 +353,12 @@ Timeouts:
 				)
 			}
 
-			legacyAllTerritories := territoryProvided && strings.EqualFold(territoryID, "ALL")
-			useAllTerritories := *allTerritories || legacyAllTerritories
+			useAllTerritories := *allTerritories
 			if useAllTerritories && strings.TrimSpace(*pricePoint) != "" {
-				fmt.Fprintln(os.Stderr, "Error: --price-point cannot be used with --all-territories or --territory ALL")
+				fmt.Fprintln(os.Stderr, "Error: --price-point cannot be used with --all-territories")
 				return flag.ErrHelp
 			}
-			if legacyAllTerritories {
-				fmt.Fprintln(os.Stderr, "Warning: `--territory ALL` is deprecated. Use `--all-territories`.")
-				territoryID = ""
-			} else if territoryProvided {
+			if territoryProvided {
 				territoryID, err = ascterritory.Normalize(territoryID)
 				if err != nil {
 					return subscriptionIntroductoryOfferSelectorUsageError(shared.UsageErrorInvalidValue, err.Error())
