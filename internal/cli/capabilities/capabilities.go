@@ -531,6 +531,18 @@ func capabilityRows() []Capability {
 		},
 		{
 			Area:       "signing",
+			Capability: "Developer Portal Bundle ID reads",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web bundle-ids list", "asc web bundle-ids view"},
+			APIResources: []string{
+				"bundleIds",
+				"bundleIdCapabilities",
+			},
+			Notes:      []string{"Read-only iOS and Mac Bundle ID collection/detail reads use captured Developer Portal web-session JSON:API endpoints; pagination is intentionally not exposed in this slice."},
+			NextAction: "Use asc web bundle-ids list, then asc web bundle-ids view --bundle-id BUNDLE_RESOURCE_ID.",
+		},
+		{
+			Area:       "signing",
 			Capability: "App Clip Bundle ID capability sync",
 			Status:     statusWebSession,
 			Commands:   []string{"asc web bundle-ids capabilities sync-app-clip"},
