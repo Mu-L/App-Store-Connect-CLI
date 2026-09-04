@@ -81,9 +81,6 @@ func runListCommand(ctx context.Context, config shared.ListCommandConfig, flags 
 	if prefix == "" {
 		prefix = "crashes"
 	}
-	if strings.TrimSpace(config.DeprecatedWarning) != "" {
-		fmt.Fprintln(os.Stderr, config.DeprecatedWarning)
-	}
 
 	if *flags.limit != 0 && (*flags.limit < 1 || *flags.limit > 200) {
 		return shared.UsageErrorf("%s: --limit must be between 1 and 200", prefix)
@@ -159,25 +156,4 @@ func runListCommand(ctx context.Context, config shared.ListCommandConfig, flags 
 	}
 
 	return shared.PrintOutput(crashes, *flags.output.Output, *flags.output.Pretty)
-}
-
-// Crashes command factory
-func CrashesCommand() *ffcli.Command {
-	return NewListCommand(shared.ListCommandConfig{
-		Name:       "crashes",
-		ShortUsage: "asc testflight crashes list [flags]",
-		ShortHelp:  "DEPRECATED: use `asc testflight crashes list`.",
-		LongHelp: `DEPRECATED: use ` + "`asc testflight crashes list`" + `.
-
-This compatibility shim preserves the legacy root crash list behavior while
-the canonical TestFlight surface moves under ` + "`asc testflight crashes ...`" + `.
-
-Examples:
-  asc testflight crashes list --app "123456789"
-  asc testflight crashes list --app "123456789" --device-model "iPhone15,3" --os-version "17.2"
-  asc testflight crashes list --next "<links.next>"`,
-		ErrorPrefix:       "crashes",
-		DeprecatedWarning: "Warning: `asc crashes` is deprecated. Use `asc testflight crashes list`.",
-		UsageFunc:         shared.DeprecatedUsageFunc,
-	})
 }

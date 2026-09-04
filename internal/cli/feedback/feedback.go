@@ -83,9 +83,6 @@ func runListCommand(ctx context.Context, config shared.ListCommandConfig, flags 
 	if prefix == "" {
 		prefix = "feedback"
 	}
-	if strings.TrimSpace(config.DeprecatedWarning) != "" {
-		fmt.Fprintln(os.Stderr, config.DeprecatedWarning)
-	}
 
 	if *flags.limit != 0 && (*flags.limit < 1 || *flags.limit > 200) {
 		return shared.UsageErrorf("%s: --limit must be between 1 and 200", prefix)
@@ -157,25 +154,4 @@ func runListCommand(ctx context.Context, config shared.ListCommandConfig, flags 
 	}
 
 	return shared.PrintOutput(feedback, *flags.output.Output, *flags.output.Pretty)
-}
-
-// Feedback command factory
-func FeedbackCommand() *ffcli.Command {
-	return NewListCommand(shared.ListCommandConfig{
-		Name:       "feedback",
-		ShortUsage: "asc testflight feedback list [flags]",
-		ShortHelp:  "DEPRECATED: use `asc testflight feedback list`.",
-		LongHelp: `DEPRECATED: use ` + "`asc testflight feedback list`" + `.
-
-This compatibility shim preserves the legacy root feedback list behavior while
-the canonical TestFlight surface moves under ` + "`asc testflight feedback ...`" + `.
-
-Examples:
-  asc testflight feedback list --app "123456789"
-  asc testflight feedback list --app "123456789" --include-screenshots
-  asc testflight feedback list --next "<links.next>"`,
-		ErrorPrefix:       "feedback",
-		DeprecatedWarning: "Warning: `asc feedback` is deprecated. Use `asc testflight feedback list`.",
-		UsageFunc:         shared.DeprecatedUsageFunc,
-	})
 }
