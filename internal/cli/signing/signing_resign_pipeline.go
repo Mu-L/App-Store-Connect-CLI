@@ -1274,6 +1274,17 @@ func signingResignContainerEntitlementsPath(treePath, container string, plans []
 	return versionedEntitlements
 }
 
+// readRootedSigningResignFile reads a bounded file beneath the selected
+// staging root without reopening an untrusted path outside that root.
+func readRootedSigningResignFile(rootPath, relativePath string, limit int64) ([]byte, error) {
+	root, err := rootfs.New(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.ReadFileLimited(relativePath, limit)
+}
+
 // isSigningResignCodeContainerName reports whether a directory name is a
 // supported nested code container whose signature must be refreshed after the
 // code inside it changes. App-like bundles (.app, .appex) are signed as
