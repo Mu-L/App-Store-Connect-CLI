@@ -588,6 +588,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 
 	var operations []signingPlanOperation
 	var operationBlockers []string
+	baselineResolver := newSigningSettingResolver(project, configFiles, opts.AllowExternalXCConfig, lexicalConfigPaths)
 	converged := false
 	maxIterations := len(candidates) + 1
 	for iteration := 0; iteration < maxIterations; iteration++ {
@@ -614,8 +615,8 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			operationBlockers = append(operationBlockers, fmt.Sprintf("stage signing plan: %v", stageErr))
 			break
 		}
-		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, stagedProject, stagedResolver)
-		if len(resolutionBlockers) > 0 {
+		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, project, stagedProject, stagedResolver, baselineResolver)
+		if len(resolutionBlockers) > 0 && reclassified == 0 {
 			operationBlockers = append(operationBlockers, resolutionBlockers...)
 			break
 		}
@@ -1954,8 +1955,10 @@ func stageSigningPlan(
 // keeps the public plan's old-value and resolution fields stable.
 func reclassifySigningNoOps(
 	candidates []signingCandidate,
+	originalProject *structuredVersionProject,
 	stagedProject *structuredVersionProject,
 	resolver *signingSettingResolver,
+	baselineResolver *signingSettingResolver,
 ) (int, []string) {
 	configurations := make(map[string]*versionConfiguration, len(stagedProject.configurations))
 	for _, configuration := range stagedProject.configurations {
@@ -1981,8 +1984,31 @@ func reclassifySigningNoOps(
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, errors.New("staged project still has a direct assignment")))
 				continue
 			}
-			if _, _, err := resolver.resolveSetting(configuration, candidate.setting); err != nil && !errors.Is(err, errVersionSettingNotFound) {
+			resolved, _, err := resolver.resolveSetting(configuration, candidate.setting)
+			if err != nil && !errors.Is(err, errVersionSettingNotFound) {
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, err))
+			} else if err == nil && baselineResolver != nil {
+				baselineProject := cloneSigningStructuredVersionProject(originalProject)
+				var baselineConfiguration *versionConfiguration
+				for _, candidateConfiguration := range baselineProject.configurations {
+					if candidateConfiguration != nil && candidateConfiguration.id == candidate.configuration.id {
+						baselineConfiguration = candidateConfiguration
+						break
+					}
+				}
+				if baselineConfiguration == nil {
+					continue
+				}
+				for _, key := range matchingBuildSettingKeys(baselineConfiguration.buildSettings, candidate.setting) {
+					delete(baselineConfiguration.buildSettings, key)
+				}
+				baselineResolver = newSigningSettingResolver(baselineProject, baselineResolver.configFiles, baselineResolver.allowExternal, baselineResolver.lexicalConfigPaths)
+				baseline, _, baselineErr := baselineResolver.resolveSetting(baselineConfiguration, candidate.setting)
+				if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) && baselineErr == nil {
+					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q differs from value after removal alone %q; another operation in this plan would change the fallback", resolved, baseline)))
+				} else if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) {
+					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q appears after removal alone left the setting unresolved; another operation in this plan would create the fallback", resolved)))
+				}
 			}
 			continue
 		}
@@ -2021,6 +2047,16 @@ func reclassifySigningNoOps(
 	}
 	sort.Strings(blockers)
 	return reclassified, blockers
+}
+
+func signingRemovalFallbackChanged(staged string, stagedErr error, baseline string, baselineErr error) bool {
+	if stagedErr != nil {
+		return false
+	}
+	if baselineErr != nil {
+		return true
+	}
+	return staged != baseline
 }
 
 func cloneSigningStructuredVersionProject(project *structuredVersionProject) *structuredVersionProject {
