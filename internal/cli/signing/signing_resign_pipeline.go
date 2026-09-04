@@ -1120,7 +1120,6 @@ func readRootedSigningResignFile(rootPath, relativePath string, limit int64) ([]
 		return nil, err
 	}
 	defer root.Close()
-	defer owner.Close()
 	return root.ReadFileLimited(relativePath, limit)
 }
 
