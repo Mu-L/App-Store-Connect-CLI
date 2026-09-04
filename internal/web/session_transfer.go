@@ -43,6 +43,10 @@ var (
 	// ErrSessionCookieInvalid reports that a cookie name, value, path, or
 	// domain is not a valid HTTP cookie field.
 	ErrSessionCookieInvalid = errors.New("web session bundle cookie is invalid")
+
+	// ErrSessionCookieDuplicate reports that a bundle repeats a cookie identity
+	// after its origin, domain, and path are canonicalized.
+	ErrSessionCookieDuplicate = errors.New("web session bundle cookie identity is duplicated")
 )
 
 // SessionBundle is the portable representation of a cached Apple web session.
@@ -162,6 +166,22 @@ func cookieDomainMatchesOrigin(origin, domain string) bool {
 	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), ".")
 	domain = strings.TrimPrefix(strings.ToLower(domain), ".")
 	return domain != "" && domain == host
+}
+
+// sessionBundleCookieIdentity matches the identity used by net/http/cookiejar
+// when it stores a cookie. Empty domains and paths receive the same defaults
+// as the jar, and domain spelling is case-insensitive.
+func sessionBundleCookieIdentity(origin string, cookie SessionBundleCookie) string {
+	parsed, _ := url.Parse(origin)
+	domain := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(cookie.Domain), "."))
+	if domain == "" && parsed != nil {
+		domain = strings.ToLower(parsed.Hostname())
+	}
+	path := strings.TrimSpace(cookie.Path)
+	if path == "" || !strings.HasPrefix(path, "/") {
+		path = "/"
+	}
+	return strings.Join([]string{origin, cookie.Name, domain, path}, "\x00")
 }
 
 func cookieExpiry(expires *time.Time) time.Time {
@@ -318,6 +338,7 @@ func (b *SessionBundle) Validate() error {
 	if len(b.Cookies) == 0 {
 		return errors.New("web session bundle contains no cookies")
 	}
+	seen := make(map[string]struct{}, len(b.Cookies))
 	for index, cookie := range b.Cookies {
 		if strings.TrimSpace(cookie.Name) == "" {
 			return fmt.Errorf("web session bundle cookie %d is missing name", index)
@@ -352,6 +373,11 @@ func (b *SessionBundle) Validate() error {
 		if err := sessionBundleCookieSyntaxValid(cookie); err != nil {
 			return err
 		}
+		identity := sessionBundleCookieIdentity(canonical, cookie)
+		if _, exists := seen[identity]; exists {
+			return fmt.Errorf("%w: cookie %q at %q", ErrSessionCookieDuplicate, cookie.Name, canonical)
+		}
+		seen[identity] = struct{}{}
 	}
 	return nil
 }

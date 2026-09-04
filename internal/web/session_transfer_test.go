@@ -215,6 +215,19 @@ func TestImportSessionBundleSkipsExpiredCookies(t *testing.T) {
 	}
 }
 
+func TestImportSessionBundleRejectsDuplicateCanonicalCookieIdentity(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies = append(bundle.Cookies, bundle.Cookies[0])
+
+	if _, err := ImportSessionBundle(bundle); !errors.Is(err, ErrSessionCookieDuplicate) {
+		t.Fatalf("ImportSessionBundle() error = %v, want ErrSessionCookieDuplicate", err)
+	}
+	if _, ok, err := LoadCachedSession(bundle.AppleID); err != nil || ok {
+		t.Fatalf("LoadCachedSession() = (%v, %v), want no cached session after a refused import", ok, err)
+	}
+}
+
 func TestImportSessionBundleRefusesFullyExpiredBundle(t *testing.T) {
 	withFileSessionCache(t)
 	bundle := validTestBundle(time.Now().Add(-time.Hour))
@@ -801,6 +814,63 @@ func TestImportSessionBundleRestoresFileMirrorAfterKeychainPersistenceFails(t *t
 	}
 	if string(gotLastRaw) != string(lastRaw) {
 		t.Fatalf("restored last-session pointer changed: got %q, want %q", gotLastRaw, lastRaw)
+	}
+}
+
+func TestImportSessionBundleKeychainOverwriteDoesNotFallbackAfterCapture(t *testing.T) {
+	kr := withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	old := persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-token", Path: "/"}},
+		},
+	}
+	if err := writeSessionToKeychain(key, old); err != nil {
+		t.Fatalf("writeSessionToKeychain() error = %v", err)
+	}
+	if err := writeSessionToFile(key, old); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+
+	previousOpen := sessionKeyringOpen
+	openCalls := 0
+	sessionKeyringOpen = func() (keyring.Keyring, error) {
+		openCalls++
+		if openCalls == 2 {
+			return nil, keyring.ErrNoAvailImpl
+		}
+		return kr, nil
+	}
+	t.Cleanup(func() { sessionKeyringOpen = previousOpen })
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); !errors.Is(err, keyring.ErrNoAvailImpl) {
+		t.Fatalf("ImportSessionBundleWithOptions() error = %v, want transient keychain failure", err)
+	}
+	if openCalls < 3 {
+		t.Fatalf("session keychain opened %d times, want capture, failed write, and restore", openCalls)
+	}
+	stored, ok, err := readSessionFromKeychain(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromKeychain() = (%v, %v), want the original session", ok, err)
+	}
+	if got := stored.Cookies["https://appstoreconnect.apple.com/"][0].Value; got != "old-token" {
+		t.Fatalf("keychain cookie = %q, want old-token", got)
+	}
+	stored, ok, err = readSessionFromFile(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the original mirror", ok, err)
+	}
+	if got := stored.Cookies["https://appstoreconnect.apple.com/"][0].Value; got != "old-token" {
+		t.Fatalf("file cookie = %q, want old-token", got)
 	}
 }
 
