@@ -12,7 +12,11 @@ import (
 
 func TestWithSessionStoreLockFailsClosedWhenLockUnavailable(t *testing.T) {
 	previous := sessionSharedLockRoot
-	sessionSharedLockRoot = func() string { return t.TempDir() + "/blocked" }
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessionSharedLockRoot = func() string { return blocked }
 	t.Cleanup(func() { sessionSharedLockRoot = previous })
 	called := false
 	err := withSessionStoreLock(func() error { called = true; return nil })

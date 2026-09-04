@@ -39,6 +39,7 @@ const (
 var (
 	ErrCachedSessionExpired          = errors.New("cached web session expired")
 	ErrCachedSessionValidationFailed = errors.New("cached web session could not be validated")
+	errMalformedSessionFile          = errors.New("web session cache is malformed")
 )
 
 type sessionBackend int
@@ -615,7 +616,7 @@ func readSessionFromFile(key string) (persistedSession, bool, error) {
 	}
 	var sess persistedSession
 	if err := json.Unmarshal(raw, &sess); err != nil {
-		return persistedSession{}, false, fmt.Errorf("failed to decode session cache: %w", err)
+		return persistedSession{}, false, fmt.Errorf("%w: %w", errMalformedSessionFile, err)
 	}
 	if sess.Version != webSessionCacheVersion {
 		return persistedSession{}, false, nil
@@ -1552,7 +1553,7 @@ func fileSessionCarriesIdentity(key string, stamp time.Time, generation string) 
 	if err != nil {
 		// A keychain entry already proven stale may safely clean up a corrupt
 		// mirrored file; leaving it causes repeated fallback failures.
-		return true
+		return errors.Is(err, errMalformedSessionFile)
 	}
 	return ok && persistedSessionIdentityMatches(sess, stamp, generation)
 }

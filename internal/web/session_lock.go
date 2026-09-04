@@ -23,13 +23,11 @@ import (
 // item. Holding whichever anchors can be created makes those processes exclude
 // each other as long as either anchor is shared.
 //
-// The lock is advisory and best effort by design. Acquisition is bounded, a
-// lock left behind by a killed process remains harmless because advisory locks
-// are released when descriptors close, and any failure to lock falls through
-// to the unlocked operation: refusing to persist or discard a session because
-// a lock file cannot be created would turn a cache
-// optimization into an auth outage, and refusing to discard one would leave a
-// proven-stale jar to burn another 2FA code.
+// The lock is advisory and acquisition is bounded. A lock left behind by a
+// killed process remains harmless because advisory locks are released when
+// descriptors close. Store mutations fail closed when the shared lock cannot
+// be acquired, preventing an aggregate read-modify-write from racing another
+// process and silently dropping a different Apple ID's session.
 var (
 	errSessionLockHeld             = errors.New("session lock is held")
 	errSessionStoreLockUnavailable = errors.New("shared session-store lock unavailable")
