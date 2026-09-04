@@ -71,6 +71,62 @@ func TestIAPProductScopedCommandsAreUnknown(t *testing.T) {
 	}
 }
 
+// TestIAPSetupRemovedCompatibilitySpellingsAreUnknownFlags locks the 5.0.0
+// removal of the hidden `--ref-name` and `--name` spellings on `asc iap setup`.
+// Only `--reference-name` and `--display-name` remain; the old spellings must
+// fail like any other unknown flag with the canonical flag suggested.
+func TestIAPSetupRemovedCompatibilitySpellingsAreUnknownFlags(t *testing.T) {
+	setupUsageExitCodeEnv(t)
+
+	tests := []struct {
+		name           string
+		args           []string
+		wantError      string
+		wantSuggestion string
+	}{
+		{
+			name:           "name",
+			args:           []string{"iap", "setup", "--app", "APP_ID", "--type", "NON_CONSUMABLE", "--reference-name", "Pro", "--product-id", "com.example.pro", "--locale", "en-US", "--name", "Pro"},
+			wantError:      "Error: unknown flag `--name` for `asc iap setup`\n",
+			wantSuggestion: "Try:\n  --display-name\n",
+		},
+		{
+			// `--ref-name` is too far from `--reference-name` for the generic
+			// suggestion engine, so only the help pointer follows the error.
+			name:           "ref-name",
+			args:           []string{"iap", "setup", "--app", "APP_ID", "--type", "NON_CONSUMABLE", "--ref-name", "Pro", "--product-id", "com.example.pro"},
+			wantError:      "Error: unknown flag `--ref-name` for `asc iap setup`\n",
+			wantSuggestion: "For help:\n  asc iap setup --help\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr := captureOutput(t, func() {
+				if code := cmd.Run(test.args, "1.2.3"); code != cmd.ExitUsage {
+					t.Fatalf("Run() exit code = %d, want %d", code, cmd.ExitUsage)
+				}
+			})
+
+			if stdout != "" {
+				t.Fatalf("expected empty stdout, got %q", stdout)
+			}
+			if !strings.HasPrefix(stderr, test.wantError) {
+				t.Fatalf("stderr = %q, want prefix %q", stderr, test.wantError)
+			}
+			if !strings.Contains(stderr, test.wantSuggestion) {
+				t.Fatalf("stderr = %q, want %q", stderr, test.wantSuggestion)
+			}
+			if strings.Contains(stderr, "--ref-name\n") || strings.Contains(stderr, "  --name\n") {
+				t.Fatalf("removed spelling must not be suggested, got %q", stderr)
+			}
+			if strings.Contains(stderr, "must match when both are provided") || strings.Contains(stderr, "Warning:") {
+				t.Fatalf("stderr must be a generic unknown-flag diagnostic, got %q", stderr)
+			}
+		})
+	}
+}
+
 // TestIAPHelpOmitsProductScopedCommands asserts the removed surfaces no longer
 // appear in `asc iap --help`, so the generic unknown-command suggestion engine
 // cannot resurface them.

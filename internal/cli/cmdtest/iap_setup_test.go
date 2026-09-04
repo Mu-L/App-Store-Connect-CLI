@@ -73,11 +73,13 @@ func TestIAPHelpShowsSetupCommand(t *testing.T) {
 	if !strings.Contains(setupUsage, "--display-name") {
 		t.Fatalf("expected iap setup help to show --display-name, got %q", setupUsage)
 	}
-	if strings.Contains(setupUsage, "--ref-name") {
-		t.Fatalf("expected iap setup help to hide --ref-name alias, got %q", setupUsage)
+	for _, removed := range []string{"ref-name", "name"} {
+		if setupCmd.FlagSet.Lookup(removed) != nil {
+			t.Fatalf("expected iap setup to drop removed compatibility spelling --%s", removed)
+		}
 	}
-	if strings.Contains(setupUsage, "\n  --name") {
-		t.Fatalf("expected iap setup help to hide --name alias, got %q", setupUsage)
+	if strings.Contains(setupUsage, "--ref-name") || strings.Contains(setupUsage, "\n  --name") {
+		t.Fatalf("expected iap setup help to omit removed compatibility spellings, got %q", setupUsage)
 	}
 	if !strings.Contains(setupUsage, "--no-verify") {
 		t.Fatalf("expected iap setup help to show --no-verify, got %q", setupUsage)
