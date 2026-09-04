@@ -1911,8 +1911,10 @@ func reclassifySigningNoOps(
 			} else if err == nil && baselineResolver != nil {
 				baselineConfiguration := candidate.configuration
 				baseline, _, baselineErr := baselineResolver.resolveSetting(baselineConfiguration, candidate.setting)
-				if baselineErr == nil && resolved != baseline {
+				if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) && baselineErr == nil {
 					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q differs from value after removal alone %q; another operation in this plan would change the fallback", resolved, baseline)))
+				} else if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) {
+					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q appears after removal alone left the setting unresolved; another operation in this plan would create the fallback", resolved)))
 				}
 			}
 			continue
@@ -1952,6 +1954,13 @@ func reclassifySigningNoOps(
 	}
 	sort.Strings(blockers)
 	return reclassified, blockers
+}
+
+func signingRemovalFallbackChanged(staged string, stagedErr error, baseline string, baselineErr error) bool {
+	if stagedErr != nil || baselineErr == nil && staged == baseline {
+		return false
+	}
+	return stagedErr == nil && (errors.Is(baselineErr, errVersionSettingNotFound) || staged != baseline)
 }
 
 func cloneSigningStructuredVersionProject(project *structuredVersionProject) *structuredVersionProject {

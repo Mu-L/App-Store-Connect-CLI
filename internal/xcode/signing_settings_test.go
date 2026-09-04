@@ -3985,6 +3985,12 @@ func TestSigningPlanBlocksRemovalWhenSiblingWriteChangesSharedFallback(t *testin
 	}
 }
 
+func TestSigningRemovalFallbackChangedDetectsMissingToPresent(t *testing.T) {
+	if !signingRemovalFallbackChanged("staged", nil, "", errVersionSettingNotFound) {
+		t.Fatal("missing baseline with staged value must be treated as a fallback collision")
+	}
+}
+
 func TestSigningPlanReclassifiesNoOpAfterProjectFallbackDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")
