@@ -580,6 +580,13 @@ func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) err
 	}
 	defer root.Close()
 	defer owner.Close()
+	return validateSigningResignSwiftSupportRoot(ctx, treeRoot, root)
+}
+
+func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string, root *os.Root) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -656,6 +663,13 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	}
 	defer root.Close()
 	defer owner.Close()
+	return validateSigningResignWatchKitSupportRoot(ctx, treeRoot, root)
+}
+
+func validateSigningResignWatchKitSupportRoot(ctx context.Context, treeRoot string, root *os.Root) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -699,16 +713,10 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	return nil
 }
 
-func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
+func captureSigningResignWatchKitSupportInventoryRoot(ctx context.Context, root *os.Root) ([]signingResignSwiftSupportEntry, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	owner, root, err := openSigningResignTreeRoot(treeRoot)
-	if err != nil {
-		return nil, fmt.Errorf("open staging tree: %w", err)
-	}
-	defer root.Close()
-	defer owner.Close()
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -750,21 +758,33 @@ func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot 
 // validateSigningResignPreservedExternalDirectories checks every supported
 // distribution-side directory that is preserved instead of re-signed.
 func validateSigningResignPreservedExternalDirectories(ctx context.Context, treeRoot string) error {
-	if err := validateSigningResignSwiftSupport(ctx, treeRoot); err != nil {
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	if err := validateSigningResignSwiftSupportRoot(ctx, treeRoot, root); err != nil {
 		return err
 	}
-	return validateSigningResignWatchKitSupport(ctx, treeRoot)
+	return validateSigningResignWatchKitSupportRoot(ctx, treeRoot, root)
 }
 
 // captureSigningResignPreservedInventory records the sorted path, size,
 // digest, and mode of every preserved distribution-side runtime so repack can
 // be held to byte-for-byte equality.
 func captureSigningResignPreservedInventory(ctx context.Context, treeRoot string) ([]signingResignSwiftSupportEntry, error) {
-	swift, err := captureSigningResignSwiftSupportInventory(ctx, treeRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	defer owner.Close()
+	swift, err := captureSigningResignSwiftSupportInventoryRoot(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	watch, err := captureSigningResignWatchKitSupportInventory(ctx, treeRoot)
+	watch, err := captureSigningResignWatchKitSupportInventoryRoot(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -788,6 +808,13 @@ func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot str
 	}
 	defer root.Close()
 	defer owner.Close()
+	return captureSigningResignSwiftSupportInventoryRoot(ctx, root)
+}
+
+func captureSigningResignSwiftSupportInventoryRoot(ctx context.Context, root *os.Root) ([]signingResignSwiftSupportEntry, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

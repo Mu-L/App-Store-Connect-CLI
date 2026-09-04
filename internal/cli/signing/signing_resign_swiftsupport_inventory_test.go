@@ -331,3 +331,34 @@ func TestCaptureSigningResignPreservedInventoryIncludesWatchKit(t *testing.T) {
 		t.Fatalf("inventory entry = %+v, want exact WK path, size, mode, and digest", entry)
 	}
 }
+
+func TestSigningResignCombinedPreservedOperationsShareOneStagingRoot(t *testing.T) {
+	originalTool := runSigningResignToolFn
+	t.Cleanup(func() { runSigningResignToolFn = originalTool })
+	runSigningResignToolFn = func(context.Context, string, ...string) (signingResignToolOutput, error) {
+		return signingResignToolOutput{}, nil
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "SwiftSupport", "iphoneos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SwiftSupport", "iphoneos", "libswiftCore.dylib"), []byte("swift"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "WatchKitSupport2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "WatchKitSupport2", "WK"), []byte("watch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignPreservedExternalDirectories(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := captureSigningResignPreservedInventory(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory) != 2 || inventory[0].RelativePath != "SwiftSupport/iphoneos/libswiftCore.dylib" || inventory[1].RelativePath != "WatchKitSupport2/WK" {
+		t.Fatalf("inventory = %+v, want both preserved trees in sorted order", inventory)
+	}
+}
