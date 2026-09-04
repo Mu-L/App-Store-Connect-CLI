@@ -63,9 +63,8 @@ asc iap view --id "IAP_ID"
 ## Versioned IAP Resources (API 4.4.1)
 
 IAP metadata and promotional images are managed through a discrete version
-resource. The product-scoped v1 localization, image, and submission commands
-remain available only during their deprecation window; use the version-scoped
-commands for new automation.
+resource. Localizations, images, and review submission are all version-scoped:
+resolve or create an IAP version first, then pass its ID to the commands below.
 
 ```bash  theme={null}
 asc iap versions list --iap-id "IAP_ID"
@@ -83,11 +82,6 @@ asc iap versions submit --version-id "IAP_VERSION_ID" --submission "REVIEW_SUBMI
 
 Use the version ID—not the product ID—for v2 localization, image, and review
 submission operations.
-
-The deprecated product-scoped localization and image read commands remain
-available only for migration. Their list/detail reads accept
-`--iap-fields versions` when the included parent product must expose its
-versions, but new automation should use the version-scoped commands above.
 
 <Warning>
   Resolve and reuse an existing version before running `versions create`.
@@ -249,7 +243,6 @@ asc iap pricing schedules create \
 
 Manage in-app purchase localizations for different languages and regions. First
 create or resolve an IAP version, then pass its version ID to these commands.
-The product-scoped `asc iap localizations ...` commands are deprecated.
 
 <Warning>
   Keep at least one complete localization on the version. App Store Connect
@@ -304,9 +297,8 @@ asc iap versions localizations delete \
 
 ### Upload Promotional Image
 
-Upload a promotional image for an in-app purchase version. The product-scoped
-`asc iap images ...` commands are deprecated; create or resolve an IAP version
-and use the version image resource instead.
+Upload a promotional image for an in-app purchase version. Create or resolve an
+IAP version first; images belong to the version, not the product.
 
 ```bash  theme={null}
 asc iap versions images create \

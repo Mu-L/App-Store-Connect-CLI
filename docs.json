@@ -16,6 +16,7 @@
             "group": "Getting Started",
             "pages": [
               "introduction",
+              "migrate-to-5-0",
               "migrate-to-4-0",
               "installation",
               "authentication",

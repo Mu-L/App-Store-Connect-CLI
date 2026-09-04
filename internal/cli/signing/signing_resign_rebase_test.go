@@ -235,6 +235,59 @@ func TestSigningResignRebaseRejectsMalformedProfileArrayEntries(t *testing.T) {
 	}
 }
 
+func TestPlanSigningResignEntitlementsUsesStrictAuthorizationOnlyWhenRebasing(t *testing.T) {
+	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
+		"com.example.claim": "OLD.value",
+	})
+	profile := rebaseTestProfile(target.BundleID, "NEWPREFIX", map[string]any{
+		"com.example.claim": "*",
+	})
+	if _, err := planSigningResignEntitlements(signingResignArchive{MainPath: target.RelativePath, Targets: []signingResignTarget{target}}, map[string]signingResignProfile{target.BundleID: profile}, false); err != nil {
+		t.Fatalf("legacy plan rejected historically authorized wildcard: %v", err)
+	}
+	if _, err := planSigningResignEntitlements(signingResignArchive{MainPath: target.RelativePath, Targets: []signingResignTarget{target}}, map[string]signingResignProfile{target.BundleID: profile}, true); err == nil || !strings.Contains(err.Error(), "com.example.claim") {
+		t.Fatalf("rebasing plan error = %v, want strict claim refusal", err)
+	}
+}
+
+func TestSigningResignStrictAuthorizationPreservesExactNonStringScalars(t *testing.T) {
+	if !signingResignStrictEntitlementValuePermits(true, true) {
+		t.Fatal("exact boolean authorization was rejected")
+	}
+	profile := map[string]any{"mode": "strict"}
+	if !signingResignStrictEntitlementValuePermits(profile, map[string]any{"mode": "strict"}) {
+		t.Fatal("exact dictionary authorization was rejected")
+	}
+	if signingResignStrictEntitlementValuePermits(true, false) {
+		t.Fatal("different boolean authorization was accepted")
+	}
+}
+
+func TestSigningResignStrictAuthorizationPreservesExactStructuredArrays(t *testing.T) {
+	literal := []any{"literal*", "other"}
+	if !signingResignStrictEntitlementValuePermits(literal, []any{"literal*", "other"}) {
+		t.Fatal("exact literal-wildcard array was rejected")
+	}
+	structured := []any{map[string]any{"name": "one"}, true}
+	if !signingResignStrictEntitlementValuePermits(structured, []any{map[string]any{"name": "one"}, true}) {
+		t.Fatal("exact structured array was rejected")
+	}
+	if signingResignStrictEntitlementValuePermits(structured, []any{true, map[string]any{"name": "one"}}) {
+		t.Fatal("differing structured array was accepted")
+	}
+}
+
+func TestSigningResignNestedAuthorizationStrictRebaseVsLegacy(t *testing.T) {
+	entitlements := map[string]any{"com.example.nested": "OLD.value"}
+	profile := map[string]any{"com.example.nested": "*"}
+	if err := validateSigningResignNestedEntitlements(entitlements, profile); err != nil {
+		t.Fatalf("legacy nested authorization rejected wildcard: %v", err)
+	}
+	if err := validateSigningResignNestedEntitlements(entitlements, profile, true); err == nil {
+		t.Fatal("strict nested rebasing authorization accepted bare wildcard")
+	}
+}
+
 func TestPlanSigningResignEntitlementsRejectsMalformedKeychainProfileArray(t *testing.T) {
 	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
 		signingResignKeychainGroupsEntitlement: []string{"OLDPREFIX.com.example.shared"},
