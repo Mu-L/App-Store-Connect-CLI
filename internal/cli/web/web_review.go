@@ -1054,12 +1054,16 @@ Examples:
 				return fmt.Errorf("web review reply failed: message %s was sent but post-read did not return it; do not retry automatically", sent.ID)
 			}
 
-			return shared.PrintOutput(&asc.WebReviewReplyResult{
+			result := &asc.WebReviewReplyResult{
 				ThreadID:  trimmedThreadID,
 				DraftID:   strings.TrimSpace(draft.ID),
 				MessageID: strings.TrimSpace(sent.ID),
 				Verified:  true,
-			}, *output.Output, *output.Pretty)
+			}
+			if err := shared.PrintOutput(result, *output.Output, *output.Pretty); err != nil {
+				return fmt.Errorf("web review reply message %s was sent and verified, but receipt output failed; do not retry automatically: %w", result.MessageID, err)
+			}
+			return nil
 		},
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -43,6 +44,61 @@ func TestWebReviewReplyCreatesSendsAndVerifiesMessage(t *testing.T) {
 	}
 	if strings.Contains(stdout, "Reply body") {
 		t.Fatalf("reply body must not be printed in receipt: %q", stdout)
+	}
+	wantPaths := []string{
+		"/iris/v1/resolutionCenterDraftMessages",
+		"/iris/v1/resolutionCenterMessages",
+		"/iris/v1/resolutionCenterThreads/thread-1/resolutionCenterMessages",
+	}
+	if strings.Join(*requested, "\n") != strings.Join(wantPaths, "\n") {
+		t.Fatalf("request order = %v, want %v", *requested, wantPaths)
+	}
+}
+
+func TestWebReviewReplyReportsConfirmedMessageWhenReceiptOutputFails(t *testing.T) {
+	requested := stubWebReviewSession(t, map[string]string{
+		"/iris/v1/resolutionCenterDraftMessages":                             `{"data":{"id":"draft-1","type":"resolutionCenterDraftMessages","attributes":{"messageBody":"Reply body"}}}`,
+		"/iris/v1/resolutionCenterMessages":                                  `{"data":{"id":"message-1","type":"resolutionCenterMessages","attributes":{"createdDate":"2026-09-05T00:00:00Z","messageBody":"Reply body"}}}`,
+		"/iris/v1/resolutionCenterThreads/thread-1/resolutionCenterMessages": `{"data":[{"id":"message-1","type":"resolutionCenterMessages","attributes":{"createdDate":"2026-09-05T00:00:00Z","messageBody":"Reply body"}}]}`,
+	})
+
+	cmd := WebReviewReplyCommand()
+	if err := cmd.FlagSet.Parse([]string{
+		"--thread-id", "thread-1",
+		"--message", "Reply body",
+		"--confirm",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	var commandErr error
+	_, _ = captureOutput(t, func() {
+		oldStdout := os.Stdout
+		readEnd, writeEnd, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("create failing stdout pipe: %v", err)
+		}
+		if err := readEnd.Close(); err != nil {
+			t.Fatalf("close failing stdout reader: %v", err)
+		}
+		os.Stdout = writeEnd
+		defer func() {
+			os.Stdout = oldStdout
+			_ = writeEnd.Close()
+		}()
+
+		commandErr = cmd.Exec(context.Background(), nil)
+	})
+
+	if commandErr == nil {
+		t.Fatal("expected receipt output error")
+	}
+	if !strings.Contains(commandErr.Error(), "message message-1 was sent and verified") {
+		t.Fatalf("output error = %v, want confirmed message ID", commandErr)
+	}
+	if !strings.Contains(commandErr.Error(), "do not retry automatically") {
+		t.Fatalf("output error = %v, want no-retry guidance", commandErr)
 	}
 	wantPaths := []string{
 		"/iris/v1/resolutionCenterDraftMessages",
