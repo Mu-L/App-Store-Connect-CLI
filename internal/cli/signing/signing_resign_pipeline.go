@@ -830,6 +830,8 @@ func signingResignContainerEntitlementsPath(treePath, container string, plans []
 	if _, err := plist.Unmarshal(infoData, &info); err != nil || strings.TrimSpace(info.Executable) == "" {
 		return ""
 	}
+	versionedEntitlements := ""
+	versionedFound := false
 	for _, plan := range plans {
 		if filepath.Base(plan.Path) != info.Executable {
 			continue
@@ -840,11 +842,15 @@ func signingResignContainerEntitlementsPath(treePath, container string, plans []
 		}
 		relativeSlash := filepath.ToSlash(relative)
 		parts := strings.Split(relativeSlash, "/")
-		if filepath.Dir(relative) == "." || (len(parts) == 3 && parts[0] == "Versions" && parts[2] == info.Executable) {
+		if filepath.Dir(relative) == "." {
 			return plan.EntitlementsPath
 		}
+		if len(parts) == 3 && parts[0] == "Versions" && parts[2] == info.Executable && !versionedFound {
+			versionedEntitlements = plan.EntitlementsPath
+			versionedFound = true
+		}
 	}
-	return ""
+	return versionedEntitlements
 }
 
 // isSigningResignCodeContainerName reports whether a directory name is a

@@ -3136,10 +3136,10 @@ func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	plans := []signingResignCodePlan{
-		{Path: filepath.Join(container, "Feature"), EntitlementsPath: filepath.Join(t.TempDir(), "feature.plist")},
 		{Path: filepath.Join(container, "Versions", "A", "Feature"), EntitlementsPath: "/stage/entitlements/version.plist"},
+		{Path: filepath.Join(container, "Feature"), EntitlementsPath: filepath.Join(t.TempDir(), "feature.plist")},
 	}
-	if got := signingResignContainerEntitlementsPath(treePath, container, plans); got != plans[0].EntitlementsPath {
+	if got := signingResignContainerEntitlementsPath(treePath, container, plans); got != plans[1].EntitlementsPath {
 		t.Fatalf("container entitlements path = %q, want main executable document", got)
 	}
 	if got := signingResignContainerEntitlementsPath(treePath, filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Empty.bundle"), plans); got != "" {
@@ -3153,7 +3153,14 @@ func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	versionEntitlements := filepath.Join(t.TempDir(), "versioned.plist")
-	versionPlans := []signingResignCodePlan{{Path: filepath.Join(versioned, "Versions", "A", "Feature"), EntitlementsPath: versionEntitlements}}
+	versionPlans := []signingResignCodePlan{
+		{Path: filepath.Join(versioned, "Versions", "A", "Feature"), EntitlementsPath: ""},
+		{Path: filepath.Join(versioned, "Versions", "B", "Feature"), EntitlementsPath: versionEntitlements},
+	}
+	if got := signingResignContainerEntitlementsPath(treePath, versioned, versionPlans); got != "" {
+		t.Fatalf("empty first version entitlements path = %q, want empty", got)
+	}
+	versionPlans[0].EntitlementsPath = versionEntitlements
 	if got := signingResignContainerEntitlementsPath(treePath, versioned, versionPlans); got != versionEntitlements {
 		t.Fatalf("versioned container entitlements path = %q, want %q", got, versionEntitlements)
 	}
