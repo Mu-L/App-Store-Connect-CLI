@@ -128,7 +128,6 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(inAppPurchasesRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseVersionsRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseLocalizationsRows)
-	registerRowsWithSingleResourceAdapter(inAppPurchaseImagesRows)
 	registerRowsWithSingleResourceAdapter(inAppPurchaseImagesV2Rows)
 	registerSingleLinkageRows(func(v *InAppPurchaseVersionImageLinkageResponse) ResourceData { return v.Data })
 	registerRows(inAppPurchasePricePointsRows)
