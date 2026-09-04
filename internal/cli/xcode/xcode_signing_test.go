@@ -26,8 +26,11 @@ func TestXcodeHelpScopesMacOSRequirementToXcodeTooling(t *testing.T) {
 	if !strings.Contains(command.LongHelp, "build/archive/export commands") || !strings.Contains(command.LongHelp, "are supported\non macOS only") {
 		t.Fatalf("Xcode long help does not scope macOS requirement to Xcode tooling: %q", command.LongHelp)
 	}
-	if !strings.Contains(command.LongHelp, "signing plan/apply helpers") || !strings.Contains(command.LongHelp, "supported on every platform") {
-		t.Fatalf("Xcode long help does not advertise cross-platform signing helpers: %q", command.LongHelp)
+	if !strings.Contains(command.LongHelp, "signing plan/apply helpers") ||
+		!strings.Contains(command.LongHelp, "Signing-plan generation is cross-platform.") ||
+		!strings.Contains(command.LongHelp, "Signing apply\nrequires native identity-coupled file mutation support") ||
+		!strings.Contains(command.LongHelp, "currently fails\nclosed on Windows before modifying project or receipt files") {
+		t.Fatalf("Xcode long help does not describe signing platform support: %q", command.LongHelp)
 	}
 }
 
@@ -40,6 +43,15 @@ func TestXcodeSigningApplyRequiresConfirm(t *testing.T) {
 	err := command.Exec(context.Background(), nil)
 	if !isUsageError(err) {
 		t.Fatalf("expected usage error, got %v", err)
+	}
+}
+
+func TestXcodeSigningApplyHelpExplainsWindowsBoundary(t *testing.T) {
+	command := xcodeSigningApplyCommand()
+	help := strings.Join(strings.Fields(command.LongHelp), " ")
+	want := "Apply requires native identity-coupled file mutation support. On Windows, it currently fails closed before modifying project or receipt files."
+	if !strings.Contains(help, want) {
+		t.Fatalf("apply help = %q, want Windows fail-closed limitation", command.LongHelp)
 	}
 }
 

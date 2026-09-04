@@ -59,8 +59,9 @@ The xcode signing plan/apply helpers are experimental and only modify local
 project build settings; they do not contact App Store Connect.
 
 The build/archive/export commands wrap local xcodebuild flows and are supported
-on macOS only. The experimental signing plan/apply helpers perform local
-project-file operations and are supported on every platform.
+on macOS only. Signing-plan generation is cross-platform. Signing apply
+requires native identity-coupled file mutation support and currently fails
+closed on Windows before modifying project or receipt files.
 
 Use these commands to compile projects and produce deterministic .xcarchive and
 .ipa paths that can be passed directly into asc upload and publish commands.
