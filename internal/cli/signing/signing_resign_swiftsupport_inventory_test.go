@@ -274,7 +274,7 @@ func TestValidateSigningResignWatchKitSupportEnforcesShapeAndProvenance(t *testi
 	if err := validateSigningResignWatchKitSupport(context.Background(), root); err != nil {
 		t.Fatalf("validateSigningResignWatchKitSupport() error = %v, want standard WK layout accepted", err)
 	}
-	if len(verified) != 1 || filepath.Base(verified[0]) != "WK" {
+	if len(verified) != 1 || !strings.Contains(filepath.Base(verified[0]), ".signing-resign-verify-") {
 		t.Fatalf("verified = %v, want provenance verification of the WK binary", verified)
 	}
 	if err := os.WriteFile(filepath.Join(wkDir, "extra"), []byte("x"), 0o644); err != nil {

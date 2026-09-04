@@ -1487,7 +1487,7 @@ func TestValidateSigningResignSwiftSupportAcceptsCanonicalLayout(t *testing.T) {
 	if err := validateSigningResignSwiftSupport(context.Background(), temporary); err != nil {
 		t.Fatalf("validateSigningResignSwiftSupport() error = %v", err)
 	}
-	if len(verified) != 1 || !strings.Contains(verified[0], "--verify") || !strings.Contains(verified[0], "SwiftSupport/iphoneos/libswiftCore.dylib") {
+	if len(verified) != 1 || !strings.Contains(verified[0], "--verify") || !strings.Contains(verified[0], ".signing-resign-verify-") {
 		t.Fatalf("SwiftSupport verification calls = %#v", verified)
 	}
 }

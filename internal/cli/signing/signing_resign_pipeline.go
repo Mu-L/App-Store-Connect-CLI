@@ -527,6 +527,36 @@ func verifySigningResignPreservedExternalCode(ctx context.Context, codePath stri
 	return nil
 }
 
+// verifySigningResignPreservedExternalCodeOpen verifies the bytes already
+// selected by a rooted descriptor. codesign cannot consume an fd on macOS,
+// so copy the descriptor into a private temporary regular file first.
+func verifySigningResignPreservedExternalCodeOpen(ctx context.Context, source *os.File, tempRoot string) error {
+	if source == nil {
+		return fmt.Errorf("preserved code descriptor is nil")
+	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(tempRoot, ".signing-resign-verify-*")
+	if err != nil {
+		return err
+	}
+	name := temp.Name()
+	defer os.Remove(name)
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := io.Copy(temp, source); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return verifySigningResignPreservedExternalCode(ctx, name)
+}
+
 func openSigningResignTreeRoot(treeRoot string) (*os.Root, error) {
 	root, err := rootfs.New(treeRoot)
 	if err != nil {
@@ -597,10 +627,11 @@ func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) err
 		if err != nil {
 			return fmt.Errorf("open preserved SwiftSupport code: %w", err)
 		}
-		file.Close()
-		if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(treeRoot, "SwiftSupport", "iphoneos", name)); err != nil {
+		if err := verifySigningResignPreservedExternalCodeOpen(ctx, file, treeRoot); err != nil {
+			file.Close()
 			return fmt.Errorf("verify preserved SwiftSupport code failed: %w", err)
 		}
+		file.Close()
 	}
 	return nil
 }
@@ -653,10 +684,11 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	if err != nil {
 		return fmt.Errorf("open preserved WatchKitSupport2 code: %w", err)
 	}
-	file.Close()
-	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(treeRoot, "WatchKitSupport2", "WK")); err != nil {
+	if err := verifySigningResignPreservedExternalCodeOpen(ctx, file, treeRoot); err != nil {
+		file.Close()
 		return fmt.Errorf("verify preserved WatchKitSupport2 code failed: %w", err)
 	}
+	file.Close()
 	return nil
 }
 
