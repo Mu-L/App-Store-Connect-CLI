@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -179,6 +180,8 @@ func TestWebRemovedAppsRestoreValidationBeforeAuth(t *testing.T) {
 		{"app", nil, "--app is required"},
 		{"access", []string{"--app", "123"}, "--access must be limited or full"},
 		{"confirm", []string{"--app", "123", "--access", "full"}, "--confirm is required"},
+		{"output format", []string{"--app", "123", "--access", "full", "--confirm", "--output", "yaml"}, "--output must be one of"},
+		{"pretty human output", []string{"--app", "123", "--access", "full", "--confirm", "--output", "table", "--pretty"}, "--pretty is only valid with JSON output"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := WebRemovedAppsRestoreCommand()
@@ -194,6 +197,34 @@ func TestWebRemovedAppsRestoreValidationBeforeAuth(t *testing.T) {
 	}
 	if authCalled {
 		t.Fatal("expected validation errors before authentication")
+	}
+}
+
+func TestWebRemovedAppsRestoreFlagsAreExperimental(t *testing.T) {
+	cmd := WebRemovedAppsRestoreCommand()
+	for _, name := range []string{"app", "access", "confirm"} {
+		definition := cmd.FlagSet.Lookup(name)
+		if definition == nil {
+			t.Fatalf("missing --%s", name)
+		}
+		if !strings.HasPrefix(definition.Usage, "[experimental] ") {
+			t.Fatalf("--%s usage = %q, want experimental lifecycle prefix", name, definition.Usage)
+		}
+	}
+}
+
+func TestWebRemovedAppsRestoreSessionErrorIncludesAuthHint(t *testing.T) {
+	restoreSession := SetResolveWebSession(func(context.Context, string, string, string, string) (*webcore.AuthSession, string, error) {
+		return nil, "", &webcore.APIError{Status: 401}
+	})
+	t.Cleanup(restoreSession)
+	cmd := WebRemovedAppsRestoreCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", "123", "--access", "full", "--confirm"}); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Exec(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "web removed-apps restore failed: web session is unauthorized or expired") || !strings.Contains(err.Error(), "asc web auth login") {
+		t.Fatalf("expected restore auth hint, got %v", err)
 	}
 }
 
@@ -241,6 +272,72 @@ func TestWebRemovedAppsRestoreCallOrderAndJSON(t *testing.T) {
 	}
 	if got.AppID != "123" || got.Access != "full" || got.Removed || !got.PermissionWritten {
 		t.Fatalf("unexpected result: %+v", got)
+	}
+}
+
+func TestWebRemovedAppsRestoreHumanRenderers(t *testing.T) {
+	restoreSession := SetResolveWebSession(func(context.Context, string, string, string, string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{}, "cache", nil
+	})
+	origClient, origRestore, origVerify, origPermission := newWebClientFn, restoreRemovedWebAppFn, getWebAppRemovalStateFn, setRemovedWebAppPermissionFn
+	t.Cleanup(func() {
+		restoreSession()
+		newWebClientFn = origClient
+		restoreRemovedWebAppFn = origRestore
+		getWebAppRemovalStateFn = origVerify
+		setRemovedWebAppPermissionFn = origPermission
+	})
+	newWebClientFn = func(*webcore.AuthSession) *webcore.Client { return &webcore.Client{} }
+	restoreRemovedWebAppFn = func(context.Context, *webcore.Client, string) error { return nil }
+	getWebAppRemovalStateFn = func(context.Context, *webcore.Client, string) (*webcore.AppRemovalState, error) {
+		return &webcore.AppRemovalState{RemovedKnown: true, Removed: false}, nil
+	}
+	setRemovedWebAppPermissionFn = func(context.Context, *webcore.Client, string, string) error { return nil }
+
+	for _, tc := range []struct {
+		name, format, want string
+	}{
+		{name: "table", format: "table", want: "App ID"},
+		{name: "markdown", format: "markdown", want: "| App ID | Access | Removed | Permission Written |"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := WebRemovedAppsRestoreCommand()
+			if err := cmd.FlagSet.Parse([]string{"--app", "123", "--access", "full", "--confirm", "--output", tc.format}); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr := captureWebCommandOutput(t, func() {
+				if err := cmd.Exec(context.Background(), nil); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if stderr != "" {
+				t.Fatalf("unexpected stderr: %q", stderr)
+			}
+			if !strings.Contains(stdout, tc.want) {
+				t.Fatalf("%s output missing %q: %q", tc.name, tc.want, stdout)
+			}
+			if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+				t.Fatalf("%s output unexpectedly fell back to JSON: %q", tc.name, stdout)
+			}
+		})
+	}
+
+	// The restore receipt uses the same registry-backed renderer for the
+	// interactive default as an explicit table selection.
+	t.Setenv("ASC_DEFAULT_OUTPUT", "table")
+	shared.ResetDefaultOutputFormat()
+	t.Cleanup(shared.ResetDefaultOutputFormat)
+	cmd := WebRemovedAppsRestoreCommand()
+	if err := cmd.FlagSet.Parse([]string{"--app", "123", "--access", "full", "--confirm"}); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _ := captureWebCommandOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stdout, "App ID") {
+		t.Fatalf("TTY-default output missing table header: %q", stdout)
 	}
 }
 

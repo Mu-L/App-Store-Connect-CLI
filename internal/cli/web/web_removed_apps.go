@@ -123,9 +123,9 @@ Examples:
 // WebRemovedAppsRestoreCommand restores a removed app and configures access.
 func WebRemovedAppsRestoreCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web removed-apps restore", flag.ExitOnError)
-	app := fs.String("app", "", "App Store Connect app ID")
-	access := fs.String("access", "", "Access mode: limited or full")
-	confirm := fs.Bool("confirm", false, "Confirm restoring this app (required)")
+	app := fs.String("app", "", "[experimental] App Store Connect app ID")
+	access := fs.String("access", "", "[experimental] Access mode: limited or full")
+	confirm := fs.Bool("confirm", false, "[experimental] Confirm restoring this app (required)")
 	authFlags := bindWebSessionFlags(fs)
 	output := shared.BindOutputFlags(fs)
 	return &ffcli.Command{
@@ -144,10 +144,13 @@ func WebRemovedAppsRestoreCommand() *ffcli.Command {
 			if !*confirm {
 				return shared.UsageError("--confirm is required")
 			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
 			if err != nil {
-				return err
+				return withWebAuthHint(err, "web removed-apps restore")
 			}
 			client := newWebClientFn(session)
 			if err = restoreRemovedWebAppFn(requestCtx, client, id); err != nil {
@@ -163,7 +166,7 @@ func WebRemovedAppsRestoreCommand() *ffcli.Command {
 			if err = setRemovedWebAppPermissionFn(requestCtx, client, id, mode); err != nil {
 				return withWebAuthHint(fmt.Errorf("web removed-apps restore failed: app was restored but access update failed: %w", err), "web removed-apps restore")
 			}
-			return shared.PrintOutput(asc.WebRemovedAppRestoreResult{AppID: id, Access: mode, Removed: false, PermissionWritten: true}, *output.Output, *output.Pretty)
+			return shared.PrintOutput(&asc.WebRemovedAppRestoreResult{AppID: id, Access: mode, Removed: false, PermissionWritten: true}, *output.Output, *output.Pretty)
 		},
 	}
 }
