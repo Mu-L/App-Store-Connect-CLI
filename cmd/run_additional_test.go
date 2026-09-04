@@ -740,7 +740,7 @@ func TestRun_ReviewSubmitPreflightReadinessFailuresAreExpectedNegative(t *testin
 					"review", "submit",
 					"--app", "app-1",
 					"--version-id", "version-1",
-					"--build", "build-1",
+					"--build-id", "build-1",
 					"--confirm",
 				}, "1.0.0")
 			})
