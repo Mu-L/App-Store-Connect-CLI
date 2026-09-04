@@ -557,23 +557,29 @@ func verifySigningResignPreservedExternalCodeOpen(ctx context.Context, source *o
 	return verifySigningResignPreservedExternalCode(ctx, name)
 }
 
-func openSigningResignTreeRoot(treeRoot string) (*os.Root, error) {
+func openSigningResignTreeRoot(treeRoot string) (rootfs.Root, *os.Root, error) {
 	root, err := rootfs.New(treeRoot)
 	if err != nil {
-		return nil, err
+		return rootfs.Root{}, nil, err
 	}
-	return root.OpenRoot()
+	opened, err := root.OpenRoot()
+	if err != nil {
+		root.Close()
+		return rootfs.Root{}, nil, err
+	}
+	return root, opened, nil
 }
 
 func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	root, err := openSigningResignTreeRoot(treeRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
 	if err != nil {
 		return fmt.Errorf("open staging tree: %w", err)
 	}
 	defer root.Close()
+	defer owner.Close()
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -644,11 +650,12 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	root, err := openSigningResignTreeRoot(treeRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
 	if err != nil {
 		return fmt.Errorf("open staging tree: %w", err)
 	}
 	defer root.Close()
+	defer owner.Close()
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -696,11 +703,12 @@ func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot 
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	root, err := openSigningResignTreeRoot(treeRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
 	if err != nil {
 		return nil, fmt.Errorf("open staging tree: %w", err)
 	}
 	defer root.Close()
+	defer owner.Close()
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -774,11 +782,12 @@ func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot str
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	root, err := openSigningResignTreeRoot(treeRoot)
+	owner, root, err := openSigningResignTreeRoot(treeRoot)
 	if err != nil {
 		return nil, fmt.Errorf("open staging tree: %w", err)
 	}
 	defer root.Close()
+	defer owner.Close()
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -1111,6 +1120,7 @@ func readRootedSigningResignFile(rootPath, relativePath string, limit int64) ([]
 		return nil, err
 	}
 	defer root.Close()
+	defer owner.Close()
 	return root.ReadFileLimited(relativePath, limit)
 }
 
