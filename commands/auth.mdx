@@ -151,7 +151,7 @@ Remove stored API credentials.
 </ParamField>
 
 <ParamField path="--confirm" type="boolean" default="false">
-  Confirm credential removal. This will be required in 5.0.0.
+  Confirm credential removal (required)
 </ParamField>
 
 **Examples:**
@@ -161,7 +161,7 @@ asc auth logout --all --confirm
 asc auth logout --name "MyKey" --confirm
 ```
 
-For compatibility, omitting `--name` still removes all credentials and omitting `--confirm` prints a deprecation warning. Pass an explicit target and `--confirm` now; confirmation will be required in 5.0.0. An explicit `--confirm=false` is rejected before credentials are changed.
+`--confirm` is required. Omitting it, or passing an explicit `--confirm=false`, is a usage error (exit 2) and no credentials are changed. Omitting `--name` removes all credentials; pass `--name` or `--all` to make the target explicit.
 
 **Output:**
 
