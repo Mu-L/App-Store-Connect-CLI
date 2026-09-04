@@ -388,10 +388,22 @@ func signingResignStrictPrefixedConcreteString(value string) bool {
 // before matching any candidate. This prevents an invalid array entry from
 // being skipped just because another entry happens to authorize the value.
 func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) bool {
+	// Exact equality is the strongest authorization boundary. This preserves
+	// literal wildcard strings and structured arrays without interpreting them
+	// as patterns.
+	if reflect.DeepEqual(profileValue, signedValue) {
+		return true
+	}
 	profileString, profileIsString := profileValue.(string)
 	signedString, signedIsString := signedValue.(string)
 	if profileIsString || signedIsString {
-		if !profileIsString || !signedIsString || !signingResignStrictProfileString(profileString) || !signingResignStrictConcreteString(signedString) {
+		if !profileIsString || !signedIsString {
+			return false
+		}
+		if profileString == signedString {
+			return true
+		}
+		if !signingResignStrictProfileString(profileString) || !signingResignStrictConcreteString(signedString) {
 			return false
 		}
 		if strings.ContainsRune(profileString, '*') {
@@ -415,7 +427,10 @@ func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) b
 	}
 	for _, profileItem := range profileList {
 		profileText, ok := profileItem.(string)
-		if !ok || !signingResignStrictProfileString(profileText) {
+		if !ok {
+			return reflect.DeepEqual(profileValue, signedValue)
+		}
+		if !signingResignStrictProfileString(profileText) {
 			return false
 		}
 	}

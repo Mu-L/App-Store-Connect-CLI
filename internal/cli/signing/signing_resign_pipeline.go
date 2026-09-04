@@ -433,6 +433,7 @@ func validateSigningResignOptions(options signingResignOptions) error {
 }
 
 func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root, archive signingResignArchive, profiles map[string]signingResignProfile, rebaseTeamClaims ...bool) (signingResignPreparedTree, error) {
+	strictNested := len(rebaseTeamClaims) > 0 && rebaseTeamClaims[0]
 	if err := contextError(ctx); err != nil {
 		return signingResignPreparedTree{}, err
 	}
@@ -494,7 +495,7 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		if err != nil {
 			return signingResignPreparedTree{}, fmt.Errorf("read nested code entitlements failed")
 		}
-		if err := validateSigningResignNestedEntitlements(entitlements, profiles[target.BundleID].Entitlements); err != nil {
+		if err := validateSigningResignNestedEntitlements(entitlements, profiles[target.BundleID].Entitlements, strictNested); err != nil {
 			displayPath, _ := filepath.Rel(treeRoot.Path(), codePath)
 			return signingResignPreparedTree{}, fmt.Errorf("nested code %s entitlements: %w", filepath.ToSlash(displayPath), err)
 		}
@@ -839,13 +840,17 @@ func signingResignTargetForCodePath(targets []signingResignTarget, treeRoot, cod
 	return selected, selectedLength >= 0
 }
 
-func validateSigningResignNestedEntitlements(entitlements, profile map[string]any) error {
+func validateSigningResignNestedEntitlements(entitlements, profile map[string]any, strict ...bool) error {
 	for key, value := range entitlements {
 		if _, identityKey := signingResignIdentityEntitlementKeys[key]; identityKey {
 			return fmt.Errorf("identity entitlement %s is not allowed on nested non-app code", key)
 		}
 		profileValue, exists := profile[key]
-		if !exists || !signingResignEntitlementValuePermits(profileValue, value) {
+		permitted := exists && signingResignEntitlementValuePermits(profileValue, value)
+		if len(strict) > 0 && strict[0] {
+			permitted = exists && signingResignStrictEntitlementValuePermits(profileValue, value)
+		}
+		if !permitted {
 			return fmt.Errorf("entitlement %s is not permitted by its target profile", key)
 		}
 	}

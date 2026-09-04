@@ -262,6 +262,31 @@ func TestSigningResignStrictAuthorizationPreservesExactNonStringScalars(t *testi
 	}
 }
 
+func TestSigningResignStrictAuthorizationPreservesExactStructuredArrays(t *testing.T) {
+	literal := []any{"literal*", "other"}
+	if !signingResignStrictEntitlementValuePermits(literal, []any{"literal*", "other"}) {
+		t.Fatal("exact literal-wildcard array was rejected")
+	}
+	structured := []any{map[string]any{"name": "one"}, true}
+	if !signingResignStrictEntitlementValuePermits(structured, []any{map[string]any{"name": "one"}, true}) {
+		t.Fatal("exact structured array was rejected")
+	}
+	if signingResignStrictEntitlementValuePermits(structured, []any{true, map[string]any{"name": "one"}}) {
+		t.Fatal("differing structured array was accepted")
+	}
+}
+
+func TestSigningResignNestedAuthorizationStrictRebaseVsLegacy(t *testing.T) {
+	entitlements := map[string]any{"com.example.nested": "OLD.value"}
+	profile := map[string]any{"com.example.nested": "*"}
+	if err := validateSigningResignNestedEntitlements(entitlements, profile); err != nil {
+		t.Fatalf("legacy nested authorization rejected wildcard: %v", err)
+	}
+	if err := validateSigningResignNestedEntitlements(entitlements, profile, true); err == nil {
+		t.Fatal("strict nested rebasing authorization accepted bare wildcard")
+	}
+}
+
 func TestPlanSigningResignEntitlementsRejectsMalformedKeychainProfileArray(t *testing.T) {
 	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
 		signingResignKeychainGroupsEntitlement: []string{"OLDPREFIX.com.example.shared"},

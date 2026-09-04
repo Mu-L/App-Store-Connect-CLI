@@ -635,52 +635,6 @@ func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {
 	return reflect.DeepEqual(profileValue, signedValue)
 }
 
-// signingResignEntitlementValuePermitsStrict is reserved for the opt-in
-// team-claim rebasing path. Keep the legacy matcher above unchanged so the
-// no-flag compatibility contract from #2241 remains intact.
-func signingResignEntitlementValuePermitsStrict(profileValue, signedValue any) bool {
-	if !signingResignProfileAuthorizationValueValid(profileValue) {
-		return false
-	}
-	return signingResignEntitlementValuePermits(profileValue, signedValue)
-}
-
-func signingResignProfileAuthorizationValueValid(value any) bool {
-	switch typed := value.(type) {
-	case string:
-		if !strings.ContainsRune(typed, '*') {
-			return true
-		}
-		prefix, ok := strings.CutSuffix(typed, "*")
-		return ok && prefix != "" && strings.HasSuffix(prefix, ".") && !strings.ContainsRune(prefix, '*')
-	case []any:
-		if len(typed) == 0 {
-			return false
-		}
-		for _, item := range typed {
-			if _, ok := item.(string); !ok {
-				return false
-			}
-			if !signingResignProfileAuthorizationValueValid(item) {
-				return false
-			}
-		}
-		return true
-	case []string:
-		if len(typed) == 0 {
-			return false
-		}
-		for _, item := range typed {
-			if !signingResignProfileAuthorizationValueValid(item) {
-				return false
-			}
-		}
-		return true
-	default:
-		return true
-	}
-}
-
 func signingResignEntitlementList(value any) ([]any, bool) {
 	switch typed := value.(type) {
 	case []any:
