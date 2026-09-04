@@ -2667,6 +2667,7 @@ func TestDeleteSessionIfMatchesRemovesAMirrorCarryingTheSameStamp(t *testing.T) 
 
 	key := webSessionCacheKey("user@example.com")
 	mirror := webTestPersistedSession(t, "stale-token", loaded.cachedUpdatedAt)
+	mirror.Generation = loaded.cachedGeneration
 	if err := writeSessionToFile(key, mirror); err != nil {
 		t.Fatalf("writeSessionToFile error: %v", err)
 	}
@@ -2683,5 +2684,76 @@ func TestDeleteSessionIfMatchesRemovesAMirrorCarryingTheSameStamp(t *testing.T) 
 	}
 	if _, ok, err := readSessionFromFile(key); err != nil || ok {
 		t.Fatalf("expected the identically stamped file mirror to be gone, ok=%v error=%v", ok, err)
+	}
+}
+
+func TestSerializeCookieJarAssignsUniqueGeneration(t *testing.T) {
+	jar := webTestSessionJar(t, "generation-token")
+	a := serializeCookieJar(jar, "user@example.com")
+	b := serializeCookieJar(jar, "other@example.com")
+	if a.Generation == "" || b.Generation == "" {
+		t.Fatal("expected non-empty session generations")
+	}
+	if a.Generation == b.Generation {
+		t.Fatalf("expected unique generations, got %q", a.Generation)
+	}
+}
+
+func TestPersistSessionConcurrentDifferentAppleIDsPreservesBothKeychainEntries(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, tc := range []struct{ email, token string }{
+		{email: "first@example.com", token: "first-token"},
+		{email: "second@example.com", token: "second-token"},
+	} {
+		tc := tc
+		go func() {
+			<-start
+			errs <- PersistSession(&AuthSession{Client: &http.Client{Jar: webTestSessionJar(t, tc.token)}, UserEmail: tc.email})
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent PersistSession error: %v", err)
+		}
+	}
+	for _, email := range []string{"first@example.com", "second@example.com"} {
+		stored, ok, err := readSessionFromKeychain(webSessionCacheKey(email))
+		if err != nil || !ok {
+			t.Fatalf("expected %s to survive, ok=%v error=%v", email, ok, err)
+		}
+		if stored.UserEmail != email {
+			t.Fatalf("stored wrong identity %q for %s", stored.UserEmail, email)
+		}
+	}
+}
+
+func TestSerializeCookieJarPropagatesGenerationFailure(t *testing.T) {
+	previous := sessionGenerationReader
+	sessionGenerationReader = func([]byte) (int, error) { return 0, errors.New("rng unavailable") }
+	t.Cleanup(func() { sessionGenerationReader = previous })
+	if _, err := serializeCookieJarWithError(webTestSessionJar(t, "token"), "user@example.com"); err == nil {
+		t.Fatal("expected generation failure")
+	}
+}
+
+func TestSamePersistedSessionIdentityRejectsDifferentGenerationSameTimestamp(t *testing.T) {
+	now := time.Now().UTC()
+	loaded := &AuthSession{cachedUpdatedAt: now, cachedGeneration: "old"}
+	if samePersistedSessionIdentity(persistedSession{UpdatedAt: now, Generation: "new"}, loaded) {
+		t.Fatal("different generations must not match even with equal timestamps")
+	}
+}
+
+func TestSamePersistedSessionIdentityRejectsGeneratedLegacyPair(t *testing.T) {
+	now := time.Now().UTC()
+	if samePersistedSessionIdentity(persistedSession{UpdatedAt: now}, &AuthSession{cachedUpdatedAt: now, cachedGeneration: "generated"}) {
+		t.Fatal("generated and legacy sessions must not match")
 	}
 }

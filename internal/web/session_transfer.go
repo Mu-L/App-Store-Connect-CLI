@@ -415,19 +415,22 @@ func importedCookieDeadline(expires *time.Time, maxAge int, now time.Time) (time
 	return utc, 0, false
 }
 
-type cookieJarDeletion struct {
-	origin string
-	cookie http.Cookie
+type cookieJarMutation struct {
+	origin      string
+	requestPath string
+	cookie      http.Cookie
+	recordedAt  time.Time
 }
 
-// recordingCookieJar keeps the normal cookie-jar behavior while retaining
-// validation-time deletion events. cookiejar.Cookies only exposes the final
-// state, so a cookie removed by Apple's Set-Cookie response would otherwise be
-// indistinguishable from a cookie that was never present.
+// recordingCookieJar keeps the normal cookie-jar behavior while retaining the
+// original Set-Cookie mutations observed during validation. cookiejar.Cookies
+// intentionally exposes only name and value, so rebuilding a persisted session
+// from a root Cookies call loses path, expiry, lifetime, and security
+// attributes (and cannot distinguish a path-scoped cookie from a deletion).
 type recordingCookieJar struct {
 	jar       http.CookieJar
 	mu        sync.Mutex
-	deletions []cookieJarDeletion
+	mutations []cookieJarMutation
 }
 
 func (j *recordingCookieJar) Cookies(u *url.URL) []*http.Cookie {
@@ -442,38 +445,71 @@ func (j *recordingCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 		return
 	}
 	origin := ""
+	requestPath := "/"
 	if u != nil {
 		origin, _ = canonicalSessionCookieURL(u.String())
-	}
-	var deletions []cookieJarDeletion
-	if origin != "" {
-		for _, cookie := range cookies {
-			if cookie == nil || !isCookieDeletion(*cookie) {
-				continue
-			}
-			deletions = append(deletions, cookieJarDeletion{origin: origin, cookie: *cookie})
+		requestPath = u.Path
+		if requestPath == "" {
+			requestPath = "/"
 		}
 	}
-	if len(deletions) > 0 {
-		j.mu.Lock()
-		j.deletions = append(j.deletions, deletions...)
-		j.mu.Unlock()
+	if origin != "" {
+		recordedAt := time.Now().UTC()
+		mutations := make([]cookieJarMutation, 0, len(cookies))
+		for _, cookie := range cookies {
+			if cookie == nil {
+				continue
+			}
+			mutations = append(mutations, cookieJarMutation{
+				origin:      origin,
+				requestPath: requestPath,
+				cookie:      *cookie,
+				recordedAt:  recordedAt,
+			})
+		}
+		if len(mutations) > 0 {
+			j.mu.Lock()
+			j.mutations = append(j.mutations, mutations...)
+			j.mu.Unlock()
+		}
 	}
 	j.jar.SetCookies(u, cookies)
 }
 
-func (j *recordingCookieJar) cookieDeletions() []cookieJarDeletion {
+func (j *recordingCookieJar) cookieMutations() []cookieJarMutation {
 	if j == nil {
 		return nil
 	}
 	j.mu.Lock()
-	deletions := append([]cookieJarDeletion(nil), j.deletions...)
+	mutations := append([]cookieJarMutation(nil), j.mutations...)
 	j.mu.Unlock()
-	return deletions
+	return mutations
 }
 
-func isCookieDeletion(cookie http.Cookie) bool {
-	return cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now()))
+func isCookieDeletionAt(cookie http.Cookie, at time.Time) bool {
+	if cookie.MaxAge < 0 {
+		return true
+	}
+	// RFC 6265 gives Max-Age precedence over Expires. A positive lifetime
+	// remains usable even when a legacy Expires attribute is already past.
+	if cookie.MaxAge > 0 {
+		return false
+	}
+	return !cookie.Expires.IsZero() && !cookie.Expires.After(at)
+}
+
+func effectiveCookiePath(path, requestPath string) string {
+	if path != "" && path[0] == '/' {
+		return path
+	}
+	if requestPath == "" || requestPath[0] != '/' {
+		return "/"
+	}
+	index := strings.LastIndex(requestPath, "/")
+	if index <= 0 {
+		return "/"
+	}
+	return requestPath[:index]
 }
 
 // normalize converts a validated bundle into the cache representation, leaving
@@ -595,8 +631,39 @@ func importSessionBundleWithValidator(ctx context.Context, bundle *SessionBundle
 	if err != nil {
 		return SessionImportSummary{}, err
 	}
+	summary, err = summarizeValidatedSession(validated, summary, time.Now().UTC())
+	if err != nil {
+		return SessionImportSummary{}, err
+	}
 	if err := persistImportedSessionBySelection(selection, webSessionCacheKey(summary.AppleID), validated, overwrite); err != nil {
 		return SessionImportSummary{}, err
+	}
+	return summary, nil
+}
+
+func summarizeValidatedSession(session persistedSession, summary SessionImportSummary, now time.Time) (SessionImportSummary, error) {
+	validated, cookieCount := discardExpiredPersistedCookies(session, now)
+	if cookieCount == 0 {
+		return SessionImportSummary{}, fmt.Errorf("%w: Apple revoked every cookie in the bundle", ErrSessionBundleValidationFailed)
+	}
+
+	var earliest time.Time
+	for _, list := range validated.Cookies {
+		for _, cookie := range list {
+			if cookie.Expires.IsZero() {
+				continue
+			}
+			if earliest.IsZero() || cookie.Expires.Before(earliest) {
+				earliest = cookie.Expires
+			}
+		}
+	}
+	summary.CookieCount = cookieCount
+	if earliest.IsZero() {
+		summary.ExpiresAt = nil
+	} else {
+		expires := earliest.UTC()
+		summary.ExpiresAt = &expires
 	}
 	return summary, nil
 }
@@ -629,14 +696,19 @@ func validateImportedSession(ctx context.Context, sess persistedSession, validat
 	if !strings.EqualFold(strings.TrimSpace(appleID), strings.TrimSpace(sess.UserEmail)) {
 		return persistedSession{}, fmt.Errorf("%w: authenticated Apple ID does not match bundle Apple ID", ErrSessionBundleValidationFailed)
 	}
-	return mergeRefreshedSessionCookies(sess, trackedJar), nil
+	validated := mergeRefreshedSessionCookies(sess, trackedJar)
+	validated, cookieCount := discardExpiredPersistedCookies(validated, time.Now().UTC())
+	if cookieCount == 0 {
+		return persistedSession{}, fmt.Errorf("%w: Apple revoked every cookie in the bundle", ErrSessionBundleValidationFailed)
+	}
+	return validated, nil
 }
 
 // mergeRefreshedSessionCookies folds the cookies Apple rotated or issued during
-// validation back into the session about to be cached. Explicit deletion events
-// are applied first; values from the jar then win, and cookies the jar does not
-// report keep the bundle entry because cookiejar.Cookies reports only names and
-// values and would otherwise drop the expiry and path metadata a bundle carries.
+// validation back into the session about to be cached by replaying the original
+// Set-Cookie mutations. Replaying the mutations retains all cookie attributes;
+// a root-level cookiejar.Cookies call would expose only names and values and
+// would lose path, expiry, lifetime, and security attributes.
 func mergeRefreshedSessionCookies(sess persistedSession, jar http.CookieJar) persistedSession {
 	merged := persistedSession{
 		Version:   sess.Version,
@@ -648,62 +720,122 @@ func mergeRefreshedSessionCookies(sess persistedSession, jar http.CookieJar) per
 		merged.Cookies[origin] = append([]pCookie(nil), list...)
 	}
 	if recorder, ok := jar.(*recordingCookieJar); ok {
-		for _, deletion := range recorder.cookieDeletions() {
-			list := merged.Cookies[deletion.origin]
-			kept := list[:0]
-			for _, cookie := range list {
-				if !persistedCookieMatchesDeletion(cookie, deletion.cookie) {
-					kept = append(kept, cookie)
-				}
-			}
-			if len(kept) == 0 {
-				delete(merged.Cookies, deletion.origin)
-			} else {
-				merged.Cookies[deletion.origin] = kept
-			}
+		now := time.Now().UTC()
+		for _, mutation := range recorder.cookieMutations() {
+			applyCookieJarMutation(&merged, mutation, now)
 		}
-	}
-
-	for _, u := range sessionCookieURLs() {
-		refreshed := jar.Cookies(u)
-		if len(refreshed) == 0 {
-			continue
-		}
-		origin := u.String()
-		list := merged.Cookies[origin]
-		for _, cookie := range refreshed {
-			if cookie == nil || cookie.Name == "" {
-				continue
-			}
-			replaced := false
-			for index := range list {
-				if list[index].Name != cookie.Name {
-					continue
-				}
-				list[index].Value = cookie.Value
-				replaced = true
-				break
-			}
-			if !replaced {
-				list = append(list, pCookie{Name: cookie.Name, Value: cookie.Value})
-			}
-		}
-		merged.Cookies[origin] = list
 	}
 	return merged
 }
 
-func persistedCookieMatchesDeletion(cookie pCookie, deletion http.Cookie) bool {
-	if cookie.Name != deletion.Name {
-		return false
+func applyCookieJarMutation(session *persistedSession, mutation cookieJarMutation, now time.Time) {
+	if session == nil || mutation.origin == "" || mutation.cookie.Name == "" {
+		return
 	}
-	if deletion.Path != "" && cookie.Path != deletion.Path {
-		return false
+
+	path := effectiveCookiePath(mutation.cookie.Path, mutation.requestPath)
+	list := session.Cookies[mutation.origin]
+	if isCookieDeletionAt(mutation.cookie, mutation.recordedAt) {
+		kept := list[:0]
+		for _, cookie := range list {
+			if !persistedCookieMatchesIdentity(cookie, mutation.cookie.Name, path, mutation.cookie.Domain) {
+				kept = append(kept, cookie)
+			}
+		}
+		if len(kept) == 0 {
+			delete(session.Cookies, mutation.origin)
+		} else {
+			session.Cookies[mutation.origin] = kept
+		}
+		return
 	}
-	if deletion.Domain != "" && !strings.EqualFold(strings.TrimPrefix(cookie.Domain, "."), strings.TrimPrefix(deletion.Domain, ".")) {
-		return false
+
+	recordedAt := mutation.recordedAt
+	if recordedAt.IsZero() {
+		recordedAt = now
 	}
-	return true
+	expires, maxAge := absoluteCookieDeadline(mutation.cookie.Expires, mutation.cookie.MaxAge, recordedAt)
+	updated := pCookie{
+		Name:     mutation.cookie.Name,
+		Value:    mutation.cookie.Value,
+		Path:     path,
+		Domain:   mutation.cookie.Domain,
+		Expires:  expires,
+		MaxAge:   maxAge,
+		Secure:   mutation.cookie.Secure,
+		HttpOnly: mutation.cookie.HttpOnly,
+		SameSite: int(mutation.cookie.SameSite),
+	}
+	if isExpiredCookie(updated, now) {
+		kept := list[:0]
+		for _, cookie := range list {
+			if !persistedCookieMatchesIdentity(cookie, updated.Name, updated.Path, updated.Domain) {
+				kept = append(kept, cookie)
+			}
+		}
+		if len(kept) == 0 {
+			delete(session.Cookies, mutation.origin)
+		} else {
+			session.Cookies[mutation.origin] = kept
+		}
+		return
+	}
+
+	for index := range list {
+		if !persistedCookieMatchesIdentity(list[index], updated.Name, updated.Path, updated.Domain) {
+			continue
+		}
+		// A Set-Cookie without an expiry turns a persistent cookie into a
+		// session cookie in net/http. Preserve the bundle deadline for the
+		// compatibility path used by older validators, while every attribute
+		// supplied by the mutation still replaces the previous value.
+		if updated.Expires.IsZero() && updated.MaxAge == 0 && !list[index].Expires.IsZero() {
+			updated.Expires = list[index].Expires
+		}
+		list[index] = updated
+		session.Cookies[mutation.origin] = list
+		return
+	}
+	session.Cookies[mutation.origin] = append(list, updated)
+}
+
+func persistedCookieMatchesIdentity(cookie pCookie, name, path, domain string) bool {
+	// cookiejar.Cookies omits Path, so sessions written by the regular login
+	// path commonly carry an empty path even though the jar's effective path is
+	// "/". Treat that representation as the root path when matching a later
+	// Set-Cookie mutation.
+	effectivePath := effectiveCookiePath(cookie.Path, "/")
+	return cookie.Name == name && effectivePath == path && cookieDomainsEqual(cookie.Domain, domain)
+}
+
+func cookieDomainsEqual(left, right string) bool {
+	return strings.EqualFold(strings.TrimPrefix(left, "."), strings.TrimPrefix(right, "."))
+}
+
+func discardExpiredPersistedCookies(session persistedSession, now time.Time) (persistedSession, int) {
+	for origin, list := range session.Cookies {
+		kept := list[:0]
+		for _, cookie := range list {
+			if cookie.MaxAge > 0 {
+				cookie.Expires, cookie.MaxAge = absoluteCookieDeadline(cookie.Expires, cookie.MaxAge, now)
+			}
+			if cookie.Name == "" || isExpiredCookie(cookie, now) {
+				continue
+			}
+			kept = append(kept, cookie)
+		}
+		if len(kept) == 0 {
+			delete(session.Cookies, origin)
+			continue
+		}
+		session.Cookies[origin] = kept
+	}
+
+	cookieCount := 0
+	for _, list := range session.Cookies {
+		cookieCount += len(list)
+	}
+	return session, cookieCount
 }
 
 func validateSessionInfo(ctx context.Context, client *http.Client) (string, error) {

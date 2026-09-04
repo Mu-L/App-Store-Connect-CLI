@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,7 +40,11 @@ const (
 var (
 	ErrCachedSessionExpired          = errors.New("cached web session expired")
 	ErrCachedSessionValidationFailed = errors.New("cached web session could not be validated")
-	errMalformedSessionStore         = errors.New("web session store is malformed")
+	errMalformedSessionFile          = errors.New("web session cache is malformed")
+	// errMalformedSessionStore identifies malformed aggregate keychain data.
+	// It is separate from the file-cache sentinel so an explicit keychain
+	// recovery cannot be triggered by an unrelated file-read error.
+	errMalformedSessionStore = errors.New("web session store is malformed")
 )
 
 type sessionBackend int
@@ -70,6 +75,7 @@ type backendSelection struct {
 type persistedSession struct {
 	Version         int                  `json:"version"`
 	UpdatedAt       time.Time            `json:"updated_at"`
+	Generation      string               `json:"generation,omitempty"`
 	UserEmail       string               `json:"user_email,omitempty"`
 	DeveloperTeamID string               `json:"developer_team_id,omitempty"`
 	Cookies         map[string][]pCookie `json:"cookies"`
@@ -121,6 +127,7 @@ var (
 	// delete in DeleteSessionIfMatches. Tests set it to schedule a concurrent
 	// persist inside that window; it is nil in production.
 	sessionCompareDeleteBarrier func()
+	sessionGenerationReader     = func(b []byte) (int, error) { return rand.Read(b) }
 )
 
 func webSessionCacheEnabled() bool {
@@ -255,12 +262,22 @@ func isExpiredCookie(c pCookie, now time.Time) bool {
 }
 
 func serializeCookieJar(jar http.CookieJar, userEmail string) persistedSession {
+	sess, _ := serializeCookieJarWithError(jar, userEmail)
+	return sess
+}
+
+func serializeCookieJarWithError(jar http.CookieJar, userEmail string) (persistedSession, error) {
 	now := time.Now().UTC()
+	var generation [16]byte
+	if _, err := sessionGenerationReader(generation[:]); err != nil {
+		return persistedSession{}, fmt.Errorf("generate session cache identity: %w", err)
+	}
 	out := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: now,
-		UserEmail: strings.TrimSpace(userEmail),
-		Cookies:   map[string][]pCookie{},
+		Version:    webSessionCacheVersion,
+		UpdatedAt:  now,
+		Generation: fmt.Sprintf("%x", generation[:]),
+		UserEmail:  strings.TrimSpace(userEmail),
+		Cookies:    map[string][]pCookie{},
 	}
 	for _, u := range sessionCookieURLs() {
 		cookies := jar.Cookies(u)
@@ -292,7 +309,7 @@ func serializeCookieJar(jar http.CookieJar, userEmail string) persistedSession {
 			out.Cookies[u.String()] = list
 		}
 	}
-	return out
+	return out, nil
 }
 
 func hydrateCookieJar(jar http.CookieJar, sess persistedSession) int {
@@ -464,7 +481,7 @@ func readSessionStoreFromKeyring(kr keyring.Keyring) (persistedSessionStore, boo
 	}
 	var store persistedSessionStore
 	if err := json.Unmarshal(item.Data, &store); err != nil {
-		return persistedSessionStore{}, false, fmt.Errorf("%w: %w", errMalformedSessionStore, err)
+		return persistedSessionStore{}, false, fmt.Errorf("%w: failed to decode keychain session store: %w", errMalformedSessionStore, err)
 	}
 	if store.Version != webSessionCacheVersion {
 		return persistedSessionStore{}, false, nil
@@ -514,22 +531,36 @@ func removeLegacyLastKeyFromKeyring(kr keyring.Keyring) error {
 }
 
 func writeSessionToKeychain(key string, sess persistedSession) error {
-	return writeSessionToKeychainWithRecovery(key, sess, false)
+	return withSessionStoreLock(func() error { return writeSessionToKeychainUnlocked(key, sess) })
 }
 
-// writeSessionToKeychainIfAbsent performs the no-overwrite check in the same
-// critical section as the aggregate write. The caller holds the per-entry
-// session lock, which supplies the create-only boundary that keyring.Set does
-// not expose for its read/modify/write aggregate.
-func writeSessionToKeychainIfAbsent(key string, sess persistedSession) error {
+func writeSessionToKeychainUnlocked(key string, sess persistedSession) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
 	}
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
-		// Do not recover malformed or unreadable state on a no-overwrite import:
-		// treating it as absent could destroy an existing account or store.
+		return err
+	}
+	if !ok {
+		store = newPersistedSessionStore()
+	}
+	store = normalizePersistedSessionStore(store)
+	store.Sessions[key] = sess
+	store.LastKey = key
+	return writeSessionStoreToKeyring(kr, store)
+}
+
+func writeSessionToKeychainIfAbsentUnlocked(key string, sess persistedSession) error {
+	kr, err := sessionKeyringOpen()
+	if err != nil {
+		return err
+	}
+	store, ok, err := readSessionStoreFromKeyring(kr)
+	if err != nil {
+		// Never treat malformed or unreadable state as absent for a create-only
+		// import. Doing so could destroy another account's credentials.
 		return err
 	}
 	if ok {
@@ -545,17 +576,14 @@ func writeSessionToKeychainIfAbsent(key string, sess persistedSession) error {
 	return writeSessionStoreToKeyring(kr, store)
 }
 
-func writeSessionToKeychainWithRecovery(key string, sess persistedSession, recoverMalformed bool) error {
+func writeSessionToKeychainWithRecoveryUnlocked(key string, sess persistedSession, recoverMalformed bool) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
 	}
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
-		if !errors.Is(err, errMalformedSessionStore) {
-			return err
-		}
-		if !recoverMalformed {
+		if !recoverMalformed || !errors.Is(err, errMalformedSessionStore) {
 			return err
 		}
 		store = newPersistedSessionStore()
@@ -570,25 +598,14 @@ func writeSessionToKeychainWithRecovery(key string, sess persistedSession, recov
 	return writeSessionStoreToKeyring(kr, store)
 }
 
-// keychainSessionEntryCollision checks the fallback backend before an import
-// chooses the file path. An unavailable keychain is not a collision because
-// the caller is explicitly allowed to fall back to the file backend; any
-// other read error is returned instead of risking an overwrite based on an
-// unproven absence.
-func keychainSessionEntryCollision(key string) error {
+func keychainSessionEntryCollisionUnlocked(key string) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to inspect keychain session: %w", err)
+		return err
 	}
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
-		if isKeyringUnavailable(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to inspect keychain session: %w", err)
+		return err
 	}
 	if ok {
 		if _, exists := store.Sessions[key]; exists {
@@ -728,8 +745,10 @@ func writeSessionToFile(key string, sess persistedSession) error {
 		}
 		return cause
 	}
+
 	tmpSessionPath := state.sessionPath + ".tmp"
 	if err := sessionFileWrite(tmpSessionPath, raw, 0o600); err != nil {
+		_ = os.Remove(tmpSessionPath)
 		return fmt.Errorf("failed to write session cache: %w", err)
 	}
 	if err := os.Rename(tmpSessionPath, state.sessionPath); err != nil {
@@ -743,6 +762,7 @@ func writeSessionToFile(key string, sess persistedSession) error {
 	}
 	tmpLastPath := state.lastPath + ".tmp"
 	if err := sessionFileWrite(tmpLastPath, lastRaw, 0o600); err != nil {
+		_ = os.Remove(tmpLastPath)
 		return rollback(fmt.Errorf("failed to write last session pointer: %w", err))
 	}
 	if err := os.Rename(tmpLastPath, state.lastPath); err != nil {
@@ -848,7 +868,7 @@ func readSessionFromFile(key string) (persistedSession, bool, error) {
 	}
 	var sess persistedSession
 	if err := json.Unmarshal(raw, &sess); err != nil {
-		return persistedSession{}, false, fmt.Errorf("failed to decode session cache: %w", err)
+		return persistedSession{}, false, fmt.Errorf("%w: %w", errMalformedSessionFile, err)
 	}
 	if sess.Version != webSessionCacheVersion {
 		return persistedSession{}, false, nil
@@ -1059,9 +1079,7 @@ func persistSessionBySelection(selection backendSelection, key string, sess pers
 		return nil
 	}
 	// Hold the entry lock so a concurrent conditional delete cannot compare a
-	// stamp before this write and delete the entry it produces. The lock also
-	// protects the keychain aggregate's read/modify/write sequence while the
-	// file writer retains its atomic replacement behavior.
+	// stamp before this write and delete the entry it produces.
 	return withSessionEntryLock(key, func() error {
 		return persistSessionBySelectionLocked(selection, key, sess)
 	})
@@ -1097,10 +1115,10 @@ type keychainSessionState struct {
 	captured bool
 }
 
-// captureKeychainSessionState snapshots the raw aggregate and legacy items
-// that can be changed while replacing one account. Keeping the raw items (and
-// not only the selected session) preserves the previous last-session choice and
-// malformed-store bytes if a later write fails.
+// captureKeychainSessionState snapshots the aggregate and legacy items that
+// can change while replacing one account. Raw item bytes preserve the prior
+// last-session choice and malformed-store bytes when a later write fails.
+// Callers hold the shared store lock when the keychain is part of a mutation.
 func captureKeychainSessionState(key string) (keychainSessionState, error) {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
@@ -1183,19 +1201,23 @@ func (state importedSessionState) restore() error {
 	return restoreErr
 }
 
-// persistImportedSessionBySelection stores an imported session in the selected
-// backend and clears the credential mirrored in the other backend when the
-// operator asked to overwrite. Both backends are snapshotted before cleanup so
-// a failed replacement restores the selected session, its mirror, and the
-// last-session pointer exactly as they were found.
+// persistImportedSessionBySelection stores an imported session at the final
+// persistence boundary. Explicit overwrite imports snapshot both backends
+// before cleanup so a failure after one backend changes restores the previous
+// session, mirror, and last-session pointer exactly.
 func persistImportedSessionBySelection(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
 	if selection.backend == sessionBackendOff {
 		return nil
 	}
-	// A validated import may have spent time talking to Apple. Require the
-	// entry lock at the final persistence boundary so a no-overwrite decision
-	// cannot race a login or refresh that wrote a newer session meanwhile.
-	return withRequiredSessionEntryLock(key, func() error {
+	return withSessionEntryLock(key, func() error {
+		// Any selection that can inspect or mutate the aggregate keychain must
+		// hold the fail-closed shared lock. This also serializes a keychain
+		// collision check with the file O_EXCL create in fallback mode.
+		if selection.backend == sessionBackendKeychain || selection.fallbackKeychain {
+			return withSessionStoreLock(func() error {
+				return persistImportedSessionBySelectionLocked(selection, key, sess, overwrite)
+			})
+		}
 		return persistImportedSessionBySelectionLocked(selection, key, sess, overwrite)
 	})
 }
@@ -1211,8 +1233,15 @@ func persistImportedSessionBySelectionLocked(selection backendSelection, key str
 					return err
 				}
 			}
-			return writeImportedSessionToKeychain(selection, key, sess, false)
+			if err := writeSessionToKeychainIfAbsentUnlocked(key, sess); err != nil {
+				if selection.fallbackFile && isKeyringUnavailable(err) {
+					return writeSessionToFileIfAbsent(key, sess)
+				}
+				return err
+			}
+			return nil
 		}
+
 		state, err := captureImportedSessionState(selection, key)
 		if err != nil {
 			return err
@@ -1222,25 +1251,34 @@ func persistImportedSessionBySelectionLocked(selection backendSelection, key str
 				return errors.Join(err, state.restore())
 			}
 		}
-		if err := writeImportedSessionToKeychain(selection, key, sess, true); err != nil {
+		if err := writeSessionToKeychainWithRecoveryUnlocked(key, sess, true); err != nil {
+			if selection.fallbackFile && isKeyringUnavailable(err) {
+				if fileErr := writeSessionToFile(key, sess); fileErr != nil {
+					return errors.Join(fileErr, state.restore())
+				}
+				return nil
+			}
 			return errors.Join(err, state.restore())
 		}
 		return nil
+
 	case sessionBackendFile:
 		if !overwrite {
 			if selection.fallbackKeychain {
-				if err := keychainSessionEntryCollision(key); err != nil {
-					return err
+				err := keychainSessionEntryCollisionUnlocked(key)
+				if !isKeyringUnavailable(err) && err != nil {
+					return fmt.Errorf("failed to inspect keychain session: %w", err)
 				}
 			}
 			return writeSessionToFileIfAbsent(key, sess)
 		}
+
 		state, err := captureImportedSessionState(selection, key)
 		if err != nil {
 			return err
 		}
 		if selection.fallbackKeychain {
-			if err := ignoreUnavailableKeyringError(deleteSessionFromKeychainWithRecovery(key, true)); err != nil {
+			if err := deleteSessionFromKeychainWithRecoveryUnlocked(key, true); err != nil && !isKeyringUnavailable(err) {
 				return errors.Join(err, state.restore())
 			}
 		}
@@ -1251,25 +1289,6 @@ func persistImportedSessionBySelectionLocked(selection backendSelection, key str
 	default:
 		return nil
 	}
-}
-
-func writeImportedSessionToKeychain(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
-	if !overwrite {
-		if err := writeSessionToKeychainIfAbsent(key, sess); err != nil {
-			if selection.fallbackFile && isKeyringUnavailable(err) {
-				return writeSessionToFileIfAbsent(key, sess)
-			}
-			return err
-		}
-		return nil
-	}
-	if err := writeSessionToKeychainWithRecovery(key, sess, overwrite); err != nil {
-		if selection.fallbackFile && isKeyringUnavailable(err) {
-			return writeSessionToFile(key, sess)
-		}
-		return err
-	}
-	return nil
 }
 
 func readSessionFromFileWithKeychainFallback(key string, fallbackKeychain bool) (persistedSession, bool, error) {
@@ -1431,10 +1450,14 @@ func deleteSessionFromFile(key string) error {
 }
 
 func deleteSessionFromKeychain(key string) error {
-	return deleteSessionFromKeychainWithRecovery(key, false)
+	return withSessionStoreLock(func() error { return deleteSessionFromKeychainUnlocked(key) })
 }
 
-func deleteSessionFromKeychainWithRecovery(key string, recoverMalformed bool) error {
+func deleteSessionFromKeychainUnlocked(key string) error {
+	return deleteSessionFromKeychainWithRecoveryUnlocked(key, false)
+}
+
+func deleteSessionFromKeychainWithRecoveryUnlocked(key string, recoverMalformed bool) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -1442,11 +1465,11 @@ func deleteSessionFromKeychainWithRecovery(key string, recoverMalformed bool) er
 	store, ok, err := readSessionStoreFromKeyring(kr)
 	if err != nil {
 		if recoverMalformed && errors.Is(err, errMalformedSessionStore) {
-			if removeErr := removeSessionStoreFromKeyring(kr); removeErr != nil {
-				return removeErr
+			if err := removeSessionStoreFromKeyring(kr); err != nil {
+				return err
 			}
-			if removeErr := removeLegacySessionFromKeyring(kr, key); removeErr != nil {
-				return removeErr
+			if err := removeLegacySessionFromKeyring(kr, key); err != nil {
+				return err
 			}
 			return removeLegacyLastKeyFromKeyring(kr)
 		}
@@ -1486,7 +1509,7 @@ func clearLastKeyInFile() error {
 	return nil
 }
 
-func clearLastKeyInKeychain() error {
+func clearLastKeyInKeychainUnlocked() error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -1531,7 +1554,7 @@ func deleteAllFromFile() error {
 	return nil
 }
 
-func deleteAllFromKeychain() error {
+func deleteAllFromKeychainUnlocked() error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -1626,10 +1649,11 @@ func loadSessionFromPersistedSession(sess persistedSession) (*AuthSession, bool,
 		return nil, false, nil
 	}
 	return &AuthSession{
-		Client:          newWebHTTPClient(jar),
-		UserEmail:       strings.TrimSpace(sess.UserEmail),
-		DeveloperTeamID: strings.TrimSpace(sess.DeveloperTeamID),
-		cachedUpdatedAt: sess.UpdatedAt,
+		Client:           newWebHTTPClient(jar),
+		UserEmail:        strings.TrimSpace(sess.UserEmail),
+		DeveloperTeamID:  strings.TrimSpace(sess.DeveloperTeamID),
+		cachedUpdatedAt:  sess.UpdatedAt,
+		cachedGeneration: sess.Generation,
 	}, true, nil
 }
 
@@ -1649,7 +1673,10 @@ func PersistSession(session *AuthSession) error {
 	}
 
 	key := webSessionCacheKey(username)
-	serialized := serializeCookieJar(session.Client.Jar, username)
+	serialized, err := serializeCookieJarWithError(session.Client.Jar, username)
+	if err != nil {
+		return err
+	}
 	serialized.DeveloperTeamID = strings.TrimSpace(session.DeveloperTeamID)
 	return persistSessionBySelection(selection, key, serialized)
 }
@@ -1880,7 +1907,7 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 	if username == "" {
 		return false, nil
 	}
-	if loaded == nil || loaded.cachedUpdatedAt.IsZero() {
+	if loaded == nil || (loaded.cachedUpdatedAt.IsZero() && loaded.cachedGeneration == "") {
 		return true, DeleteSession(username)
 	}
 
@@ -1899,16 +1926,23 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 		if !ok {
 			return nil
 		}
-		if !current.UpdatedAt.Equal(loaded.cachedUpdatedAt) {
+		if !samePersistedSessionIdentity(current, loaded) {
 			return nil
 		}
 		if sessionCompareDeleteBarrier != nil {
 			sessionCompareDeleteBarrier()
 		}
 		deleted = true
-		return deleteMatchedSessionEntryLocked(selection, key, origin, current.UpdatedAt)
+		return deleteMatchedSessionEntryLocked(selection, key, origin, current.UpdatedAt, current.Generation)
 	})
 	return deleted, err
+}
+
+func samePersistedSessionIdentity(current persistedSession, loaded *AuthSession) bool {
+	if loaded.cachedGeneration != "" || current.Generation != "" {
+		return loaded.cachedGeneration != "" && current.Generation != "" && current.Generation == loaded.cachedGeneration
+	}
+	return !loaded.cachedUpdatedAt.IsZero() && current.UpdatedAt.Equal(loaded.cachedUpdatedAt)
 }
 
 // deleteMatchedSessionEntryLocked removes the cache entry whose stamp matched
@@ -1916,7 +1950,7 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 // that one carries the same stamp and is therefore the same proven-stale
 // session. Legacy artifacts are always cleared: nothing writes them any more,
 // so they can only hold a session at least as stale as the matched one.
-func deleteMatchedSessionEntryLocked(selection backendSelection, key string, origin sessionEntryOrigin, stamp time.Time) error {
+func deleteMatchedSessionEntryLocked(selection backendSelection, key string, origin sessionEntryOrigin, stamp time.Time, generation string) error {
 	var err error
 	switch origin {
 	case sessionEntryOriginFile:
@@ -1925,14 +1959,14 @@ func deleteMatchedSessionEntryLocked(selection backendSelection, key string, ori
 		} else {
 			err = clearLastKeyInFileIfMatches(key)
 		}
-		if sessionMirrorEnabled(selection) && keychainSessionCarriesStamp(key, stamp) {
+		if sessionMirrorEnabled(selection) && keychainSessionCarriesIdentity(key, stamp, generation) {
 			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteSessionFromKeychain(key)))
 		}
 	case sessionEntryOriginKeychain:
 		if deleteErr := deleteSessionFromKeychain(key); deleteErr != nil && (!selection.fallbackFile || !isKeyringUnavailable(deleteErr)) {
 			err = deleteErr
 		}
-		if sessionMirrorEnabled(selection) && fileSessionCarriesStamp(key, stamp) {
+		if sessionMirrorEnabled(selection) && fileSessionCarriesIdentity(key, stamp, generation) {
 			err = joinDeleteErrors(err, deleteMirroredSessionFromFile(key))
 		}
 	default:
@@ -1958,57 +1992,77 @@ func sessionMirrorEnabled(selection backendSelection) bool {
 // the matched one. An unreadable entry counts: it cannot be the valid
 // replacement this guard exists to protect, and leaving a corrupt file behind
 // only makes the next invocation fall back to a staler backend.
-func fileSessionCarriesStamp(key string, stamp time.Time) bool {
+func fileSessionCarriesIdentity(key string, stamp time.Time, generation string) bool {
 	sess, ok, err := readSessionFromFile(key)
 	if err != nil {
-		return true
+		// A keychain entry already proven stale may safely clean up a corrupt
+		// mirrored file; leaving it causes repeated fallback failures.
+		return errors.Is(err, errMalformedSessionFile)
 	}
-	return ok && sess.UpdatedAt.Equal(stamp)
+	return ok && persistedSessionIdentityMatches(sess, stamp, generation)
 }
 
 // keychainSessionCarriesStamp reports whether the keychain entry is the same
 // session as the matched one. A keychain that cannot be read is left alone
 // rather than cleared blindly: unavailability says nothing about the entry.
-func keychainSessionCarriesStamp(key string, stamp time.Time) bool {
+func keychainSessionCarriesIdentity(key string, stamp time.Time, generation string) bool {
 	sess, ok, err := readSessionFromKeychain(key)
 	if err != nil {
 		return false
 	}
-	return ok && sess.UpdatedAt.Equal(stamp)
+	return ok && persistedSessionIdentityMatches(sess, stamp, generation)
+}
+
+func persistedSessionIdentityMatches(sess persistedSession, stamp time.Time, generation string) bool {
+	if generation != "" || sess.Generation != "" {
+		return generation != "" && sess.Generation != "" && generation == sess.Generation
+	}
+	return sess.UpdatedAt.Equal(stamp)
 }
 
 // DeleteAllSessions removes all cached web sessions.
 func DeleteAllSessions() error {
-	return withSessionGlobalLock(func() error {
-		selection := resolveBackendSelection()
-		var err error
-		switch selection.backend {
-		case sessionBackendOff:
-			err = nil
-		case sessionBackendKeychain:
-			if deleteErr := deleteAllFromKeychain(); deleteErr != nil {
-				if selection.fallbackFile && isKeyringUnavailable(deleteErr) {
-					err = deleteAllFromFile()
-				} else {
-					err = deleteErr
-				}
-			} else if selection.fallbackFile {
-				err = deleteAllFromFile()
-			}
-		case sessionBackendFile:
-			if deleteErr := deleteAllFromFile(); deleteErr != nil {
-				err = deleteErr
-			} else {
-				err = clearLastSessionMarker()
-			}
-			if selection.fallbackKeychain {
-				err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteAllFromKeychain()))
-			}
-		default:
-			err = nil
-		}
-		return joinDeleteErrors(err, deleteAllLegacyIrisFromFile())
+	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendOff {
+		return deleteAllSessionsLocked(selection)
+	}
+	return withSessionDeleteAllLock(selection, func() error {
+		return deleteAllSessionsLocked(selection)
 	})
+}
+
+// deleteAllSessionsLocked removes all cached web sessions while its caller
+// holds the cache-global lock and, when a keychain backend is selected, the
+// stable aggregate-store lock. Keep keychain calls on their unlocked helpers:
+// the outer transaction already owns that lock.
+func deleteAllSessionsLocked(selection backendSelection) error {
+	var err error
+	switch selection.backend {
+	case sessionBackendOff:
+		err = nil
+	case sessionBackendKeychain:
+		if deleteErr := deleteAllFromKeychainUnlocked(); deleteErr != nil {
+			if selection.fallbackFile && isKeyringUnavailable(deleteErr) {
+				err = deleteAllFromFile()
+			} else {
+				err = deleteErr
+			}
+		} else if selection.fallbackFile {
+			err = deleteAllFromFile()
+		}
+	case sessionBackendFile:
+		if deleteErr := deleteAllFromFile(); deleteErr != nil {
+			err = deleteErr
+		} else {
+			err = clearLastSessionMarkerUnlocked()
+		}
+		if selection.fallbackKeychain {
+			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteAllFromKeychainUnlocked()))
+		}
+	default:
+		err = nil
+	}
+	return joinDeleteErrors(err, deleteAllLegacyIrisFromFile())
 }
 
 func joinDeleteErrors(primaryErr, legacyErr error) error {
@@ -2035,11 +2089,19 @@ func deleteMirroredSessionFromFile(key string) error {
 // clearLastSessionMarker clears the "last used session" pointer.
 func clearLastSessionMarker() error {
 	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendKeychain || selection.fallbackKeychain {
+		return withSessionStoreLock(clearLastSessionMarkerUnlocked)
+	}
+	return clearLastSessionMarkerUnlocked()
+}
+
+func clearLastSessionMarkerUnlocked() error {
+	selection := resolveBackendSelection()
 	switch selection.backend {
 	case sessionBackendOff:
 		return nil
 	case sessionBackendKeychain:
-		if err := clearLastKeyInKeychain(); err != nil {
+		if err := clearLastKeyInKeychainUnlocked(); err != nil {
 			if selection.fallbackFile && isKeyringUnavailable(err) {
 				return clearLastKeyInFile()
 			}
@@ -2049,7 +2111,7 @@ func clearLastSessionMarker() error {
 	case sessionBackendFile:
 		err := clearLastKeyInFile()
 		if selection.fallbackKeychain {
-			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(clearLastKeyInKeychain()))
+			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(clearLastKeyInKeychainUnlocked()))
 		}
 		return err
 	default:

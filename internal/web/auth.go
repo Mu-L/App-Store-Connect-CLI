@@ -112,7 +112,8 @@ type AuthSession struct {
 	// loaded from, zero for a freshly logged-in session. It lets a caller that
 	// proves the loaded jar unusable delete only that entry, leaving a
 	// replacement another process persisted in the meantime intact.
-	cachedUpdatedAt time.Time
+	cachedUpdatedAt  time.Time
+	cachedGeneration string
 
 	// Prepared 2FA delivery state so callers can request code delivery before prompting.
 	twoFactorMethod        string

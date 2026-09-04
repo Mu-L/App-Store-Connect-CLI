@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,32 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWithSessionStoreLockFailsClosedWhenLockUnavailable(t *testing.T) {
+	previous := sessionSharedLockRoot
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessionSharedLockRoot = func() string { return blocked }
+	t.Cleanup(func() { sessionSharedLockRoot = previous })
+	called := false
+	err := withSessionStoreLock(func() error { called = true; return nil })
+	if !errors.Is(err, errSessionStoreLockUnavailable) || called {
+		t.Fatalf("expected fail-closed lock error, called=%v err=%v", called, err)
+	}
+}
+
+func TestWithSessionStoreLockFailsClosedWhenRootUnavailable(t *testing.T) {
+	previous := sessionSharedLockRoot
+	sessionSharedLockRoot = func() string { return "" }
+	t.Cleanup(func() { sessionSharedLockRoot = previous })
+	called := false
+	err := withSessionStoreLock(func() error { called = true; return nil })
+	if !errors.Is(err, errSessionStoreLockUnavailable) || called {
+		t.Fatalf("expected fail-closed root error, called=%v err=%v", called, err)
+	}
+}
 
 // The lock is what makes a compare-and-delete and a persist mutually
 // exclusive, so overlapping holders must be impossible.
@@ -46,6 +73,58 @@ func TestWithSessionEntryLockExcludesConcurrentHolders(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected the persistent lock file at %q, stat error: %v", path, err)
 		}
+	}
+}
+
+// DeleteAllSessions must share the cache-local barrier with file-backed
+// persistence. Holding that barrier here makes the regression deterministic:
+// a delete-all that does not participate in the transaction returns before
+// the holder is released.
+func TestDeleteAllSessionsWaitsForFileMutationLock(t *testing.T) {
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "file")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+	t.Setenv(legacyIrisSessionCacheEnabledEnv, "0")
+
+	key := webSessionCacheKey("user@example.com")
+	if err := writeSessionToFile(key, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("writeSessionToFile error: %v", err)
+	}
+
+	release, ok := acquireRequiredSessionCacheGlobalLock()
+	if !ok {
+		t.Fatal("expected the file-cache global lock to be acquirable")
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- DeleteAllSessions()
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("DeleteAllSessions completed while the file mutation lock was held: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	released = true
+	if err := <-done; err != nil {
+		t.Fatalf("DeleteAllSessions error: %v", err)
+	}
+	if _, ok, err := readSessionFromFile(key); err != nil {
+		t.Fatalf("readSessionFromFile error: %v", err)
+	} else if ok {
+		t.Fatal("expected DeleteAllSessions to remove the file-backed session")
 	}
 }
 

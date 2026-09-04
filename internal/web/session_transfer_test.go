@@ -799,6 +799,75 @@ func TestImportSessionBundlePersistsCookiesRefreshedDuringValidation(t *testing.
 	}
 }
 
+func TestImportSessionBundlePreservesSetCookieAttributesDuringValidation(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	target, err := url.Parse("https://appstoreconnect.apple.com/olympus/v1/session")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	origin := "https://appstoreconnect.apple.com/"
+	expires := time.Now().Add(90 * time.Minute).UTC()
+	validator := func(_ context.Context, client *http.Client) (string, error) {
+		client.Jar.SetCookies(target, []*http.Cookie{
+			{
+				Name:     "scoped",
+				Value:    "scoped-token",
+				Path:     "/olympus/v1",
+				Domain:   "appstoreconnect.apple.com",
+				Expires:  expires,
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			},
+			{
+				Name:    "short-lived",
+				Value:   "short-token",
+				Path:    "/olympus/v1",
+				Expires: time.Unix(1, 0), // Positive Max-Age takes precedence.
+				MaxAge:  45,
+			},
+		})
+		return bundle.AppleID, nil
+	}
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); err != nil {
+		t.Fatalf("importSessionBundleWithValidator() error = %v", err)
+	}
+	sess, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID))
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the imported session", ok, err)
+	}
+	var scoped, shortLived *pCookie
+	for index := range sess.Cookies[origin] {
+		cookie := &sess.Cookies[origin][index]
+		switch cookie.Name {
+		case "scoped":
+			scoped = cookie
+		case "short-lived":
+			shortLived = cookie
+		}
+	}
+	if scoped == nil {
+		t.Fatal("validated session did not retain the path-scoped cookie")
+	}
+	if scoped.Value != "scoped-token" || scoped.Path != "/olympus/v1" || scoped.Domain != "appstoreconnect.apple.com" || !scoped.Secure || !scoped.HttpOnly || scoped.SameSite != int(http.SameSiteStrictMode) {
+		t.Fatalf("scoped cookie attributes = %+v, want the original Set-Cookie attributes", *scoped)
+	}
+	if !scoped.Expires.Equal(expires) {
+		t.Fatalf("scoped cookie expiry = %v, want %v", scoped.Expires, expires)
+	}
+	if shortLived == nil {
+		t.Fatal("validated session did not retain the Max-Age cookie")
+	}
+	if shortLived.MaxAge != 0 || shortLived.Expires.IsZero() {
+		t.Fatalf("Max-Age cookie = %+v, want an absolute expiry and no relative lifetime", *shortLived)
+	}
+	if shortLived.Expires.Before(time.Now().Add(40*time.Second)) || shortLived.Expires.After(time.Now().Add(50*time.Second)) {
+		t.Fatalf("Max-Age expiry = %v, want roughly 45 seconds from now", shortLived.Expires)
+	}
+}
+
 func TestImportSessionBundleDropsCookiesDeletedDuringValidation(t *testing.T) {
 	withFileSessionCache(t)
 	bundle := validTestBundle(time.Now().Add(time.Hour))
@@ -850,6 +919,57 @@ func TestImportSessionBundleDropsCookiesDeletedDuringValidation(t *testing.T) {
 	}
 	if values["itctx"] != "context-token" {
 		t.Fatalf("cached cookies lost the unaffected cookie: %#v", values)
+	}
+}
+
+func TestImportSessionBundleRejectsWhenValidationDeletesFinalCookie(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	target, err := url.Parse("https://appstoreconnect.apple.com/")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	validator := func(_ context.Context, client *http.Client) (string, error) {
+		client.Jar.SetCookies(target, []*http.Cookie{{Name: "myacinfo", Path: "/", MaxAge: -1}})
+		return bundle.AppleID, nil
+	}
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); !errors.Is(err, ErrSessionBundleValidationFailed) {
+		t.Fatalf("importSessionBundleWithValidator() error = %v, want a post-validation empty-session failure", err)
+	}
+	if _, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID)); err != nil || ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want no cache mutation after final-cookie deletion", ok, err)
+	}
+}
+
+func TestImportSessionBundleReceiptUsesValidatedSession(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies[0].Expires = nil
+	target, err := url.Parse("https://appstoreconnect.apple.com/")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	expires := time.Now().Add(2 * time.Hour).UTC()
+	validator := func(_ context.Context, client *http.Client) (string, error) {
+		client.Jar.SetCookies(target, []*http.Cookie{{
+			Name:    "issued",
+			Value:   "issued-token",
+			Path:    "/",
+			Expires: expires,
+		}})
+		return bundle.AppleID, nil
+	}
+
+	summary, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator)
+	if err != nil {
+		t.Fatalf("importSessionBundleWithValidator() error = %v", err)
+	}
+	if summary.CookieCount != 2 {
+		t.Fatalf("summary CookieCount = %d, want 2 cookies in the validated session", summary.CookieCount)
+	}
+	if summary.ExpiresAt == nil || !summary.ExpiresAt.Equal(expires) {
+		t.Fatalf("summary ExpiresAt = %v, want %v from the validated session", summary.ExpiresAt, expires)
 	}
 }
 
@@ -1168,5 +1288,137 @@ func TestImportSessionBundleRestoresKeychainMirrorAfterFilePersistenceFails(t *t
 	}
 	if string(gotKeychainItem.Data) != string(previousKeychainRaw) {
 		t.Fatalf("restored keychain store changed: got %q, want %q", gotKeychainItem.Data, previousKeychainRaw)
+	}
+}
+
+func TestImportSessionBundleRestoresPriorStateWhenLastPointerWriteFailsAfterSessionRename(t *testing.T) {
+	testKeyring := withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	cacheDir := filepath.Join(t.TempDir(), "web-cache")
+	t.Setenv(webSessionCacheDirEnv, cacheDir)
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	old := persistedSession{
+		Version:    webSessionCacheVersion,
+		UpdatedAt:  time.Now().UTC().Add(-time.Hour),
+		Generation: "prior-generation",
+		UserEmail:  bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-file-token", Path: "/"}},
+		},
+	}
+	if err := writeSessionToFile(key, old); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+
+	// Make the previous last-session pointer deliberately select another
+	// account. The rollback must restore its bytes, rather than merely point
+	// back at the account being replaced.
+	otherKey := webSessionCacheKey("other@example.com")
+	if err := writeSessionToFile(otherKey, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-2 * time.Hour),
+		UserEmail: "other@example.com",
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "other-file-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToFile(other) error = %v", err)
+	}
+
+	// Keep a keychain mirror for the selected account and an unrelated account;
+	// the raw aggregate proves that rollback restored both entries and its
+	// previous last-session choice after the file rename already happened.
+	if err := writeSessionToKeychain(key, persistedSession{
+		Version:    webSessionCacheVersion,
+		UpdatedAt:  old.UpdatedAt,
+		Generation: old.Generation,
+		UserEmail:  old.UserEmail,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-keychain-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToKeychain() error = %v", err)
+	}
+	if err := writeSessionToKeychain(otherKey, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-2 * time.Hour),
+		UserEmail: "other@example.com",
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "other-keychain-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToKeychain(other) error = %v", err)
+	}
+
+	sessionPath, err := webSessionFilePath(key)
+	if err != nil {
+		t.Fatalf("webSessionFilePath() error = %v", err)
+	}
+	priorSessionRaw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read prior session cache: %v", err)
+	}
+	lastPath, err := webSessionLastFilePath()
+	if err != nil {
+		t.Fatalf("webSessionLastFilePath() error = %v", err)
+	}
+	priorLastRaw, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("read prior last-session pointer: %v", err)
+	}
+	priorStore, err := testKeyring.Get(webSessionStoreItem)
+	if err != nil {
+		t.Fatalf("read prior keychain store: %v", err)
+	}
+	priorStoreRaw := append([]byte(nil), priorStore.Data...)
+
+	previousWrite := sessionFileWrite
+	sessionWriteSucceeded := false
+	sessionFileWrite = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == "last.json.tmp" {
+			if !sessionWriteSucceeded {
+				return errors.New("injected before session rename")
+			}
+			return errors.New("injected last-session pointer write failure")
+		}
+		err := previousWrite(path, data, perm)
+		if err == nil && filepath.Base(path) == "session-"+key+".json.tmp" {
+			sessionWriteSucceeded = true
+		}
+		return err
+	}
+	t.Cleanup(func() { sessionFileWrite = previousWrite })
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err == nil {
+		t.Fatal("ImportSessionBundleWithOptions() error = nil, want the injected last-pointer failure")
+	}
+	if !sessionWriteSucceeded {
+		t.Fatal("fault injection did not reach the last-pointer write after the session temp write")
+	}
+
+	gotSessionRaw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read restored session cache: %v", err)
+	}
+	if string(gotSessionRaw) != string(priorSessionRaw) {
+		t.Fatalf("restored session cache changed: got %q, want %q", gotSessionRaw, priorSessionRaw)
+	}
+	gotLastRaw, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("read restored last-session pointer: %v", err)
+	}
+	if string(gotLastRaw) != string(priorLastRaw) {
+		t.Fatalf("restored last-session pointer changed: got %q, want %q", gotLastRaw, priorLastRaw)
+	}
+	gotStore, err := testKeyring.Get(webSessionStoreItem)
+	if err != nil {
+		t.Fatalf("read restored keychain store: %v", err)
+	}
+	if string(gotStore.Data) != string(priorStoreRaw) {
+		t.Fatalf("restored keychain store changed: got %q, want %q", gotStore.Data, priorStoreRaw)
 	}
 }

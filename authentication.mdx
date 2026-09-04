@@ -159,16 +159,18 @@ Alternatively, pass the key content directly:
 
 `asc web` commands use a cached Apple Account web session, not an API key. That
 session is created with `asc web auth login` and can be moved to another machine
-or to CI with `asc web auth export` and `asc web auth import`.
+or to CI with the experimental `asc web auth export` and `asc web auth import`
+commands.
 
 <Warning>
   An exported web-session bundle is a live credential. It can act as the Apple
   Account until the cookies expire. Write it only to a `0600` file, store it
   in a secrets manager, and delete the file once it is consumed. Cookie values
-  are never printed to stdout. Import validates the bundle against Apple's
-  session endpoint before writing to the cache, so the importing machine needs
-  network access to Apple; an invalid, expired, unreachable, or
-  identity-mismatched session is refused without changing the cache.
+  are never printed to stdout. Import performs local document, origin, cookie,
+  and expiry validation before writing to the cache; it does not contact Apple.
+  Run `asc web auth status` afterwards for live validation when network access
+  is available. A successful local import does not prove that the session is
+  still accepted by Apple or belongs to the named Apple Account.
 </Warning>
 
 ```bash  theme={null}
