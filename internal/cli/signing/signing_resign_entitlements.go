@@ -1,8 +1,10 @@
 package signing
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -40,20 +42,24 @@ func signingResignUnauthorizedClaimsError(claims []signingResignUnauthorizedClai
 		}
 		descriptions = append(descriptions, fmt.Sprintf(
 			"%s=%s (%s)",
-			claim.Key,
+			signingResignSafeClaimName(claim.Key),
 			signingResignFormatClaimValue(claim.Existing),
 			remediation,
 		))
 	}
-	return &signingResignPublicDetailError{
-		message: "existing entitlements are not authorized by the replacement profile: " + strings.Join(descriptions, "; "),
+	message := "existing entitlements are not authorized by the replacement profile: " + strings.Join(descriptions, "; ")
+	if len(message) > signingResignPublicDetailMaxBytes {
+		message = message[:signingResignPublicDetailMaxBytes-len("...")] + "..."
 	}
+	return &signingResignPublicDetailError{message: message}
 }
 
 // signingResignProfileRequiredEntitlementKeyOrder lists distribution claims a
 // replacement profile injects for its class. They are derived from the
 // profile when the existing signature has no claim, because distribution
-// requires them.
+// requires them: an App Store profile's beta-reports-active=true must reach
+// the signed document for TestFlight beta reporting even when the input was
+// built ad hoc or unsigned.
 var signingResignProfileRequiredEntitlementKeyOrder = []string{"beta-reports-active"}
 
 // signingResignClaimRebaseSuggestion derives the concrete value a wildcard
@@ -78,7 +84,7 @@ func signingResignClaimRebaseSuggestion(existing, profileValue any) (string, boo
 		if !ok {
 			return "", false
 		}
-		return fmt.Sprintf("%q", rebased), true
+		return signingResignQuoteBounded(rebased, 128), true
 	default:
 		list, isList := signingResignEntitlementList(existing)
 		if !isList || len(list) == 0 {
@@ -94,7 +100,7 @@ func signingResignClaimRebaseSuggestion(existing, profileValue any) (string, boo
 			if !ok {
 				return "", false
 			}
-			rebasedValues = append(rebasedValues, fmt.Sprintf("%q", rebased))
+			rebasedValues = append(rebasedValues, signingResignQuoteBounded(rebased, 128))
 		}
 		return "[" + strings.Join(rebasedValues, ", ") + "]", true
 	}
@@ -125,29 +131,6 @@ func signingResignWildcardPrefix(profileValue any) (string, bool) {
 		prefix = trimmed
 	}
 	return prefix, prefix != ""
-}
-
-func signingResignFormatClaimValue(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return fmt.Sprintf("%q", typed)
-	case bool:
-		return fmt.Sprintf("%t", typed)
-	default:
-		list, isList := signingResignEntitlementList(value)
-		if !isList {
-			return fmt.Sprintf("%v", value)
-		}
-		items := make([]string, 0, len(list))
-		for _, item := range list {
-			if text, isString := item.(string); isString {
-				items = append(items, fmt.Sprintf("%q", text))
-				continue
-			}
-			items = append(items, fmt.Sprintf("%v", item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	}
 }
 
 const (
@@ -185,15 +168,43 @@ func signingResignQuoteBounded(value string, limit int) string {
 	return quoted
 }
 
+func signingResignFormatClaimValue(value any) string {
+	var formatted string
+	switch typed := value.(type) {
+	case string:
+		formatted = signingResignQuoteBounded(typed, 128)
+	case bool:
+		formatted = fmt.Sprintf("%t", typed)
+	default:
+		list, isList := signingResignEntitlementList(value)
+		if !isList {
+			formatted = signingResignQuoteBounded(fmt.Sprintf("%T", value), 64)
+			break
+		}
+		items := make([]string, 0, len(list))
+		for _, item := range list {
+			if text, isString := item.(string); isString {
+				items = append(items, signingResignQuoteBounded(text, 128))
+				continue
+			}
+			items = append(items, signingResignQuoteBounded(fmt.Sprintf("%T", item), 64))
+		}
+		formatted = "[" + strings.Join(items, ", ") + "]"
+	}
+	if len(formatted) > signingResignClaimDetailMaxBytes {
+		formatted = formatted[:signingResignClaimDetailMaxBytes]
+	}
+	return formatted
+}
+
 var signingResignIdentityEntitlementKeys = map[string]struct{}{
-	"application-identifier":                                 {},
-	"com.apple.application-identifier":                       {},
-	"com.apple.developer.team-identifier":                    {},
-	"get-task-allow":                                         {},
-	"keychain-access-groups":                                 {},
-	"com.apple.developer.ubiquity-kvstore-identifier":        {},
-	"com.apple.developer.parent-application-identifiers":     {},
-	"com.apple.developer.associated-appclip-app-identifiers": {},
+	"application-identifier":                             {},
+	"com.apple.application-identifier":                   {},
+	"com.apple.developer.team-identifier":                {},
+	"get-task-allow":                                     {},
+	"keychain-access-groups":                             {},
+	"com.apple.developer.ubiquity-kvstore-identifier":    {},
+	"com.apple.developer.parent-application-identifiers": {},
 }
 
 var signingResignIdentityEntitlementKeyOrder = []string{
@@ -204,53 +215,231 @@ var signingResignIdentityEntitlementKeyOrder = []string{
 	"keychain-access-groups",
 	"com.apple.developer.ubiquity-kvstore-identifier",
 	"com.apple.developer.parent-application-identifiers",
-	"com.apple.developer.associated-appclip-app-identifiers",
 }
 
 func buildSigningResignEntitlements(existing, profile map[string]any) (map[string]any, error) {
-	result, _, err := buildSigningResignEntitlementPlan(existing, profile, "", "", nil)
-	return result, err
+	return buildSigningResignEntitlementsWithClass(existing, profile, "")
 }
 
 // buildSigningResignEntitlementsForProfile applies the replacement profile's
 // class-controlled values while retaining the existing claim-preservation
-// rules for capabilities.
+// rules for capabilities. The profile is the authority for values such as
+// aps-environment, App Attest, beta-reports-active, and the iCloud container
+// environment when the source signature and replacement profile belong to
+// different signing classes.
 func buildSigningResignEntitlementsForProfile(existing map[string]any, profile signingResignProfile) (map[string]any, error) {
-	result, _, err := buildSigningResignEntitlementPlan(existing, profile.Entitlements, profile.Class, "", nil)
-	return result, err
+	return buildSigningResignEntitlementsWithClass(existing, profile.Entitlements, profile.Class)
+}
+
+func buildSigningResignEntitlementsWithClass(existing, profile map[string]any, profileClass string) (map[string]any, error) {
+	if profile == nil {
+		return nil, fmt.Errorf("profile entitlements are missing")
+	}
+	for _, key := range []string{"application-identifier", "com.apple.application-identifier"} {
+		if value, exists := existing[key]; exists {
+			text, ok := value.(string)
+			if !ok || strings.TrimSpace(text) == "" || strings.ContainsRune(text, '*') {
+				return nil, fmt.Errorf("existing entitlement %s is invalid", key)
+			}
+		}
+	}
+	if value, exists := existing["com.apple.developer.team-identifier"]; exists {
+		text, ok := value.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			return nil, fmt.Errorf("existing entitlement %s is invalid", "com.apple.developer.team-identifier")
+		}
+	}
+	if value, exists := existing["get-task-allow"]; exists {
+		if _, ok := value.(bool); !ok {
+			return nil, fmt.Errorf("existing entitlement get-task-allow is invalid")
+		}
+	}
+	result := make(map[string]any, len(existing)+4)
+	existingKeys := make([]string, 0, len(existing))
+	for key := range existing {
+		existingKeys = append(existingKeys, key)
+	}
+	sort.Strings(existingKeys)
+	var unauthorized []signingResignUnauthorizedClaim
+	for _, key := range existingKeys {
+		value := existing[key]
+		if _, identityKey := signingResignIdentityEntitlementKeys[key]; identityKey {
+			profileValue, exists := profile[key]
+			if !exists {
+				unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value})
+				continue
+			}
+			resolved, err := resolveSigningResignIdentityEntitlement(key, value, profileValue)
+			if err != nil {
+				var claimErr signingResignClaimUnauthorizedError
+				if errors.As(err, &claimErr) {
+					unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
+					continue
+				}
+				return nil, err
+			}
+			result[key] = resolved
+			continue
+		}
+		profileValue, permitted := profile[key]
+		if profileClass != "" {
+			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, true, profileValue, permitted); handled {
+				if err != nil {
+					return nil, err
+				}
+				if resolved == nil {
+					continue
+				}
+				result[key] = resolved
+				continue
+			}
+		}
+		if !permitted || !signingResignEntitlementValuePermits(profileValue, value) {
+			unauthorized = append(unauthorized, signingResignUnauthorizedClaim{Key: key, Existing: value, Profile: profileValue})
+			continue
+		}
+		result[key] = value
+	}
+	if len(unauthorized) > 0 {
+		return nil, signingResignUnauthorizedClaimsError(unauthorized)
+	}
+	for _, key := range signingResignProfileRequiredEntitlementKeyOrder {
+		if _, exists := existing[key]; exists {
+			continue
+		}
+		value, exists := profile[key]
+		if !exists {
+			continue
+		}
+		if profileClass != "" && key == "beta-reports-active" {
+			resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, nil, false, value, true)
+			if err != nil {
+				return nil, err
+			}
+			if handled {
+				if resolved != nil {
+					result[key] = resolved
+				}
+				continue
+			}
+		}
+		if _, isBool := value.(bool); !isBool {
+			return nil, fmt.Errorf("replacement profile entitlement %s is not a concrete boolean value", key)
+		}
+		result[key] = value
+	}
+	for _, key := range signingResignIdentityEntitlementKeyOrder {
+		if _, exists := existing[key]; exists {
+			continue
+		}
+		if signingResignOptionalIdentityEntitlementKey(key) {
+			// Optional identity capabilities are granted only when the
+			// existing signature already claims them. The profile value,
+			// wildcard or concrete, is an authorization boundary: signing an
+			// unclaimed capability in would widen the app's access.
+			continue
+		}
+		value, exists := profile[key]
+		if !exists {
+			return nil, fmt.Errorf("replacement profile entitlement %s is missing", key)
+		}
+		if signingResignEntitlementContainsWildcard(value) {
+			return nil, fmt.Errorf("replacement profile entitlement %s is wildcard-only and has no concrete signed value", key)
+		}
+		result[key] = value
+	}
+	return result, nil
 }
 
 // resolveSigningResignProfileClassEntitlement identifies claims whose value
 // is controlled by the replacement profile class rather than preserved as an
-// arbitrary subset of the old signed document.
-func resolveSigningResignProfileClassEntitlement(key, profileClass string, existingValue, profileValue any, present bool) (value any, handled bool, err error) {
-	if key != "aps-environment" {
-		return nil, false, nil
-	}
-	if !present {
-		return nil, false, nil
-	}
-	existingText, ok := existingValue.(string)
-	if !ok || strings.TrimSpace(existingText) != existingText || existingText != "development" && existingText != "production" {
-		return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
-	}
-	text, ok := profileValue.(string)
-	if !ok || strings.TrimSpace(text) != text {
-		return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
-	}
-	expected := ""
-	switch profileClass {
-	case signingResignProfileClassDevelopment:
-		expected = "development"
-	case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
-		expected = "production"
+// arbitrary subset of the old signed document. It only returns a class value
+// that the replacement profile authorizes and never grants an optional claim
+// that was absent from the old signature.
+func resolveSigningResignProfileClassEntitlement(key, profileClass string, existingValue any, existingPresent bool, profileValue any, present bool) (value any, handled bool, err error) {
+	switch key {
+	case "aps-environment", "com.apple.developer.devicecheck.appattest-environment":
+		if !present {
+			return nil, false, nil
+		}
+		existingText, ok := existingValue.(string)
+		if !ok || strings.TrimSpace(existingText) != existingText || existingText != "development" && existingText != "production" {
+			return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+		}
+		text, ok := profileValue.(string)
+		if !ok || strings.TrimSpace(text) != text {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+		}
+		expected := ""
+		switch profileClass {
+		case signingResignProfileClassDevelopment:
+			expected = "development"
+		case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+			expected = "production"
+		default:
+			return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		}
+		if text != expected {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
+		}
+		return text, true, nil
+	case "beta-reports-active":
+		if existingPresent {
+			if _, ok := existingValue.(bool); !ok {
+				return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+			}
+		}
+		if present {
+			active, ok := profileValue.(bool)
+			if !ok {
+				return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+			}
+			switch profileClass {
+			case signingResignProfileClassDevelopment, signingResignProfileClassAdHoc:
+				if active {
+					return nil, true, fmt.Errorf("replacement profile entitlement %s is not authorized for this profile class", key)
+				}
+				return nil, true, nil
+			case signingResignProfileClassAppStore:
+				return active, true, nil
+			default:
+				return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+			}
+		}
+		switch profileClass {
+		case signingResignProfileClassDevelopment, signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+			return nil, true, nil
+		default:
+			return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		}
+	case "com.apple.developer.icloud-container-environment":
+		if !existingPresent || !present {
+			return nil, false, nil
+		}
+		existingText, ok := existingValue.(string)
+		if !ok || strings.TrimSpace(existingText) != existingText || existingText != "Development" && existingText != "Production" {
+			return nil, true, fmt.Errorf("existing entitlement %s is invalid", key)
+		}
+		text, ok := profileValue.(string)
+		if !ok || strings.TrimSpace(text) != text || text != "Development" && text != "Production" {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s is invalid", key)
+		}
+		expected := ""
+		switch profileClass {
+		case signingResignProfileClassDevelopment:
+			expected = "Development"
+		case signingResignProfileClassAdHoc, signingResignProfileClassAppStore:
+			expected = "Production"
+		default:
+			return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		}
+		if text != expected {
+			return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
+		}
+		return text, true, nil
 	default:
-		return nil, true, fmt.Errorf("replacement profile class is unsupported for entitlement %s", key)
+		return nil, false, nil
 	}
-	if text != expected {
-		return nil, true, fmt.Errorf("replacement profile entitlement %s does not match profile class", key)
-	}
-	return text, true, nil
 }
 
 // signingResignOptionalIdentityEntitlementKey reports whether an identity
@@ -262,8 +451,7 @@ func signingResignOptionalIdentityEntitlementKey(key string) bool {
 	case "com.apple.application-identifier",
 		"keychain-access-groups",
 		"com.apple.developer.ubiquity-kvstore-identifier",
-		"com.apple.developer.parent-application-identifiers",
-		"com.apple.developer.associated-appclip-app-identifiers":
+		"com.apple.developer.parent-application-identifiers":
 		return true
 	default:
 		return false
@@ -273,12 +461,11 @@ func signingResignOptionalIdentityEntitlementKey(key string) bool {
 // signingResignPreserveExistingIdentityKeys lists capability-group claims
 // whose signed value must stay the app's own concrete subset. The replacement
 // profile value, wildcard or concrete, is a permission boundary; adopting it
-// verbatim could widen keychain, ubiquity, or App Clip access.
+// verbatim could widen keychain, ubiquity, or parent-application access.
 var signingResignPreserveExistingIdentityKeys = map[string]struct{}{
-	"keychain-access-groups":                                 {},
-	"com.apple.developer.ubiquity-kvstore-identifier":        {},
-	"com.apple.developer.parent-application-identifiers":     {},
-	"com.apple.developer.associated-appclip-app-identifiers": {},
+	"keychain-access-groups":                             {},
+	"com.apple.developer.ubiquity-kvstore-identifier":    {},
+	"com.apple.developer.parent-application-identifiers": {},
 }
 
 // validateSigningResignExistingEntitlements checks the identity claims from

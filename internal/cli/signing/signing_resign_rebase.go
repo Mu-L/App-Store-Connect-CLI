@@ -185,7 +185,7 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 		}
 		profileValue, permitted := profile[key]
 		if profileClass != "" {
-			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, profileValue, permitted); handled {
+			if resolved, handled, err := resolveSigningResignProfileClassEntitlement(key, profileClass, value, true, profileValue, permitted); handled {
 				if err != nil {
 					return nil, nil, err
 				}
