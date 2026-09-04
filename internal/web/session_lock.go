@@ -45,6 +45,20 @@ func withSessionEntryLock(key string, fn func() error) error {
 	return fn()
 }
 
+// withSessionStoreLock serializes read-modify-write operations on the single
+// aggregate keychain item shared by all Apple IDs.
+func withSessionStoreLock(fn func() error) error {
+	dir := strings.TrimSpace(sessionSharedLockRoot())
+	if dir == "" {
+		return fn()
+	}
+	path := filepath.Join(dir, sessionSharedLockDirName(), "store.lock")
+	if release, ok := acquireSharedSessionLockFile(path); ok {
+		defer release()
+	}
+	return fn()
+}
+
 // acquireSessionEntryLock takes the entry lock at every anchor that can be
 // locked and returns a release func for them. Anchors that cannot be taken are
 // skipped rather than reported: see the fail-open rationale above.

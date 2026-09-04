@@ -2654,3 +2654,15 @@ func TestDeleteSessionIfMatchesRemovesAMirrorCarryingTheSameStamp(t *testing.T) 
 		t.Fatalf("expected the identically stamped file mirror to be gone, ok=%v error=%v", ok, err)
 	}
 }
+
+func TestSerializeCookieJarAssignsUniqueGeneration(t *testing.T) {
+	jar := webTestSessionJar(t, "generation-token")
+	a := serializeCookieJar(jar, "user@example.com")
+	b := serializeCookieJar(jar, "user@example.com")
+	if a.Generation == "" || b.Generation == "" {
+		t.Fatal("expected non-empty session generations")
+	}
+	if a.Generation == b.Generation {
+		t.Fatalf("expected unique generations, got %q", a.Generation)
+	}
+}

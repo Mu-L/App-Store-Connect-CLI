@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -68,6 +69,7 @@ type backendSelection struct {
 type persistedSession struct {
 	Version         int                  `json:"version"`
 	UpdatedAt       time.Time            `json:"updated_at"`
+	Generation      string               `json:"generation,omitempty"`
 	UserEmail       string               `json:"user_email,omitempty"`
 	DeveloperTeamID string               `json:"developer_team_id,omitempty"`
 	Cookies         map[string][]pCookie `json:"cookies"`
@@ -254,10 +256,11 @@ func isExpiredCookie(c pCookie, now time.Time) bool {
 func serializeCookieJar(jar http.CookieJar, userEmail string) persistedSession {
 	now := time.Now().UTC()
 	out := persistedSession{
-		Version:   webSessionCacheVersion,
-		UpdatedAt: now,
-		UserEmail: strings.TrimSpace(userEmail),
-		Cookies:   map[string][]pCookie{},
+		Version:    webSessionCacheVersion,
+		UpdatedAt:  now,
+		Generation: newSessionGeneration(),
+		UserEmail:  strings.TrimSpace(userEmail),
+		Cookies:    map[string][]pCookie{},
 	}
 	for _, u := range sessionCookieURLs() {
 		cookies := jar.Cookies(u)
@@ -290,6 +293,14 @@ func serializeCookieJar(jar http.CookieJar, userEmail string) persistedSession {
 		}
 	}
 	return out
+}
+
+func newSessionGeneration() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return fmt.Sprintf("%x", b[:])
+	}
+	return ""
 }
 
 func hydrateCookieJar(jar http.CookieJar, sess persistedSession) int {
@@ -511,6 +522,10 @@ func removeLegacyLastKeyFromKeyring(kr keyring.Keyring) error {
 }
 
 func writeSessionToKeychain(key string, sess persistedSession) error {
+	return withSessionStoreLock(func() error { return writeSessionToKeychainUnlocked(key, sess) })
+}
+
+func writeSessionToKeychainUnlocked(key string, sess persistedSession) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -993,6 +1008,10 @@ func deleteSessionFromFile(key string) error {
 }
 
 func deleteSessionFromKeychain(key string) error {
+	return withSessionStoreLock(func() error { return deleteSessionFromKeychainUnlocked(key) })
+}
+
+func deleteSessionFromKeychainUnlocked(key string) error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -1036,6 +1055,10 @@ func clearLastKeyInFile() error {
 }
 
 func clearLastKeyInKeychain() error {
+	return withSessionStoreLock(func() error { return clearLastKeyInKeychainUnlocked() })
+}
+
+func clearLastKeyInKeychainUnlocked() error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -1081,6 +1104,10 @@ func deleteAllFromFile() error {
 }
 
 func deleteAllFromKeychain() error {
+	return withSessionStoreLock(func() error { return deleteAllFromKeychainUnlocked() })
+}
+
+func deleteAllFromKeychainUnlocked() error {
 	kr, err := sessionKeyringOpen()
 	if err != nil {
 		return err
@@ -1175,10 +1202,11 @@ func loadSessionFromPersistedSession(sess persistedSession) (*AuthSession, bool,
 		return nil, false, nil
 	}
 	return &AuthSession{
-		Client:          newWebHTTPClient(jar),
-		UserEmail:       strings.TrimSpace(sess.UserEmail),
-		DeveloperTeamID: strings.TrimSpace(sess.DeveloperTeamID),
-		cachedUpdatedAt: sess.UpdatedAt,
+		Client:           newWebHTTPClient(jar),
+		UserEmail:        strings.TrimSpace(sess.UserEmail),
+		DeveloperTeamID:  strings.TrimSpace(sess.DeveloperTeamID),
+		cachedUpdatedAt:  sess.UpdatedAt,
+		cachedGeneration: sess.Generation,
 	}, true, nil
 }
 
@@ -1429,7 +1457,7 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 	if username == "" {
 		return false, nil
 	}
-	if loaded == nil || loaded.cachedUpdatedAt.IsZero() {
+	if loaded == nil || (loaded.cachedUpdatedAt.IsZero() && loaded.cachedGeneration == "") {
 		return true, DeleteSession(username)
 	}
 
@@ -1448,7 +1476,7 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 		if !ok {
 			return nil
 		}
-		if !current.UpdatedAt.Equal(loaded.cachedUpdatedAt) {
+		if !samePersistedSessionIdentity(current, loaded) {
 			return nil
 		}
 		if sessionCompareDeleteBarrier != nil {
@@ -1458,6 +1486,13 @@ func DeleteSessionIfMatches(username string, loaded *AuthSession) (bool, error) 
 		return deleteMatchedSessionEntryLocked(selection, key, origin, current.UpdatedAt)
 	})
 	return deleted, err
+}
+
+func samePersistedSessionIdentity(current persistedSession, loaded *AuthSession) bool {
+	if loaded.cachedGeneration != "" && current.Generation != "" {
+		return current.Generation == loaded.cachedGeneration
+	}
+	return !loaded.cachedUpdatedAt.IsZero() && current.UpdatedAt.Equal(loaded.cachedUpdatedAt)
 }
 
 // deleteMatchedSessionEntryLocked removes the cache entry whose stamp matched
