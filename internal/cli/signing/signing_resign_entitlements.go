@@ -658,6 +658,9 @@ func signingResignProfileAuthorizationValueValid(value any) bool {
 			return false
 		}
 		for _, item := range typed {
+			if _, ok := item.(string); !ok {
+				return false
+			}
 			if !signingResignProfileAuthorizationValueValid(item) {
 				return false
 			}
