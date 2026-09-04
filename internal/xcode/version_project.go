@@ -1366,6 +1366,7 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 	lexicalConfigPaths := make(map[string][]string)
 	observedPathsByRoot := make(map[string][]string)
 	var unselectedCollectionError error
+	sourceBudget := &xcconfigSourceBudget{}
 	addProtectedPath := func(path string) {
 		absolute := normalizeSigningLexicalPath(path)
 		for _, existing := range protectedConfigPaths {
@@ -1409,7 +1410,7 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 		if xcconfigUsesIdentityTraversal() {
 			identify = signingXCConfigIdentityFn
 		}
-		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
+		files, err := collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
 			path,
 			func(filePath string) ([]byte, error) {
 				return signingXCConfigReadFileFn(filePath, signingPlanMaxBytes)
@@ -1455,6 +1456,7 @@ func (project *structuredVersionProject) signingXCConfigConsumersWithOptionalMis
 			addMissingOptionalInclude,
 			signingPlanMaxFiles,
 			signingXCConfigStatFileFn,
+			sourceBudget,
 		)
 		observedPathsByRoot[normalizeSigningLexicalPath(path)] = observedPaths
 		if err == nil {

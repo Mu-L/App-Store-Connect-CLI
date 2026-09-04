@@ -79,6 +79,101 @@ func TestXCConfigCollectorStopsWideGraphAtLimit(t *testing.T) {
 	}
 }
 
+func TestXCConfigCollectorSharesUniqueBudgetAcrossRoots(t *testing.T) {
+	rootDir := t.TempDir()
+	firstRoot := filepath.Join(rootDir, "First.xcconfig")
+	firstChild := filepath.Join(rootDir, "First-child.xcconfig")
+	secondRoot := filepath.Join(rootDir, "Second.xcconfig")
+	secondChild := filepath.Join(rootDir, "Second-child.xcconfig")
+	contents := map[string][]byte{
+		firstRoot:   []byte(`#include "First-child.xcconfig"`),
+		firstChild:  []byte("A = 1"),
+		secondRoot:  []byte(`#include "Second-child.xcconfig"`),
+		secondChild: []byte("B = 2"),
+	}
+	readCount := make(map[string]int)
+	read := func(path string) ([]byte, error) {
+		readCount[path]++
+		data, ok := contents[path]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return data, nil
+	}
+	budget := &xcconfigSourceBudget{}
+	collect := func(root string) ([]string, error) {
+		return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
+			root, read, nil, nil, nil, nil, nil, 3, nil, budget,
+		)
+	}
+	if files, err := collect(firstRoot); err != nil || len(files) != 2 {
+		t.Fatalf("first collection files=%#v error=%v, want two sources", files, err)
+	}
+	// Repeating an already observed root must not consume the plan-wide budget.
+	if files, err := collect(firstRoot); err != nil || len(files) != 2 {
+		t.Fatalf("repeated first collection files=%#v error=%v, want two sources", files, err)
+	}
+	_, err := collect(secondRoot)
+	if err == nil || !isXCConfigSourceGraphLimitError(err) || !strings.Contains(err.Error(), "more than 3 files") {
+		t.Fatalf("second collection error=%v, want shared unique-source limit", err)
+	}
+	if readCount[secondChild] != 0 {
+		t.Fatalf("second child was read after shared budget exhaustion: %d reads", readCount[secondChild])
+	}
+}
+
+func TestXCConfigCollectorSharedBudgetSkipsAbsentOptionalIncludeAtLimit(t *testing.T) {
+	rootDir := t.TempDir()
+	root := filepath.Join(rootDir, "Root.xcconfig")
+	child := filepath.Join(rootDir, "Child.xcconfig")
+	missing := filepath.Join(rootDir, "Missing.xcconfig")
+	contents := map[string][]byte{
+		root:  []byte("#include \"Child.xcconfig\"\n#include? \"Missing.xcconfig\""),
+		child: []byte("A = 1"),
+	}
+	readCount := make(map[string]int)
+	probeCount := make(map[string]int)
+	var optionalMissing string
+	budget := &xcconfigSourceBudget{}
+	collect := func() ([]string, error) {
+		return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
+			root,
+			func(path string) ([]byte, error) {
+				readCount[path]++
+				data, ok := contents[path]
+				if !ok {
+					return nil, os.ErrNotExist
+				}
+				return data, nil
+			},
+			nil,
+			nil,
+			nil,
+			nil,
+			func(path string) { optionalMissing = path },
+			2,
+			func(path string) (os.FileInfo, error) {
+				probeCount[path]++
+				return nil, os.ErrNotExist
+			},
+			budget,
+		)
+	}
+	if files, err := collect(); err != nil || len(files) != 2 {
+		t.Fatalf("first collection files=%#v error=%v, want two sources", files, err)
+	}
+	readCount = make(map[string]int)
+	probeCount = make(map[string]int)
+	optionalMissing = ""
+	files, err := collect()
+	if err != nil || len(files) != 2 || optionalMissing != missing {
+		t.Fatalf("repeated collection files=%#v error=%v optionalMissing=%q, want absent optional include %q", files, err, optionalMissing, missing)
+	}
+	if readCount[missing] != 0 || probeCount[missing] != 1 {
+		t.Fatalf("absent optional read/probe counts = %d/%d, want 0/1", readCount[missing], probeCount[missing])
+	}
+}
+
 func TestXCConfigCollectorSkipsAbsentOptionalIncludeAtLimit(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "Root.xcconfig")
 	left := filepath.Join(filepath.Dir(root), "Left.xcconfig")

@@ -420,6 +420,99 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissing(
 	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(root, read, authorize, onPath, onError, identify, onOptionalMissing, 0, nil)
 }
 
+// xcconfigSourceBudget tracks successfully collected source identities across
+// multiple configuration roots. A signing plan may visit the same root once
+// per target/configuration, so the budget must count each source only once at
+// plan scope while still preserving separate traversals for hard links whose
+// relative includes can resolve differently.
+type xcconfigSourceBudget struct {
+	entries      []xcconfigSourceBudgetEntry
+	byPath       map[string][]int
+	byFoldedPath map[string][]int
+}
+
+type xcconfigSourceBudgetEntry struct {
+	path string
+	info os.FileInfo
+}
+
+func (b *xcconfigSourceBudget) contains(path string, info os.FileInfo) bool {
+	if b == nil {
+		return false
+	}
+	path = normalizeSigningLexicalPath(path)
+	containsEntry := func(indexes []int) bool {
+		for _, index := range indexes {
+			entry := b.entries[index]
+			if entry.path == path {
+				if info == nil || entry.info == nil {
+					// A collector without identity support can still establish
+					// duplicate lexical sources. Signing traversal normally has an
+					// identity, so two replaced files at one path remain distinct.
+					return true
+				}
+				if os.SameFile(info, entry.info) {
+					return true
+				}
+				continue
+			}
+			if info != nil && entry.info != nil && signingPathCaseEquivalent(entry.path, path) && os.SameFile(info, entry.info) {
+				return true
+			}
+		}
+		return false
+	}
+	if b.byPath != nil {
+		if containsEntry(b.byPath[path]) {
+			return true
+		}
+	} else {
+		for index := range b.entries {
+			if containsEntry([]int{index}) {
+				return true
+			}
+		}
+	}
+	foldedPath := strings.ToLower(path)
+	if b.byFoldedPath != nil {
+		return containsEntry(b.byFoldedPath[foldedPath])
+	}
+	for index, entry := range b.entries {
+		if strings.ToLower(entry.path) == foldedPath && containsEntry([]int{index}) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *xcconfigSourceBudget) count() int {
+	if b == nil {
+		return 0
+	}
+	return len(b.entries)
+}
+
+func (b *xcconfigSourceBudget) add(path string, info os.FileInfo) bool {
+	if b == nil || b.contains(path, info) {
+		return false
+	}
+	if b.byPath == nil {
+		b.byPath = make(map[string][]int)
+	}
+	if b.byFoldedPath == nil {
+		b.byFoldedPath = make(map[string][]int)
+	}
+	path = normalizeSigningLexicalPath(path)
+	index := len(b.entries)
+	b.entries = append(b.entries, xcconfigSourceBudgetEntry{
+		path: path,
+		info: info,
+	})
+	b.byPath[path] = append(b.byPath[path], index)
+	b.byFoldedPath[strings.ToLower(path)] = append(b.byFoldedPath[strings.ToLower(path)], index)
+	return true
+}
+
 // collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit is the
 // bounded form used by signing-plan generation. optionalProbe is consulted
 // only for an optional include encountered after maxFiles sources have already
@@ -437,6 +530,27 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
 	onOptionalMissing func(string),
 	maxFiles int,
 	optionalProbe func(string) (os.FileInfo, error),
+) ([]string, error) {
+	return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
+		root, read, authorize, onPath, onError, identify, onOptionalMissing, maxFiles, optionalProbe, nil,
+	)
+}
+
+// collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget is
+// the bounded collector with an optional plan-wide source budget. A nil
+// budget retains the historical per-collection bound used by callers outside
+// signing-plan generation.
+func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
+	root string,
+	read func(string) ([]byte, error),
+	authorize func(string) error,
+	onPath func(string),
+	onError func(string, error),
+	identify func(string) (os.FileInfo, error),
+	onOptionalMissing func(string),
+	maxFiles int,
+	optionalProbe func(string) (os.FileInfo, error),
+	budget *xcconfigSourceBudget,
 ) ([]string, error) {
 	seen := make(map[string]bool)
 	type collectedIdentity struct {
@@ -519,7 +633,12 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
 				}
 			}
 		}
-		if maxFiles > 0 && len(paths) >= maxFiles {
+		newBudgetSource := budget == nil || !budget.contains(path, identity)
+		collectedCount := len(paths)
+		if budget != nil {
+			collectedCount = budget.count()
+		}
+		if maxFiles > 0 && newBudgetSource && collectedCount >= maxFiles {
 			if optional && optionalProbe != nil {
 				_, probeErr := optionalProbe(path)
 				if errors.Is(probeErr, os.ErrNotExist) {
@@ -570,6 +689,9 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimit(
 		paths = append(paths, path)
 		if identity != nil {
 			collected = append(collected, collectedIdentity{path: path, info: identity})
+		}
+		if budget != nil {
+			budget.add(path, identity)
 		}
 		nextStack := make(map[string][]os.FileInfo, len(stack)+1)
 		for key, infos := range stack {
