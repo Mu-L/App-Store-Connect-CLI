@@ -40,6 +40,17 @@ func copyReplacementMetadata(destination, source *os.File, info os.FileInfo) err
 	return nil
 }
 
+func restoreReplacementMode(destination *os.File, info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("inspect replacement mode: unsupported stat type %T", info.Sys())
+	}
+	if err := unix.Fchmod(int(destination.Fd()), uint32(stat.Mode)&0o7777); err != nil {
+		return fmt.Errorf("preserve replacement permissions: %w", err)
+	}
+	return nil
+}
+
 func copyExtendedAttributes(destination, source *os.File) error {
 	size, err := unix.Flistxattr(int(source.Fd()), nil)
 	if err != nil {

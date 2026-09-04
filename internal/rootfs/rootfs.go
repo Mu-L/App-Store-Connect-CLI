@@ -1519,6 +1519,11 @@ func (r Root) writeFromPreservingMetadata(
 	if err != nil {
 		return 0, err
 	}
+	if metadataSource != nil {
+		if err := restoreReplacementMode(temporary, metadataInfo); err != nil {
+			return 0, err
+		}
+	}
 	if err := temporary.Sync(); err != nil {
 		return 0, err
 	}
