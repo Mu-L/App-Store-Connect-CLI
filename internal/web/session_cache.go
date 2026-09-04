@@ -101,6 +101,7 @@ var (
 			},
 		})
 	}
+	sessionFileWrite   = os.WriteFile
 	sessionInfoFetcher = getSessionInfo
 )
 
@@ -545,6 +546,13 @@ type sessionFileBackup struct {
 	mode   os.FileMode
 }
 
+type sessionFileState struct {
+	sessionPath string
+	lastPath    string
+	session     sessionFileBackup
+	last        sessionFileBackup
+}
+
 func backupSessionFile(path string) (sessionFileBackup, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -588,6 +596,41 @@ func restoreSessionFile(path string, backup sessionFileBackup) error {
 	return os.Rename(tmpPath, path)
 }
 
+// captureFileSessionState snapshots both files that make up a file-backed
+// session. The last-session pointer is part of the cache state: restoring only
+// the account file can leave a failed overwrite selecting a different session.
+func captureFileSessionState(key string) (sessionFileState, error) {
+	sessionPath, err := webSessionFilePath(key)
+	if err != nil {
+		return sessionFileState{}, err
+	}
+	lastPath, err := webSessionLastFilePath()
+	if err != nil {
+		return sessionFileState{}, err
+	}
+	sessionBackup, err := backupSessionFile(sessionPath)
+	if err != nil {
+		return sessionFileState{}, fmt.Errorf("failed to back up session cache: %w", err)
+	}
+	lastBackup, err := backupSessionFile(lastPath)
+	if err != nil {
+		return sessionFileState{}, fmt.Errorf("failed to back up last session pointer: %w", err)
+	}
+	return sessionFileState{
+		sessionPath: sessionPath,
+		lastPath:    lastPath,
+		session:     sessionBackup,
+		last:        lastBackup,
+	}, nil
+}
+
+func (state sessionFileState) restore() error {
+	return errors.Join(
+		restoreSessionFile(state.sessionPath, state.session),
+		restoreSessionFile(state.lastPath, state.last),
+	)
+}
+
 func writeSessionToFile(key string, sess persistedSession) error {
 	dir, err := webSessionCacheDir()
 	if err != nil {
@@ -601,42 +644,34 @@ func writeSessionToFile(key string, sess persistedSession) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal session: %w", err)
 	}
-	sessionPath, err := webSessionFilePath(key)
+	state, err := captureFileSessionState(key)
 	if err != nil {
 		return err
 	}
-	backup, err := backupSessionFile(sessionPath)
-	if err != nil {
-		return fmt.Errorf("failed to back up session cache: %w", err)
-	}
 	rollback := func(cause error) error {
-		if rollbackErr := restoreSessionFile(sessionPath, backup); rollbackErr != nil {
+		if rollbackErr := state.restore(); rollbackErr != nil {
 			return errors.Join(cause, fmt.Errorf("failed to roll back session cache: %w", rollbackErr))
 		}
 		return cause
 	}
-	tmpSessionPath := sessionPath + ".tmp"
-	if err := os.WriteFile(tmpSessionPath, raw, 0o600); err != nil {
+	tmpSessionPath := state.sessionPath + ".tmp"
+	if err := sessionFileWrite(tmpSessionPath, raw, 0o600); err != nil {
 		return fmt.Errorf("failed to write session cache: %w", err)
 	}
-	if err := os.Rename(tmpSessionPath, sessionPath); err != nil {
+	if err := os.Rename(tmpSessionPath, state.sessionPath); err != nil {
 		_ = os.Remove(tmpSessionPath)
 		return fmt.Errorf("failed to finalize session cache: %w", err)
 	}
 
-	lastPath, err := webSessionLastFilePath()
-	if err != nil {
-		return rollback(fmt.Errorf("failed to resolve last session pointer: %w", err))
-	}
 	lastRaw, err := json.Marshal(persistedLastSession{Version: webSessionCacheVersion, Key: key})
 	if err != nil {
 		return rollback(fmt.Errorf("failed to marshal last session pointer: %w", err))
 	}
-	tmpLastPath := lastPath + ".tmp"
-	if err := os.WriteFile(tmpLastPath, lastRaw, 0o600); err != nil {
+	tmpLastPath := state.lastPath + ".tmp"
+	if err := sessionFileWrite(tmpLastPath, lastRaw, 0o600); err != nil {
 		return rollback(fmt.Errorf("failed to write last session pointer: %w", err))
 	}
-	if err := os.Rename(tmpLastPath, lastPath); err != nil {
+	if err := os.Rename(tmpLastPath, state.lastPath); err != nil {
 		_ = os.Remove(tmpLastPath)
 		return rollback(fmt.Errorf("failed to finalize last session pointer: %w", err))
 	}
@@ -882,40 +917,159 @@ func persistSessionBySelection(selection backendSelection, key string, sess pers
 	}
 }
 
+type keychainItemState struct {
+	key    string
+	item   keyring.Item
+	exists bool
+}
+
+type keychainSessionState struct {
+	items    []keychainItemState
+	captured bool
+}
+
+// captureKeychainSessionState snapshots the raw aggregate and legacy items
+// that can be changed while replacing one account. Keeping the raw items (and
+// not only the selected session) preserves the previous last-session choice and
+// malformed-store bytes if a later write fails.
+func captureKeychainSessionState(key string) (keychainSessionState, error) {
+	kr, err := sessionKeyringOpen()
+	if err != nil {
+		if isKeyringUnavailable(err) {
+			return keychainSessionState{}, nil
+		}
+		return keychainSessionState{}, fmt.Errorf("failed to back up keychain session: %w", err)
+	}
+	keys := []string{webSessionStoreItem, keyringSessionItem(key), webSessionLastKeyItem}
+	state := keychainSessionState{items: make([]keychainItemState, 0, len(keys)), captured: true}
+	for _, itemKey := range keys {
+		item, err := kr.Get(itemKey)
+		if err != nil {
+			if errors.Is(err, keyring.ErrKeyNotFound) {
+				state.items = append(state.items, keychainItemState{key: itemKey})
+				continue
+			}
+			return keychainSessionState{}, fmt.Errorf("failed to back up keychain item: %w", err)
+		}
+		state.items = append(state.items, keychainItemState{key: itemKey, item: item, exists: true})
+	}
+	return state, nil
+}
+
+func (state keychainSessionState) restore() error {
+	if !state.captured {
+		return nil
+	}
+	kr, err := sessionKeyringOpen()
+	if err != nil {
+		return fmt.Errorf("failed to restore keychain session: %w", err)
+	}
+	var restoreErr error
+	for _, itemState := range state.items {
+		if itemState.exists {
+			restoreErr = errors.Join(restoreErr, kr.Set(itemState.item))
+			continue
+		}
+		removeErr := kr.Remove(itemState.key)
+		if errors.Is(removeErr, keyring.ErrKeyNotFound) {
+			removeErr = nil
+		}
+		restoreErr = errors.Join(restoreErr, removeErr)
+	}
+	return restoreErr
+}
+
+type importedSessionState struct {
+	file     *sessionFileState
+	keychain *keychainSessionState
+}
+
+func captureImportedSessionState(selection backendSelection, key string) (importedSessionState, error) {
+	state := importedSessionState{}
+	if selection.backend == sessionBackendFile || selection.fallbackFile {
+		fileState, err := captureFileSessionState(key)
+		if err != nil {
+			return importedSessionState{}, err
+		}
+		state.file = &fileState
+	}
+	if selection.backend == sessionBackendKeychain || selection.fallbackKeychain {
+		keychainState, err := captureKeychainSessionState(key)
+		if err != nil {
+			return importedSessionState{}, err
+		}
+		state.keychain = &keychainState
+	}
+	return state, nil
+}
+
+func (state importedSessionState) restore() error {
+	var restoreErr error
+	if state.file != nil {
+		restoreErr = errors.Join(restoreErr, state.file.restore())
+	}
+	if state.keychain != nil {
+		restoreErr = errors.Join(restoreErr, state.keychain.restore())
+	}
+	return restoreErr
+}
+
 // persistImportedSessionBySelection stores an imported session in the selected
 // backend and clears the credential mirrored in the other backend when the
-// operator asked to overwrite. The mirror is dropped before the replacement is
-// written so a failed cleanup reports an error with the cache untouched,
-// instead of leaving the replacement live behind a failure the caller reports.
-// The mirror is only ever removed for an overwrite the operator asked for, and
-// the bundle being imported remains a durable copy of the replacement.
+// operator asked to overwrite. Both backends are snapshotted before cleanup so
+// a failed replacement restores the selected session, its mirror, and the
+// last-session pointer exactly as they were found.
 func persistImportedSessionBySelection(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
 	switch selection.backend {
 	case sessionBackendOff:
 		return nil
 	case sessionBackendKeychain:
-		if overwrite && selection.fallbackFile {
+		if !overwrite {
+			return writeImportedSessionToKeychain(selection, key, sess, false)
+		}
+		state, err := captureImportedSessionState(selection, key)
+		if err != nil {
+			return err
+		}
+		if selection.fallbackFile {
 			if err := deleteMirroredSessionFromFile(key); err != nil {
-				return err
+				return errors.Join(err, state.restore())
 			}
 		}
-		if err := writeSessionToKeychainWithRecovery(key, sess, overwrite); err != nil {
-			if selection.fallbackFile && isKeyringUnavailable(err) {
-				return writeSessionToFile(key, sess)
-			}
-			return err
+		if err := writeImportedSessionToKeychain(selection, key, sess, true); err != nil {
+			return errors.Join(err, state.restore())
 		}
 		return nil
 	case sessionBackendFile:
-		if overwrite && selection.fallbackKeychain {
+		if !overwrite {
+			return writeSessionToFile(key, sess)
+		}
+		state, err := captureImportedSessionState(selection, key)
+		if err != nil {
+			return err
+		}
+		if selection.fallbackKeychain {
 			if err := ignoreUnavailableKeyringError(deleteSessionFromKeychainWithRecovery(key, true)); err != nil {
-				return err
+				return errors.Join(err, state.restore())
 			}
 		}
-		return writeSessionToFile(key, sess)
+		if err := writeSessionToFile(key, sess); err != nil {
+			return errors.Join(err, state.restore())
+		}
+		return nil
 	default:
 		return nil
 	}
+}
+
+func writeImportedSessionToKeychain(selection backendSelection, key string, sess persistedSession, overwrite bool) error {
+	if err := writeSessionToKeychainWithRecovery(key, sess, overwrite); err != nil {
+		if selection.fallbackFile && isKeyringUnavailable(err) {
+			return writeSessionToFile(key, sess)
+		}
+		return err
+	}
+	return nil
 }
 
 func readSessionFromFileWithKeychainFallback(key string, fallbackKeychain bool) (persistedSession, bool, error) {

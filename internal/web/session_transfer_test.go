@@ -858,3 +858,179 @@ func TestImportSessionBundleLeavesFileCacheIntactWhenKeychainCleanupFails(t *tes
 		t.Fatalf("cached cookies = %#v, want the import to report failure without replacing them", cookies)
 	}
 }
+
+func TestImportSessionBundleRestoresFileMirrorAfterKeychainPersistenceFails(t *testing.T) {
+	withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "keychain")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	if err := writeSessionToFile(key, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+	lastPath, err := webSessionLastFilePath()
+	if err != nil {
+		t.Fatalf("webSessionLastFilePath() error = %v", err)
+	}
+	lastRaw := []byte(`{"key":"` + key + `","version":1}` + "\n")
+	if err := os.WriteFile(lastPath, lastRaw, 0o640); err != nil {
+		t.Fatalf("write last-session pointer: %v", err)
+	}
+	sessionPath, err := webSessionFilePath(key)
+	if err != nil {
+		t.Fatalf("webSessionFilePath() error = %v", err)
+	}
+	previousSessionRaw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read previous session cache: %v", err)
+	}
+
+	previousOpen := sessionKeyringOpen
+	sessionKeyringOpen = func() (keyring.Keyring, error) {
+		return nil, errors.New("keychain unlock refused")
+	}
+	t.Cleanup(func() { sessionKeyringOpen = previousOpen })
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err == nil {
+		t.Fatal("ImportSessionBundleWithOptions() error = nil, want the keychain persistence failure")
+	}
+
+	gotSessionRaw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read restored session cache: %v", err)
+	}
+	if string(gotSessionRaw) != string(previousSessionRaw) {
+		t.Fatalf("restored session cache changed: got %q, want %q", gotSessionRaw, previousSessionRaw)
+	}
+	gotLastRaw, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("read restored last-session pointer: %v", err)
+	}
+	if string(gotLastRaw) != string(lastRaw) {
+		t.Fatalf("restored last-session pointer changed: got %q, want %q", gotLastRaw, lastRaw)
+	}
+}
+
+func TestImportSessionBundleRestoresKeychainMirrorAfterFilePersistenceFails(t *testing.T) {
+	testKeyring := withArraySessionKeyring(t)
+	withSessionInfoStub(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionBackendEnv, "")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	key := webSessionCacheKey(bundle.AppleID)
+	if err := writeSessionToFile(key, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-file-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToFile() error = %v", err)
+	}
+	lastPath, err := webSessionLastFilePath()
+	if err != nil {
+		t.Fatalf("webSessionLastFilePath() error = %v", err)
+	}
+	lastRaw := []byte(`{"key":"` + key + `","version":1}` + "\n")
+	if err := os.WriteFile(lastPath, lastRaw, 0o640); err != nil {
+		t.Fatalf("write last-session pointer: %v", err)
+	}
+	sessionPath, err := webSessionFilePath(key)
+	if err != nil {
+		t.Fatalf("webSessionFilePath() error = %v", err)
+	}
+	previousSessionRaw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read previous session cache: %v", err)
+	}
+
+	keychainSession := persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-time.Hour),
+		UserEmail: bundle.AppleID,
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "old-keychain-token", Path: "/"}},
+		},
+	}
+	if err := writeSessionToKeychain(key, keychainSession); err != nil {
+		t.Fatalf("writeSessionToKeychain() error = %v", err)
+	}
+	otherKey := webSessionCacheKey("other@example.com")
+	if err := writeSessionToKeychain(otherKey, persistedSession{
+		Version:   webSessionCacheVersion,
+		UpdatedAt: time.Now().UTC().Add(-2 * time.Hour),
+		UserEmail: "other@example.com",
+		Cookies: map[string][]pCookie{
+			"https://appstoreconnect.apple.com/": {{Name: "myacinfo", Value: "other-token", Path: "/"}},
+		},
+	}); err != nil {
+		t.Fatalf("writeSessionToKeychain(other) error = %v", err)
+	}
+	keychainItem, err := testKeyring.Get(webSessionStoreItem)
+	if err != nil {
+		t.Fatalf("read previous keychain store: %v", err)
+	}
+	previousKeychainRaw := append([]byte(nil), keychainItem.Data...)
+
+	previousWrite := sessionFileWrite
+	sessionFileWrite = func(path string, data []byte, perm os.FileMode) error {
+		if strings.HasSuffix(path, ".tmp") && strings.Contains(filepath.Base(path), "session-") {
+			return errors.New("file replacement refused")
+		}
+		return previousWrite(path, data, perm)
+	}
+	t.Cleanup(func() { sessionFileWrite = previousWrite })
+
+	if _, err := ImportSessionBundleWithOptions(bundle, true); err == nil {
+		t.Fatal("ImportSessionBundleWithOptions() error = nil, want the file persistence failure")
+	}
+
+	gotSessionRaw, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read restored session cache: %v", err)
+	}
+	if string(gotSessionRaw) != string(previousSessionRaw) {
+		t.Fatalf("restored session cache changed: got %q, want %q", gotSessionRaw, previousSessionRaw)
+	}
+	gotLastRaw, err := os.ReadFile(lastPath)
+	if err != nil {
+		t.Fatalf("read restored last-session pointer: %v", err)
+	}
+	if string(gotLastRaw) != string(lastRaw) {
+		t.Fatalf("restored last-session pointer changed: got %q, want %q", gotLastRaw, lastRaw)
+	}
+	restored, ok, err := readSessionFromKeychain(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromKeychain() = (%v, %v), want the restored mirror", ok, err)
+	}
+	if got := restored.Cookies["https://appstoreconnect.apple.com/"][0].Value; got != "old-keychain-token" {
+		t.Fatalf("restored keychain cookie = %q, want old-keychain-token", got)
+	}
+	other, ok, err := readSessionFromKeychain(otherKey)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromKeychain(other) = (%v, %v), want unrelated state preserved", ok, err)
+	}
+	if got := other.Cookies["https://appstoreconnect.apple.com/"][0].Value; got != "other-token" {
+		t.Fatalf("restored unrelated keychain cookie = %q, want other-token", got)
+	}
+	gotKeychainItem, err := testKeyring.Get(webSessionStoreItem)
+	if err != nil {
+		t.Fatalf("read restored keychain store: %v", err)
+	}
+	if string(gotKeychainItem.Data) != string(previousKeychainRaw) {
+		t.Fatalf("restored keychain store changed: got %q, want %q", gotKeychainItem.Data, previousKeychainRaw)
+	}
+}
