@@ -527,37 +527,54 @@ func verifySigningResignPreservedExternalCode(ctx context.Context, codePath stri
 	return nil
 }
 
+func openSigningResignTreeRoot(treeRoot string) (*os.Root, error) {
+	root, err := rootfs.New(treeRoot)
+	if err != nil {
+		return nil, err
+	}
+	return root.OpenRoot()
+}
+
 func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	swiftSupportRoot := filepath.Join(treeRoot, "SwiftSupport")
-	info, err := os.Lstat(swiftSupportRoot)
+	root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("SwiftSupport is not a regular directory")
+	defer swift.Close()
+	swiftDir, err := swift.Open(".")
+	if err != nil {
+		return fmt.Errorf("read SwiftSupport directory: %w", err)
 	}
-	entries, err := os.ReadDir(swiftSupportRoot)
+	defer swiftDir.Close()
+	entries, err := swiftDir.ReadDir(-1)
 	if err != nil {
 		return fmt.Errorf("read SwiftSupport directory: %w", err)
 	}
 	if len(entries) != 1 || entries[0].Name() != "iphoneos" {
 		return fmt.Errorf("SwiftSupport must contain only the iphoneos directory")
 	}
-	swiftRoot := filepath.Join(swiftSupportRoot, "iphoneos")
-	platformInfo, err := os.Lstat(swiftRoot)
+	platform, err := swift.OpenRoot("iphoneos")
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
 	}
-	if platformInfo.Mode()&os.ModeSymlink != 0 || !platformInfo.IsDir() {
-		return fmt.Errorf("SwiftSupport/iphoneos is not a regular directory")
+	defer platform.Close()
+	platformDir, err := platform.Open(".")
+	if err != nil {
+		return fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
 	}
-	entries, err = os.ReadDir(swiftRoot)
+	defer platformDir.Close()
+	entries, err = platformDir.ReadDir(-1)
 	if err != nil {
 		return fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
 	}
@@ -566,7 +583,6 @@ func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) err
 			return err
 		}
 		name := entry.Name()
-		candidate := filepath.Join(swiftRoot, name)
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
 		}
@@ -577,7 +593,12 @@ func validateSigningResignSwiftSupport(ctx context.Context, treeRoot string) err
 		if name == ".dylib" || !strings.HasSuffix(name, ".dylib") {
 			return fmt.Errorf("SwiftSupport/iphoneos contains an unsupported entry")
 		}
-		if err := verifySigningResignPreservedExternalCode(ctx, candidate); err != nil {
+		file, err := platform.Open(name)
+		if err != nil {
+			return fmt.Errorf("open preserved SwiftSupport code: %w", err)
+		}
+		file.Close()
+		if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(treeRoot, "SwiftSupport", "iphoneos", name)); err != nil {
 			return fmt.Errorf("verify preserved SwiftSupport code failed: %w", err)
 		}
 	}
@@ -592,18 +613,25 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	watchRoot := filepath.Join(treeRoot, "WatchKitSupport2")
-	info, err := os.Lstat(watchRoot)
+	root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("WatchKitSupport2 is not a regular directory")
+	defer watch.Close()
+	watchDir, err := watch.Open(".")
+	if err != nil {
+		return fmt.Errorf("read WatchKitSupport2 directory: %w", err)
 	}
-	entries, err := os.ReadDir(watchRoot)
+	defer watchDir.Close()
+	entries, err := watchDir.ReadDir(-1)
 	if err != nil {
 		return fmt.Errorf("read WatchKitSupport2 directory: %w", err)
 	}
@@ -614,14 +642,19 @@ func validateSigningResignWatchKitSupport(ctx context.Context, treeRoot string) 
 	if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 		return fmt.Errorf("WatchKitSupport2 contains a nested or symbolic-link entry")
 	}
-	entryInfo, err := entry.Info()
-	if err != nil || !entryInfo.Mode().IsRegular() {
+	info, err := entry.Info()
+	if err != nil || !info.Mode().IsRegular() {
 		return fmt.Errorf("WatchKitSupport2 contains a non-regular entry")
 	}
-	if entryInfo.Mode().Perm()&0o100 == 0 {
+	if info.Mode().Perm()&0o100 == 0 {
 		return fmt.Errorf("WatchKitSupport2/WK is missing the owner-execute permission")
 	}
-	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(watchRoot, "WK")); err != nil {
+	file, err := watch.Open("WK")
+	if err != nil {
+		return fmt.Errorf("open preserved WatchKitSupport2 code: %w", err)
+	}
+	file.Close()
+	if err := verifySigningResignPreservedExternalCode(ctx, filepath.Join(treeRoot, "WatchKitSupport2", "WK")); err != nil {
 		return fmt.Errorf("verify preserved WatchKitSupport2 code failed: %w", err)
 	}
 	return nil
