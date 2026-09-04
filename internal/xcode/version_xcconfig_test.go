@@ -53,6 +53,24 @@ func TestXCConfigImplicitLookupPreservesExplicitConditional(t *testing.T) {
 	}
 }
 
+func TestXCConfigConditionalAssignmentExpandsInheritedValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "OTHER[sdk=iphoneos*] = $(inherited)-child\nOTHER = base-child\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path, "OTHER", xcconfigResolvedValue{}, os.ReadFile, os.Stat, nil,
+		func(string) (string, bool) { return "base", true },
+	)
+	if err != nil {
+		t.Fatalf("resolve conditional inherited value: %v", err)
+	}
+	if len(resolved.conditionals) != 1 || resolved.conditionals[0].value != "base-child" {
+		t.Fatalf("conditional state = %#v, want expanded base-child", resolved.conditionals)
+	}
+}
+
 func TestXCConfigImplicitLookupComposesInheritedConditional(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "App.xcconfig")
 	contents := "PROJECT_DIR[sdk=iphoneos*] = $(inherited)\nPROJECT_DIR = $(inherited)\n"
