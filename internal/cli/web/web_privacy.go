@@ -1948,7 +1948,8 @@ func WebPrivacyApplyCommand() *ffcli.Command {
 		LongHelp: `WEB SESSION WORKFLOWS
 
 Apply local declaration tuples to remote app data usages.
-This command never publishes automatically.
+This command never calls Apple's publish endpoint automatically, but applying
+usage mutations may still update Apple's published-state metadata.
 
 Declarations that contain UNKNOWN_OR_MISSING (unrepresentable remote data)
 are rejected before any create, update, or delete.
