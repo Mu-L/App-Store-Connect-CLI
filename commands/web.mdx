@@ -492,7 +492,7 @@ commands to find the IDs before editing the workflow:
 ```bash  theme={null}
 asc xcode-cloud products app --id "PRODUCT_ID"
 asc testflight groups list --app "APP_ID" --paginate --output json
-asc testflight testers list --app "APP_ID" --group "GROUP_ID" --output json
+asc testflight testers list --app "APP_ID" --group "GROUP_ID" --paginate --output json
 asc web xcode-cloud workflows edit --product-id "PRODUCT_ID" --workflow-id "WORKFLOW_ID" --patch-file ./workflow.patch.json
 ```
 
