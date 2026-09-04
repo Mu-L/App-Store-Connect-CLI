@@ -49,7 +49,9 @@ Examples:
   asc web xcode-cloud workflows options product-config --product-id "UUID" --apple-id "user@example.com"
   asc web xcode-cloud workflows edit --product-id "UUID" --workflow-id "WF-UUID" --patch-file ./workflow.patch.json --apple-id "user@example.com"
   asc web xcode-cloud env-vars shared list --product-id "UUID" --apple-id "user@example.com"
-  asc web xcode-cloud env-vars shared set --product-id "UUID" --name MY_VAR --value hello --apple-id "user@example.com"`,
+  asc web xcode-cloud env-vars shared set --product-id "UUID" --name MY_VAR --value hello --apple-id "user@example.com"
+  asc web xcode-cloud settings next-build-number show --product-id "UUID" --apple-id "user@example.com"
+  asc web xcode-cloud settings next-build-number set --product-id "UUID" --value 102 --confirm --apple-id "user@example.com"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
@@ -57,6 +59,7 @@ Examples:
 			webXcodeCloudProductsCommand(),
 			webXcodeCloudWorkflowsCommand(),
 			webXcodeCloudEnvVarsCommand(),
+			webXcodeCloudNextBuildNumberCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp

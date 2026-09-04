@@ -1,5 +1,38 @@
 package asc
 
+import (
+	"fmt"
+	"strconv"
+)
+
+// WebXcodeCloudNextBuildNumberResult is the current next-build-number setting
+// and, after a mutation, its previously observed value. Apple's TestFlight URL
+// is intentionally omitted because it may carry sensitive query parameters.
+type WebXcodeCloudNextBuildNumberResult struct {
+	ProductID               string `json:"productId"`
+	PreviousNextBuildNumber *int   `json:"previousNextBuildNumber,omitempty"`
+	NextBuildNumber         int    `json:"nextBuildNumber"`
+	Updated                 bool   `json:"updated,omitempty"`
+}
+
+func webXcodeCloudNextBuildNumberRows(result *WebXcodeCloudNextBuildNumberResult) ([]string, [][]string) {
+	if result == nil {
+		result = &WebXcodeCloudNextBuildNumberResult{}
+	}
+	if result.PreviousNextBuildNumber == nil {
+		return []string{"Product ID", "Next Build Number"}, [][]string{{
+			result.ProductID,
+			strconv.Itoa(result.NextBuildNumber),
+		}}
+	}
+	return []string{"Product ID", "Previous Next Build Number", "Next Build Number", "Updated"}, [][]string{{
+		result.ProductID,
+		strconv.Itoa(*result.PreviousNextBuildNumber),
+		strconv.Itoa(result.NextBuildNumber),
+		fmt.Sprintf("%t", result.Updated),
+	}}
+}
+
 // WebXcodeCloudWorkflowsListResult is the computed list of Xcode Cloud workflows
 // for a product. The web CI list model only exposes id, name, and description.
 type WebXcodeCloudWorkflowsListResult struct {
