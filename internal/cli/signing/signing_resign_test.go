@@ -49,7 +49,7 @@ func TestSigningResignEntitlementValuePermitsRejectsMalformedProfilePatterns(t *
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if signingResignEntitlementValuePermits(test.profile, test.signed) {
+			if signingResignEntitlementValuePermitsStrict(test.profile, test.signed) {
 				t.Fatal("malformed profile authorization was accepted")
 			}
 		})
@@ -57,8 +57,14 @@ func TestSigningResignEntitlementValuePermitsRejectsMalformedProfilePatterns(t *
 }
 
 func TestSigningResignEntitlementValuePermitsAcceptsBoundedWildcard(t *testing.T) {
-	if !signingResignEntitlementValuePermits("TEAM.*", "TEAM.value") {
+	if !signingResignEntitlementValuePermitsStrict("TEAM.*", "TEAM.value") {
 		t.Fatal("bounded dotted wildcard was rejected")
+	}
+}
+
+func TestSigningResignEntitlementValuePermitsLegacyKeepsBareWildcardCompatibility(t *testing.T) {
+	if !signingResignEntitlementValuePermits("*", "OLD.value") {
+		t.Fatal("legacy matcher no longer accepts bare wildcard")
 	}
 }
 

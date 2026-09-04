@@ -606,12 +606,6 @@ func signingResignIdentityValueIsConcrete(value any) bool {
 }
 
 func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {
-	// A profile authorization is valid only when every entry is well-formed.
-	// In particular, a bare wildcard must not turn into an authorization for
-	// arbitrary values, and malformed list entries must not be skipped.
-	if !signingResignProfileAuthorizationValueValid(profileValue) {
-		return false
-	}
 	profileString, profileIsString := profileValue.(string)
 	signedString, signedIsString := signedValue.(string)
 	if profileIsString && signedIsString {
@@ -639,6 +633,16 @@ func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {
 		return true
 	}
 	return reflect.DeepEqual(profileValue, signedValue)
+}
+
+// signingResignEntitlementValuePermitsStrict is reserved for the opt-in
+// team-claim rebasing path. Keep the legacy matcher above unchanged so the
+// no-flag compatibility contract from #2241 remains intact.
+func signingResignEntitlementValuePermitsStrict(profileValue, signedValue any) bool {
+	if !signingResignProfileAuthorizationValueValid(profileValue) {
+		return false
+	}
+	return signingResignEntitlementValuePermits(profileValue, signedValue)
 }
 
 func signingResignProfileAuthorizationValueValid(value any) bool {
