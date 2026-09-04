@@ -76,6 +76,60 @@ func TestXCConfigImplicitLookupComposesInheritedConditional(t *testing.T) {
 	}
 }
 
+func TestXCConfigImplicitLookupExpandsConditionalReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR[sdk=iphoneos*] = $(SRCROOT)\nPROJECT_DIR = $(inherited)\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(name string) (string, bool) {
+			if name == "SRCROOT" || name == "PROJECT_DIR" {
+				return "/project", true
+			}
+			return "", false
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve implicit conditional reference error = %v", err)
+	}
+	if !resolved.found || !resolved.exact || resolved.value != "/project" {
+		t.Fatalf("resolved = %#v, want an exact implicit value %q", resolved, "/project")
+	}
+}
+
+func TestXCConfigImplicitLookupComposesRepeatedConditionalInheritedValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "App.xcconfig")
+	contents := "PROJECT_DIR = /base\n" +
+		"PROJECT_DIR[sdk=iphoneos*] = /special\n" +
+		"PROJECT_DIR[sdk=iphoneos*] = $(inherited)/Suffix\n" +
+		"PROJECT_DIR = /special/Suffix\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+		path,
+		"PROJECT_DIR",
+		xcconfigResolvedValue{},
+		os.ReadFile,
+		os.Stat,
+		nil,
+		func(string) (string, bool) { return "/implicit", true },
+	)
+	if err != nil {
+		t.Fatalf("resolve repeated conditional inherited value error = %v", err)
+	}
+	if !resolved.found || !resolved.exact || resolved.value != "/special/Suffix" {
+		t.Fatalf("resolved = %#v, want an exact value %q", resolved, "/special/Suffix")
+	}
+}
+
 func TestXCConfigRecursiveIncludesHandleCyclesOptionalFilesAndOrder(t *testing.T) {
 	root := t.TempDir()
 	rootPath := filepath.Join(root, "Root.xcconfig")
