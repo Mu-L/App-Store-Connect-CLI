@@ -9,16 +9,26 @@ import (
 )
 
 func TestXCConfigImplicitLookupShadowsConditionalDefault(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "App.xcconfig")
-	if err := os.WriteFile(path, []byte("PROJECT_DIR ?= /fallback\nCODE_SIGN_ENTITLEMENTS = $(PROJECT_DIR)/App.entitlements\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(path, "PROJECT_DIR", xcconfigResolvedValue{}, os.ReadFile, os.Stat, nil, func(string) (string, bool) { return "/project", true })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.value != "/project" {
-		t.Fatalf("resolved = %#v, want implicit /project", resolved)
+	for _, tc := range []struct {
+		name, setting, contents, implicit, want string
+	}{
+		{"conditional", "PROJECT_DIR", "PROJECT_DIR ?= /fallback\n", "/project", "/project"},
+		{"inherited", "PROJECT_DIR", "PROJECT_DIR = $(inherited)/Sub\n", "/project", "/project/Sub"},
+		{"append", "PROJECT_NAME", "PROJECT_NAME += Suffix\n", "App", "App Suffix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "App.xcconfig")
+			if err := os.WriteFile(path, []byte(tc.contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(path, tc.setting, xcconfigResolvedValue{}, os.ReadFile, os.Stat, nil, func(string) (string, bool) { return tc.implicit, true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.value != tc.want {
+				t.Fatalf("resolved = %#v, want implicit %q", resolved, tc.want)
+			}
+		})
 	}
 }
 
