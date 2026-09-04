@@ -184,6 +184,9 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	if err != nil {
 		return result, fmt.Errorf("inspect IPA snapshot: %w", err)
 	}
+	if err := preflightSigningResignArchive(ctx, snapshot, snapshotInfo.Size()); err != nil {
+		return result, err
+	}
 	archiveReader, err := zip.NewReader(snapshot, snapshotInfo.Size())
 	if err != nil {
 		return result, fmt.Errorf("read IPA archive: %w", err)
@@ -1715,6 +1718,9 @@ func validatePackedSigningResignIPA(ctx context.Context, packedPath string, size
 	if info.Size() != size {
 		return fmt.Errorf("re-signed IPA changed before publication")
 	}
+	if err := preflightSigningResignArchive(ctx, file, size); err != nil {
+		return err
+	}
 	reader, err := zip.NewReader(file, size)
 	if err != nil {
 		return fmt.Errorf("read re-signed IPA: %w", err)
@@ -1739,6 +1745,9 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 		)
 	}
 	defer file.Close()
+	if err := preflightSigningResignArchive(ctx, file, size); err != nil {
+		return err
+	}
 	reader, err := zip.NewReader(file, size)
 	if err != nil {
 		return fmt.Errorf("read re-signed IPA for final verification: %w", err)

@@ -26,6 +26,10 @@ asc web apps delete --app "1234567890" --dry-run
 asc web app-groups create --name "My App Shared" --identifier "group.com.example.app.shared" --confirm
 asc web app-groups list --output table
 
+# [experimental] List and inspect Developer Portal Bundle IDs unavailable through the public API
+asc web bundle-ids list --output table
+asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
+
 # Bootstrap app availability where the public API falls short
 asc web apps availability create --app "123456789" --territory "USA,GBR" --available-in-new-territories false
 
@@ -244,6 +248,13 @@ Inspect apps shown in App Store Connect's Removed Apps status view.
 Available commands:
 
 * `asc web removed-apps list` - list removed apps
+* `asc web removed-apps restore` - restore a removed app and configure siloable-user access
+
+`restore` requires `--app`, `--access limited|full`, and `--confirm`. It PATCHes
+the app with `removed:false`, verifies that state, then writes permissions. The
+PATCH is the authoritative name-availability gate; no separate name preflight
+is performed. A permission failure means the app is restored but access may be
+unchanged.
 
 Example:
 
@@ -255,13 +266,29 @@ asc web removed-apps list --paginate --output table
 ### `asc web bundle-ids`
 
 Bundle ID operations that are only available through Apple web-session
-endpoints, including Developer Portal-only capabilities and App Clip
-capability sync.
+endpoints, including Developer Portal identifier reads, Developer Portal-only
+capabilities, and App Clip capability sync.
 
 Available commands:
 
+* `asc web bundle-ids list` - [experimental] list the captured iOS and Mac Bundle ID collection for the selected Developer team
+* `asc web bundle-ids view` - [experimental] inspect one opaque Bundle ID and its included capability graph
 * `asc web bundle-ids capabilities enable` - enable a Developer Portal-only Bundle ID capability
 * `asc web bundle-ids capabilities sync-app-clip` - sync an App Clip capability with its parent Bundle ID
+
+Only the `list` and `view` read leaves are experimental. The existing
+`capabilities` commands retain their established stability. The read commands
+use the cookie-authenticated Developer Portal JSON:API
+service, not the public App Store Connect API. The `view` detail request uses
+`X-HTTP-Method-Override: GET` on Apple's POST endpoint. `list` requests the first
+1000-resource iOS/Mac collection and does not expose pagination; if Apple
+returns `links.next`, it remains visible in JSON for a later slice and table or
+Markdown output warns that more pages exist. `view`
+accepts the opaque resource ID returned by `list` and includes the requested
+Bundle ID capability graph. The table and Markdown renderers show the primary
+Bundle ID fields only and warn on stderr when included resources are present;
+pass `--output json` to inspect the complete capability graph. Both commands
+are read-only and do not require `--confirm`.
 
 Currently supported capability IDs for `enable`: `PRIVATE_CLOUD_COMPUTE`.
 Existing settings and relationships are preserved. If the requested capability
@@ -271,8 +298,9 @@ or exact team name) when the Apple Account belongs to more than one portal
 team. `sync-app-clip` uses App Store Connect iris endpoints, not Developer
 Portal, so it does not take `--developer-team`.
 
-Both commands require `--confirm` because a changed App ID invalidates existing
-provisioning profiles. `sync-app-clip` reads the current capability graph first
+The capability commands that change an App ID require `--confirm` because a
+changed App ID invalidates existing provisioning profiles. `sync-app-clip` reads
+the current capability graph first
 and returns `changed: false` without sending a PATCH when the capability is
 already enabled with the requested `parentBundleId` and, if `--settings-json`
 is supplied, the requested settings already match.
@@ -280,6 +308,9 @@ is supplied, the requested settings already match.
 Example:
 
 ```bash  theme={null}
+asc web bundle-ids list --output table
+asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
+
 asc web bundle-ids capabilities enable \
   --bundle-id "BUNDLE_RESOURCE_ID" \
   --capability "PRIVATE_CLOUD_COMPUTE" \
@@ -516,7 +547,7 @@ asc web analytics sales --app "123456789" --start 2026-01-01 --end 2026-03-31 --
 
 ### `asc web xcode-cloud`
 
-Xcode Cloud usage, workflow, and environment-variable management.
+Xcode Cloud usage, workflow, environment-variable, and product-setting management.
 
 Available command groups:
 
@@ -524,6 +555,7 @@ Available command groups:
 * `asc web xcode-cloud products` - list Xcode Cloud products
 * `asc web xcode-cloud workflows` - list, describe, create, edit, enable, and disable workflows
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
+* `asc web xcode-cloud settings` - inspect product settings and change the next build number
 
 TestFlight post-actions in a web workflow use beta-group or tester IDs. Resolve the
 Xcode Cloud product to its App Store Connect app, then use the public TestFlight
@@ -549,7 +581,14 @@ Example:
 asc web xcode-cloud usage summary --apple-id "user@example.com"
 asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.com"
 asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json --apple-id "user@example.com"
+asc web xcode-cloud settings next-build-number show --product-id "UUID" --apple-id "user@example.com"
+asc web xcode-cloud settings next-build-number set --product-id "UUID" --value 102 --confirm --apple-id "user@example.com"
+asc web xcode-cloud settings version-aliases list --product-id "UUID" --apple-id "user@example.com"
 ```
+
+Changing the persistent next build number requires the App Store Connect Admin or App Manager role. The set command reads the value before and after the update, and reports an unverified outcome instead of inviting an unsafe retry when a transport failure leaves Apple's result unclear.
+
+The version-alias list command uses Apple's live-captured list response, returns at most 100 aliases, and omits nested build and workflow payloads that may contain sensitive data. Single-alias lookup and alias mutations remain unavailable until those private contracts are captured.
 
 ## Session upkeep
 

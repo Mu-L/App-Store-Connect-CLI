@@ -19,7 +19,8 @@ GO := go
 GOMOD := go.mod
 GOBIN := $(shell $(GO) env GOPATH)/bin
 GO_TOOLCHAIN_VERSION := $(shell $(GO) env GOVERSION)
-GOLANGCI_LINT_TIMEOUT ?= 10m
+# Cold hosted runners can require more than ten minutes for the full-module lint.
+GOLANGCI_LINT_TIMEOUT ?= 15m
 INSTALL_PREFIX ?= /usr/local/bin
 GOFUMPT_VERSION ?= v0.10.0
 GOLANGCI_LINT_VERSION ?= v2.12.1

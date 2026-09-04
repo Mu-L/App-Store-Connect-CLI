@@ -26,6 +26,7 @@ const (
 	signingPlanSchemaVersion                      = 1
 	signingSettingsMaxBytes                       = 1 << 20
 	signingPlanMaxBytes                           = 8 << 20
+	signingPlanMaxFiles                           = 4096
 	signingPlanMaxMissingOptionalIncludePathBytes = 4096
 
 	signingPlanCommand = "asc xcode signing plan"
@@ -110,7 +111,10 @@ type signingIncompleteInternalXCConfigError struct {
 }
 
 func (e signingIncompleteInternalXCConfigError) Error() string {
-	return signingIncompleteInternalXCConfigMessage
+	if e.err == nil {
+		return signingIncompleteInternalXCConfigMessage
+	}
+	return fmt.Sprintf("%s: %v", signingIncompleteInternalXCConfigMessage, e.err)
 }
 
 func (e signingIncompleteInternalXCConfigError) Unwrap() error {
@@ -584,6 +588,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 
 	var operations []signingPlanOperation
 	var operationBlockers []string
+	baselineResolver := newSigningSettingResolver(project, configFiles, opts.AllowExternalXCConfig, lexicalConfigPaths)
 	converged := false
 	maxIterations := len(candidates) + 1
 	for iteration := 0; iteration < maxIterations; iteration++ {
@@ -610,8 +615,8 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			operationBlockers = append(operationBlockers, fmt.Sprintf("stage signing plan: %v", stageErr))
 			break
 		}
-		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, stagedProject, stagedResolver)
-		if len(resolutionBlockers) > 0 {
+		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, project, stagedProject, stagedResolver, baselineResolver)
+		if len(resolutionBlockers) > 0 && reclassified == 0 {
 			operationBlockers = append(operationBlockers, resolutionBlockers...)
 			break
 		}
@@ -666,6 +671,9 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		plan.Files = append(plan.Files, file)
 	}
 	sort.Slice(plan.Files, func(left, right int) bool { return plan.Files[left].Path < plan.Files[right].Path })
+	if len(plan.Files) > signingPlanMaxFiles {
+		plan.Blockers = append(plan.Blockers, fmt.Sprintf("signing plan source graph contains %d files, exceeding the limit of %d", len(plan.Files), signingPlanMaxFiles))
+	}
 	sort.Strings(plan.Blockers)
 	sort.Strings(plan.Warnings)
 	plan.Ready = len(plan.Blockers) == 0
@@ -1947,8 +1955,10 @@ func stageSigningPlan(
 // keeps the public plan's old-value and resolution fields stable.
 func reclassifySigningNoOps(
 	candidates []signingCandidate,
+	originalProject *structuredVersionProject,
 	stagedProject *structuredVersionProject,
 	resolver *signingSettingResolver,
+	baselineResolver *signingSettingResolver,
 ) (int, []string) {
 	configurations := make(map[string]*versionConfiguration, len(stagedProject.configurations))
 	for _, configuration := range stagedProject.configurations {
@@ -1974,8 +1984,31 @@ func reclassifySigningNoOps(
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, errors.New("staged project still has a direct assignment")))
 				continue
 			}
-			if _, _, err := resolver.resolveSetting(configuration, candidate.setting); err != nil && !errors.Is(err, errVersionSettingNotFound) {
+			resolved, _, err := resolver.resolveSetting(configuration, candidate.setting)
+			if err != nil && !errors.Is(err, errVersionSettingNotFound) {
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, err))
+			} else if err == nil && baselineResolver != nil {
+				baselineProject := cloneSigningStructuredVersionProject(originalProject)
+				var baselineConfiguration *versionConfiguration
+				for _, candidateConfiguration := range baselineProject.configurations {
+					if candidateConfiguration != nil && candidateConfiguration.id == candidate.configuration.id {
+						baselineConfiguration = candidateConfiguration
+						break
+					}
+				}
+				if baselineConfiguration == nil {
+					continue
+				}
+				for _, key := range matchingBuildSettingKeys(baselineConfiguration.buildSettings, candidate.setting) {
+					delete(baselineConfiguration.buildSettings, key)
+				}
+				baselineResolver = newSigningSettingResolver(baselineProject, baselineResolver.configFiles, baselineResolver.allowExternal, baselineResolver.lexicalConfigPaths)
+				baseline, _, baselineErr := baselineResolver.resolveSetting(baselineConfiguration, candidate.setting)
+				if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) && baselineErr == nil {
+					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q differs from value after removal alone %q; another operation in this plan would change the fallback", resolved, baseline)))
+				} else if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) {
+					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q appears after removal alone left the setting unresolved; another operation in this plan would create the fallback", resolved)))
+				}
 			}
 			continue
 		}
@@ -2014,6 +2047,16 @@ func reclassifySigningNoOps(
 	}
 	sort.Strings(blockers)
 	return reclassified, blockers
+}
+
+func signingRemovalFallbackChanged(staged string, stagedErr error, baseline string, baselineErr error) bool {
+	if stagedErr != nil {
+		return false
+	}
+	if baselineErr != nil {
+		return true
+	}
+	return staged != baseline
 }
 
 func cloneSigningStructuredVersionProject(project *structuredVersionProject) *structuredVersionProject {
@@ -3742,6 +3785,9 @@ func readSigningPlanArtifact(path string) (*SigningPlan, error) {
 	}
 	if plan.Command != signingPlanCommand {
 		return nil, newSigningInputError(fmt.Errorf("plan command is not %q", signingPlanCommand))
+	}
+	if len(plan.Files) > signingPlanMaxFiles {
+		return nil, newSigningInputError(fmt.Errorf("plan contains %d signing source files, exceeding the limit of %d", len(plan.Files), signingPlanMaxFiles))
 	}
 	if len(plan.MissingOptionalIncludes) > signingPlanMaxMissingOptionalIncludes {
 		return nil, newSigningInputError(fmt.Errorf("plan contains too many missing optional xcconfig includes"))

@@ -91,6 +91,7 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - `GET /iris/v1/apps/{id}/appAvailabilityV2` returns `availableInNewTerritories` and a links-only `relationships.territoryAvailabilities`. It does not include `availableTerritories.data`. Adding `?include=availableTerritories&limit[availableTerritories]=200` returns 400 `PARAMETER_ERROR.INVALID`.
 - The readable source is the iris v2 related collection: `GET /iris/v2/appAvailabilities/{id}/territoryAvailabilities?include=territory&limit=200`. Follow `links.next`. `filter[available]=true` is rejected with 400 `PARAMETER_ERROR.ILLEGAL`; filter client-side on `attributes.available`.
 - `asc web apps delete` uses this collection for the "removed from sale in all territories" preflight. The public API counterpart is `/v2/appAvailabilities/{id}/territoryAvailabilities`.
+- `asc web removed-apps restore` uses PATCH `/iris/v1/apps/{id}` with `removed:false`, verifies the app is no longer removed, then POSTs `/iris/v1/userAppPermissions` with `GRANT` (full) or `REVOKE` (limited) for `ALL_SILOABLE_USERS`. Permission writes are skipped when PATCH or verification fails.
 
 ## Web-session Resolution Center
 
@@ -189,6 +190,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## Xcode Cloud workflows
 
+- The persistent next build number is available only through the private, web-session-backed CI API. `asc web xcode-cloud settings next-build-number show` sends `GET /ci/api/teams/{publicProviderID}/products/{productID}/next-build-number`; `set --value N --confirm` first reads the current value, requires `N` to be greater, sends a bodyless `PUT` to the same path with `next_build_number=N` as a query parameter, and verifies the value with a fresh GET. The team ID comes from the selected web session and the product is selected with `--product-id`. Apple's response can include a TestFlight URL; the CLI deliberately omits it from output because it may contain sensitive query parameters. This private endpoint is not in the public OpenAPI specification and may change without notice.
+- Custom Xcode Cloud version aliases are also private web-session resources. `asc web xcode-cloud settings version-aliases list` reads the live-captured `GET /ci/api/teams/{publicProviderID}/products/{productID}/configuration-options/version-aliases-v3?limit=100` contract. The current UI's list response is an `items` envelope and its item fields include `id`, `name`, `type`, `locked`, `build`, `build_name`, `related_workflow_summaries`, and `build_supported`. The CLI emits only the safe scalar alias fields and deliberately omits the raw nested build and workflow payloads. The endpoint accepts a continuation offset, but its continuation response contract has not been captured, so the CLI reports at most 100 aliases and does not expose `--paginate`. Viewing one alias and all mutation operations remain intentionally unsupported until their live endpoint and response contracts are verified. These endpoints are absent from the public OpenAPI specification and may change without notice.
 - `GET /v1/ciWorkflows/{id}` returns relationships with links only by default: `repository` and `buildRuns` come back without a `data` linkage, and `product`, `xcodeVersion`, and `macOsVersion` are absent from the response entirely. `POST /v1/ciWorkflows` requires all four linkages, so any read-then-recreate flow must request `?include=product,repository,xcodeVersion,macOsVersion`, which populates them.
 - `GET /v1/ciWorkflows/{id}` also emits JSON `null` for optional action and start-condition properties (`destination`, `testConfiguration`, `filesAndFoldersRule`) that `CiWorkflowCreateRequest` does not mark nullable. `workflows duplicate` omits those nulls so the create body stays schema-clean; unused nullable start conditions are omitted rather than sent as `null`.
 - `CiAction` has no post-actions: the public workflow schema covers `BUILD`, `ANALYZE`, `TEST`, and `ARCHIVE` actions plus `buildDistributionAudience`, but TestFlight post-actions (beta group and tester assignment) exist only in the private `/ci/api/` workflow payload. A workflow recreated through the public API therefore loses its TestFlight post-actions.
@@ -226,9 +229,43 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 ## Developer Portal session (web session)
 
 - Bundle IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
-- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids capabilities enable`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
+- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
+
+## [experimental] Developer Portal Bundle ID reads (web session)
+
+- `[experimental] asc web bundle-ids list` uses the captured cookie-authenticated JSON:API
+  proxy `POST /services-account/v1/bundleIds` with
+  `X-HTTP-Method-Override: GET`. Its JSON body carries the selected `teamId`
+  and `urlEncodedQueryParams`; the first slice sends
+  `limit=1000`, `sort=name`, and `filter[platform]=IOS,MACOS`. The response is
+  a JSON:API collection with `data`, optional `included`, `links`, and `meta`.
+  Bundle ID resources preserve their `type`, opaque `id`, attributes,
+  relationships, and resource links. Portal-only attributes observed in the
+  captured collection include `identifier`, `dateModified`,
+  `entitlementGroupName`, `bundleType`, `platform`, `wildcard`, `dateCreated`,
+  `bundleIdCapabilitiesSettingOption`, `seedId`, `name`, `platformName`,
+  `deploymentDataNotice`, and `responseId`.
+- `[experimental] asc web bundle-ids view --bundle-id ID` uses the captured detail form
+  `POST /services-account/v1/bundleIds/{id}` with the fields/include query in
+  the URL, `X-HTTP-Method-Override: GET`, and a JSON body containing only the
+  selected `teamId`.
+  The requested `fields[bundleIds]` are `name,identifier,platform,seedId,wildcard,~permissions.delete,~permissions.edit`.
+  The requested include graph covers `bundleIdCapabilities`, its
+  `capability`, `associatedBundleIds`, `appGroups`, `merchantIds`,
+  `cloudContainers`, `certificates`, `appConsentBundleId`, `macBundleId`,
+  `relatedAppConsentBundleIds`, `parentBundleId`, and
+  `mediaSharingProtocolIds`. The response is a single JSON:API `data` resource
+  plus any included capability resources. Table/Markdown output shows the
+  primary resource fields only and emits a diagnostic when included resources
+  are present; use `--output json` to inspect the complete capability graph.
+- Both read commands bootstrap the shared Developer Portal team session, carry
+  no credentials or CSRF values in output, and do not mutate Bundle IDs or
+  invalidate provisioning profiles. This first slice intentionally does not
+  follow `links.next` or claim pagination; a returned continuation remains
+  available in JSON for a later resource-family slice, and table/Markdown
+  output emits the standard more-pages warning when it is present.
 
 ## Developer Portal Agreements (web session)
 
