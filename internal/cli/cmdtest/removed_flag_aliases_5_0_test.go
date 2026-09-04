@@ -120,3 +120,42 @@ func TestRemovedVisibleAppInfoAliasesAreUnknownFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestPreOrdersEnableIgnoredFlagIsUnknown locks the 5.0.0 removal of the
+// warn-and-ignore --available-in-new-territories flag on pre-orders enable.
+func TestPreOrdersEnableIgnoredFlagIsUnknown(t *testing.T) {
+	t.Setenv("ASC_APP_ID", "")
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("removed flag must fail before HTTP: %s %s", req.Method, req.URL.String())
+		return nil, errors.New("unexpected request")
+	}))
+
+	command := findSubcommand(RootCommand("1.2.3"), "pre-orders", "enable")
+	if command == nil {
+		t.Fatal("pre-orders enable not found")
+	}
+	if command.FlagSet.Lookup("available-in-new-territories") != nil {
+		t.Fatal("removed --available-in-new-territories flag is still registered on pre-orders enable")
+	}
+
+	stdout, stderr := captureOutput(t, func() {
+		if code := rootcmd.Run([]string{
+			"pre-orders", "enable",
+			"--app", "app-1",
+			"--territory", "USA",
+			"--release-date", "2026-06-01",
+			"--available-in-new-territories", "true",
+		}, "1.2.3"); code != rootcmd.ExitUsage {
+			t.Fatalf("exit code = %d, want %d", code, rootcmd.ExitUsage)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "Error: unknown flag `--available-in-new-territories` for `asc pre-orders enable`") {
+		t.Fatalf("stderr = %q, want unknown flag error", stderr)
+	}
+	if strings.Contains(stderr, "deprecated and ignored") {
+		t.Fatalf("stderr = %q, want no warn-and-ignore diagnostic", stderr)
+	}
+}
