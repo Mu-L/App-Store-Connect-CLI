@@ -25,6 +25,17 @@ func TestWithSessionStoreLockFailsClosedWhenLockUnavailable(t *testing.T) {
 	}
 }
 
+func TestWithSessionStoreLockFailsClosedWhenRootUnavailable(t *testing.T) {
+	previous := sessionSharedLockRoot
+	sessionSharedLockRoot = func() string { return "" }
+	t.Cleanup(func() { sessionSharedLockRoot = previous })
+	called := false
+	err := withSessionStoreLock(func() error { called = true; return nil })
+	if !errors.Is(err, errSessionStoreLockUnavailable) || called {
+		t.Fatalf("expected fail-closed root error, called=%v err=%v", called, err)
+	}
+}
+
 // The lock is what makes a compare-and-delete and a persist mutually
 // exclusive, so overlapping holders must be impossible.
 func TestWithSessionEntryLockExcludesConcurrentHolders(t *testing.T) {

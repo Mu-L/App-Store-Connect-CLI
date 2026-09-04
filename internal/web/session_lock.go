@@ -49,7 +49,7 @@ func withSessionEntryLock(key string, fn func() error) error {
 func withSessionStoreLock(fn func() error) error {
 	dir := strings.TrimSpace(sessionSharedLockRoot())
 	if dir == "" {
-		return fn()
+		return errSessionStoreLockUnavailable
 	}
 	path := filepath.Join(dir, sessionSharedLockDirName(), "store.lock")
 	if release, ok := acquireSharedSessionLockFile(path); ok {
