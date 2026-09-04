@@ -42,13 +42,6 @@ func TestAnalyticsRankedStringAliasesMatchCanonicalCommands(t *testing.T) {
 			canonical:     "id",
 		},
 		{
-			name:          "iap localization id",
-			canonicalArgs: []string{"iap", "localizations", "update", "--localization-id", "iap-loc-1", "--name", "Updated"},
-			aliasArgs:     []string{"iap", "localizations", "update", "--id", "iap-loc-1", "--name", "Updated"},
-			alias:         "id",
-			canonical:     "localization-id",
-		},
-		{
 			name:          "subscription screenshot id",
 			canonicalArgs: []string{"subscriptions", "review", "screenshots", "delete", "--screenshot-id", "shot-1", "--confirm"},
 			aliasArgs:     []string{"subscriptions", "review", "screenshots", "delete", "--id", "shot-1", "--confirm"},
@@ -95,7 +88,6 @@ func TestAnalyticsRankedStringAliasesRejectConflictingValues(t *testing.T) {
 	}{
 		{name: "subscriptions view", args: []string{"subscriptions", "view", "--id", "one", "--subscription-id", "two"}, alias: "subscription-id", canonical: "id"},
 		{name: "testflight groups view", args: []string{"testflight", "groups", "view", "--id", "one", "--group-id", "two"}, alias: "group-id", canonical: "id"},
-		{name: "iap localizations update", args: []string{"iap", "localizations", "update", "--localization-id", "one", "--id", "two", "--name", "Updated"}, alias: "id", canonical: "localization-id"},
 		{name: "subscriptions screenshots delete", args: []string{"subscriptions", "review", "screenshots", "delete", "--screenshot-id", "one", "--id", "two", "--confirm"}, alias: "id", canonical: "screenshot-id"},
 		{name: "builds list", args: []string{"builds", "list", "--app", "one", "--app-id", "two"}, alias: "app-id", canonical: "app"},
 	}
@@ -137,8 +129,6 @@ func analyticsAliasTransport(t *testing.T) http.RoundTripper {
 			return analyticsAliasJSONResponse(http.StatusOK, `{"data":{"type":"subscriptions","id":"sub-1","attributes":{"name":"Subscription"}}}`), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/betaGroups/group-1":
 			return analyticsAliasJSONResponse(http.StatusOK, `{"data":{"type":"betaGroups","id":"group-1","attributes":{"name":"Group"}}}`), nil
-		case req.Method == http.MethodPatch && req.URL.Path == "/v1/inAppPurchaseLocalizations/iap-loc-1":
-			return analyticsAliasJSONResponse(http.StatusOK, `{"data":{"type":"inAppPurchaseLocalizations","id":"iap-loc-1","attributes":{"locale":"en-US","name":"Updated","description":"Description"}}}`), nil
 		case req.Method == http.MethodDelete && req.URL.Path == "/v1/subscriptionAppStoreReviewScreenshots/shot-1":
 			return analyticsAliasJSONResponse(http.StatusNoContent, ""), nil
 		case req.Method == http.MethodGet && req.URL.Path == "/v1/builds":

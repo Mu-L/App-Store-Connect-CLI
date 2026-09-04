@@ -2271,27 +2271,7 @@ func TestRun_UnknownFlagDoesNotSuggestMixedCaseDeprecatedFlag(t *testing.T) {
 	}
 }
 
-func TestRun_UnknownFlagDoesNotSuggestSuffixDeprecatedAlias(t *testing.T) {
-	resetReportFlags(t)
-
-	stdout, stderr := captureCommandOutput(t, func() {
-		if code := Run([]string{"iap", "localizations", "list", "--idd", "IAP_ID"}, "1.0.0"); code != ExitUsage {
-			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
-		}
-	})
-
-	if stdout != "" {
-		t.Fatalf("expected empty stdout, got %q", stdout)
-	}
-	if !strings.Contains(stderr, "Try:\n  --iap-id\n") {
-		t.Fatalf("expected canonical --iap-id suggestion, got %q", stderr)
-	}
-	if strings.Contains(stderr, "Try:\n  --id\n") {
-		t.Fatalf("deprecated --id alias must not be suggested, got %q", stderr)
-	}
-}
-
-func TestRun_UnknownCommandDoesNotSuggestDeprecatedSurface(t *testing.T) {
+func TestRun_UnknownCommandDoesNotSuggestRemovedSurface(t *testing.T) {
 	resetReportFlags(t)
 
 	stdout, stderr := captureCommandOutput(t, func() {
@@ -2303,8 +2283,14 @@ func TestRun_UnknownCommandDoesNotSuggestDeprecatedSurface(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
+	if !strings.HasPrefix(stderr, "Error: unknown command `asc iap imagez`\n") {
+		t.Fatalf("expected generic unknown command diagnostic, got %q", stderr)
+	}
+	if !strings.HasSuffix(stderr, "For help:\n  asc iap --help\n") {
+		t.Fatalf("expected generic help pointer, got %q", stderr)
+	}
 	if strings.Contains(stderr, "asc iap images") {
-		t.Fatalf("deprecated command must not be suggested, got %q", stderr)
+		t.Fatalf("removed command must not be suggested, got %q", stderr)
 	}
 }
 

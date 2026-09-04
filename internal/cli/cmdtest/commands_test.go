@@ -1081,51 +1081,6 @@ func TestIAPValidationErrors(t *testing.T) {
 			wantErr: "--confirm is required",
 		},
 		{
-			name:    "iap localizations list missing id",
-			args:    []string{"iap", "localizations", "list"},
-			wantErr: "--iap-id is required",
-		},
-		{
-			name:    "iap localizations create missing iap-id",
-			args:    []string{"iap", "localizations", "create", "--name", "Title", "--locale", "en-US"},
-			wantErr: "--iap-id is required",
-		},
-		{
-			name:    "iap localizations update missing localization-id",
-			args:    []string{"iap", "localizations", "update", "--name", "Title"},
-			wantErr: "--localization-id is required",
-		},
-		{
-			name:    "iap localizations delete missing confirm",
-			args:    []string{"iap", "localizations", "delete", "--localization-id", "LOC_ID"},
-			wantErr: "--confirm is required",
-		},
-		{
-			name:    "iap images list missing iap-id",
-			args:    []string{"iap", "images", "list"},
-			wantErr: "--iap-id is required",
-		},
-		{
-			name:    "iap images get missing image-id",
-			args:    []string{"iap", "images", "view"},
-			wantErr: "--image-id is required",
-		},
-		{
-			name:    "iap images create missing file",
-			args:    []string{"iap", "images", "create", "--iap-id", "IAP_ID"},
-			wantErr: "--file is required",
-		},
-		{
-			name:    "iap images update missing image-id",
-			args:    []string{"iap", "images", "update", "--file", "./image.png"},
-			wantErr: "--image-id is required",
-		},
-		{
-			name:    "iap images delete missing confirm",
-			args:    []string{"iap", "images", "delete", "--image-id", "IMG_ID"},
-			wantErr: "--confirm is required",
-		},
-		{
 			name:    "iap review-screenshots get missing ids",
 			args:    []string{"iap", "review-screenshots", "view"},
 			wantErr: "--iap-id or --screenshot-id is required",
@@ -1265,11 +1220,6 @@ func TestIAPValidationErrors(t *testing.T) {
 			args:    []string{"iap", "promoted-purchases", "create", "--app", "APP_ID", "--product-id", "IAP_ID", "--product-type", "SUBSCRIPTION", "--visible-for-all-users", "true"},
 			wantErr: "--product-type is fixed to IN_APP_PURCHASE",
 		},
-		{
-			name:    "iap submit missing confirm",
-			args:    []string{"iap", "submit", "--iap-id", "IAP_ID"},
-			wantErr: "--confirm is required",
-		},
 	}
 
 	for _, test := range tests {
@@ -1295,17 +1245,6 @@ func TestIAPValidationErrors(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestIAPImagesListRejectsInvalidNextURL(t *testing.T) {
-	// `--next` validation is a usage error: the command prints the diagnostic
-	// itself and exits 2. This previously asserted the opposite (not ErrHelp,
-	// empty stderr) because the check returned a plain fmt.Errorf.
-	assertUsageExitCode(
-		t,
-		[]string{"iap", "images", "list", "--iap-id", "IAP_ID", "--next", "not-a-url"},
-		"iap images list: --next must be an App Store Connect URL",
-	)
 }
 
 func TestUsersValidationErrors(t *testing.T) {

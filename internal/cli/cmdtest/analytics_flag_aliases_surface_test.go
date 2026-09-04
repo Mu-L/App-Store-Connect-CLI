@@ -13,7 +13,6 @@ func TestAnalyticsRankedStringAliasesAreAcceptedAndHidden(t *testing.T) {
 	}{
 		{path: []string{"subscriptions", "view"}, alias: "subscription-id", canonical: "id"},
 		{path: []string{"testflight", "groups", "view"}, alias: "group-id", canonical: "id"},
-		{path: []string{"iap", "localizations", "update"}, alias: "id", canonical: "localization-id"},
 		{path: []string{"subscriptions", "review", "screenshots", "delete"}, alias: "id", canonical: "screenshot-id"},
 		{path: []string{"builds", "list"}, alias: "app-id", canonical: "app"},
 	}
