@@ -228,8 +228,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## Developer Portal session (web session)
 
-- Bundle IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
-- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
+- Bundle IDs, Services IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
+- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web service-ids` and `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
 
@@ -266,6 +266,50 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
   follow `links.next` or claim pagination; a returned continuation remains
   available in JSON for a later resource-family slice, and table/Markdown
   output emits the standard more-pages warning when it is present.
+
+## [experimental] Developer Portal Services IDs (web session)
+
+- `[experimental] asc web service-ids list` uses the private logical `GET
+  /services-account/v1/bundleIds` contract with `limit=1000`, `sort=name`, and
+  `filter[platform]=SERVICES`. As with the captured native Bundle ID
+  collection, the cookie-authenticated transport sends an actual `POST` to
+  `/services-account/v1/bundleIds` with
+  `X-HTTP-Method-Override: GET` and a JSON body containing
+  `urlEncodedQueryParams` and `teamId`; a live list capture returned HTTP 200.
+  The command validates that every returned resource is a `bundleIds` resource
+  whose platform is exactly `SERVICES` and preserves the original JSON:API
+  envelope for JSON output.
+- `[experimental] asc web service-ids view --service-id ID` uses the private
+  logical `GET /services-account/v1/bundleIds/{id}` detail contract with
+  `include=bundleIdCapabilities,bundleIdCapabilities.capability,bundleIdCapabilities.appConsentBundleId`.
+  The actual transport is `POST` plus `X-HTTP-Method-Override: GET`, with a
+  JSON body containing only the selected `teamId`. The returned resource ID and
+  `attributes.platform=SERVICES` are checked before a mutation can use it.
+- `[experimental] asc web service-ids create --identifier IDENTIFIER --name
+  NAME --confirm` uses logical `POST /services-account/v1/bundleIds` with a
+  JSON:API `data.type=bundleIds` resource whose attributes are
+  `identifier`, `name`, `platform=SERVICES`, `seedId`, and `teamId`, plus an
+  empty `bundleIdCapabilities.data` array. The captured frontend transport
+  also carries the selected `teamId` at the top level. The CLI does not invent
+  capability, Sign in with Apple domain, or app-consent settings; it reads the
+  created resource back before returning a receipt.
+- `[experimental] asc web service-ids rename --service-id ID --name NAME
+  --confirm` reads and validates the current Services ID, then sends logical
+  `PATCH /services-account/v1/bundleIds/{id}`. The PATCH preserves the complete
+  current relationship map, including `bundleIdCapabilities`, and changes only
+  the name plus the private team attribute required by the endpoint. A
+  post-write detail read must match the requested name and identifier.
+- `[experimental] asc web service-ids delete --service-id ID --confirm` sends
+  logical `DELETE /services-account/v1/bundleIds/{id}` as the captured actual
+  `POST` plus `X-HTTP-Method-Override: DELETE` and an empty JSON object. The
+  preflight rejects native iOS/Mac or otherwise non-`SERVICES` resources. The
+  command reports success only after the detail read returns HTTP 404. A 5xx,
+  transport failure, malformed success body, or failed post-read is an
+  unverified outcome; no Services ID mutation is retried automatically.
+- Services ID lifecycle support is private-only because the public OpenAPI
+  `BundleIdPlatform` enum does not include `SERVICES`. Capability graph
+  mutation, Sign in with Apple domain configuration, Website Push IDs, and
+  iCloud containers remain separate, uncaptured workflows.
 
 ## Developer Portal Agreements (web session)
 

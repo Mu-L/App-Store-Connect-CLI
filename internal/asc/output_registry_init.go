@@ -31,6 +31,7 @@ func registerAllOutputRenderers() {
 	registerRows(webAppGroupDeleteRows)
 	registerRows(webAppGroupUnassignRows)
 	registerRows(webAppGroupSetRows)
+	registerRows(webServiceIDMutationRows)
 	registerRows(webAPIKeysListRows)
 	registerRows(webSessionExportRows)
 	registerRows(webSessionImportRows)
