@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 type signingResignCodePlan struct {
 	Path             string
 	EntitlementsPath string
+	EntitlementsData []byte
 }
 
 type signingResignPreparedTree struct {
@@ -237,7 +239,7 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	if err := validateSigningResignProfileSet(profiles, identity); err != nil {
 		return result, err
 	}
-	prepared, err := prepareSigningResignTree(ctx, stageRoot, treeRoot, archive, profiles)
+	prepared, err := prepareSigningResignTree(ctx, stageRoot, treeRoot, archive, profiles, options.RebaseTeamClaims)
 	if err != nil {
 		return result, err
 	}
@@ -263,12 +265,35 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 		},
 	}
 	result.Targets = make([]signingResignTargetResult, 0, len(prepared.Archive.Targets))
+	var entitlementRewrites []signingResignOutputEntitlementRewrite
+	if options.RebaseTeamClaims {
+		entitlementRewrites = make([]signingResignOutputEntitlementRewrite, 0)
+		result.EntitlementRewrites = &entitlementRewrites
+	}
 	for _, target := range prepared.Archive.Targets {
 		profile := profiles[target.BundleID]
 		result.Targets = append(result.Targets, signingResignTargetResult{
 			Kind: target.Kind, RelativePath: target.RelativePath, BundleID: target.BundleID,
 			ProfileClass: profile.Class, ProfileUUID: profile.UUID, ProfileSHA256: profile.SHA256,
 			Status: "pending",
+		})
+		if !options.RebaseTeamClaims {
+			continue
+		}
+		for _, rewrite := range target.EntitlementRewrites {
+			*result.EntitlementRewrites = append(*result.EntitlementRewrites, signingResignOutputEntitlementRewrite{
+				TargetRelativePath: target.RelativePath,
+				BundleID:           target.BundleID,
+				Key:                rewrite.Key,
+				ElementIndex:       rewrite.Index,
+				From:               rewrite.From,
+				To:                 rewrite.To,
+			})
+		}
+	}
+	if result.EntitlementRewrites != nil {
+		sort.SliceStable(*result.EntitlementRewrites, func(left, right int) bool {
+			return signingResignOutputEntitlementRewriteLess((*result.EntitlementRewrites)[left], (*result.EntitlementRewrites)[right])
 		})
 	}
 
@@ -330,6 +355,59 @@ func executeSigningResignImplementation(ctx context.Context, options signingResi
 	return result, nil
 }
 
+// signingResignOutputEntitlementRewriteLess is the canonical receipt order.
+// It intentionally does not depend on archive discovery order or Go map
+// iteration: target path, bundle identifier, allowlist key rank, scalar vs
+// array element, element index, and canonical old/new values are compared in
+// that order.
+func signingResignOutputEntitlementRewriteLess(first, second signingResignOutputEntitlementRewrite) bool {
+	if first.TargetRelativePath != second.TargetRelativePath {
+		return first.TargetRelativePath < second.TargetRelativePath
+	}
+	if first.BundleID != second.BundleID {
+		return first.BundleID < second.BundleID
+	}
+	firstRank, secondRank := signingResignEntitlementRewriteKeyRank(first.Key), signingResignEntitlementRewriteKeyRank(second.Key)
+	if firstRank != secondRank {
+		return firstRank < secondRank
+	}
+	if first.Key != second.Key {
+		return first.Key < second.Key
+	}
+	if (first.ElementIndex == nil) != (second.ElementIndex == nil) {
+		return first.ElementIndex == nil
+	}
+	if first.ElementIndex != nil && second.ElementIndex != nil && *first.ElementIndex != *second.ElementIndex {
+		return *first.ElementIndex < *second.ElementIndex
+	}
+	firstFrom, secondFrom := signingResignRewriteValueSortKey(first.From), signingResignRewriteValueSortKey(second.From)
+	if firstFrom != secondFrom {
+		return firstFrom < secondFrom
+	}
+	return signingResignRewriteValueSortKey(first.To) < signingResignRewriteValueSortKey(second.To)
+}
+
+func signingResignEntitlementRewriteKeyRank(key string) int {
+	switch key {
+	case signingResignKeychainGroupsEntitlement:
+		return 0
+	case signingResignKVStoreEntitlement:
+		return 1
+	case signingResignParentEntitlement:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func signingResignRewriteValueSortKey(value any) string {
+	data, err := json.Marshal(value)
+	if err == nil {
+		return string(data)
+	}
+	return fmt.Sprintf("%T:%v", value, value)
+}
+
 func validateSigningResignOptions(options signingResignOptions) error {
 	required := []struct {
 		label string
@@ -354,7 +432,8 @@ func validateSigningResignOptions(options signingResignOptions) error {
 	return nil
 }
 
-func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root, archive signingResignArchive, profiles map[string]signingResignProfile) (signingResignPreparedTree, error) {
+func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Root, archive signingResignArchive, profiles map[string]signingResignProfile, rebaseTeamClaims ...bool) (signingResignPreparedTree, error) {
+	strictNested := len(rebaseTeamClaims) > 0 && rebaseTeamClaims[0]
 	if err := contextError(ctx); err != nil {
 		return signingResignPreparedTree{}, err
 	}
@@ -363,44 +442,12 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 			return signingResignPreparedTree{}, fmt.Errorf("target %s existing entitlements: %w", target.BundleID, err)
 		}
 	}
-	if err := stageRoot.MkdirAll("entitlements", 0o700); err != nil {
-		return signingResignPreparedTree{}, fmt.Errorf("create private entitlements directory failed")
-	}
 	prepared := signingResignPreparedTree{Archive: archive}
-	for index := range prepared.Archive.Targets {
-		target := &prepared.Archive.Targets[index]
-		profile, ok := profiles[target.BundleID]
-		if !ok {
-			return signingResignPreparedTree{}, fmt.Errorf("missing profile for target %s", target.BundleID)
-		}
-		entitlements, err := buildSigningResignEntitlementsForProfile(target.ExistingEntitlements, profile)
-		if err != nil {
-			// An unauthorized-claims refusal is public-safe and actionable;
-			// keep it that way through the operational boundary instead of
-			// flattening the remediation into a bare stage/code message.
-			return signingResignPreparedTree{}, wrapSigningResignPublicDetail(
-				fmt.Sprintf("target %s entitlements", target.BundleID),
-				err,
-			)
-		}
-		entitlementsData, err := marshalSigningResignEntitlements(entitlements)
-		if err != nil {
-			return signingResignPreparedTree{}, fmt.Errorf("target %s entitlements: %w", target.BundleID, err)
-		}
-		entitlementsName := filepath.Join("entitlements", fmt.Sprintf("target-%03d.plist", index))
-		if err := stageRoot.WriteFile(entitlementsName, entitlementsData, 0o600); err != nil {
-			return signingResignPreparedTree{}, fmt.Errorf("write target %s entitlements failed", target.BundleID)
-		}
-		profileName := filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision"))
-		profileMode := target.ProfileMode
-		if profileMode == 0 {
-			profileMode = 0o644
-		}
-		if err := treeRoot.WriteFile(profileName, profile.Data, profileMode); err != nil {
-			return signingResignPreparedTree{}, fmt.Errorf("embed profile for target %s failed", target.BundleID)
-		}
-		target.Profile = profile
-		target.EntitlementsPath = filepath.Join(stageRoot.Path(), entitlementsName)
+	prepared.Archive.Targets = append([]signingResignTarget(nil), archive.Targets...)
+	rebase := len(rebaseTeamClaims) > 0 && rebaseTeamClaims[0]
+	targetPlans, err := planSigningResignEntitlements(archive, profiles, rebase)
+	if err != nil {
+		return signingResignPreparedTree{}, err
 	}
 
 	codePaths, err := enumerateSigningResignMachOFiles(ctx, treeRoot.Path())
@@ -419,7 +466,8 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 	if err != nil {
 		return signingResignPreparedTree{}, fmt.Errorf("capture preserved support inventory: %w", err)
 	}
-	for index, codePath := range codePaths {
+	codePlans := make([]signingResignCodePlan, 0, len(codePaths))
+	for _, codePath := range codePaths {
 		if err := contextError(ctx); err != nil {
 			return signingResignPreparedTree{}, err
 		}
@@ -447,24 +495,56 @@ func prepareSigningResignTree(ctx context.Context, stageRoot, treeRoot rootfs.Ro
 		if err != nil {
 			return signingResignPreparedTree{}, fmt.Errorf("read nested code entitlements failed")
 		}
-		if err := validateSigningResignNestedEntitlements(entitlements, profiles[target.BundleID].Entitlements); err != nil {
+		if err := validateSigningResignNestedEntitlements(entitlements, profiles[target.BundleID].Entitlements, strictNested); err != nil {
 			displayPath, _ := filepath.Rel(treeRoot.Path(), codePath)
 			return signingResignPreparedTree{}, fmt.Errorf("nested code %s entitlements: %w", filepath.ToSlash(displayPath), err)
 		}
-		var entitlementsPath string
+		var entitlementsData []byte
 		if len(entitlements) > 0 {
-			data, err := marshalSigningResignEntitlements(entitlements)
+			entitlementsData, err = marshalSigningResignEntitlements(entitlements)
 			if err != nil {
 				return signingResignPreparedTree{}, err
 			}
-			name := filepath.Join("entitlements", fmt.Sprintf("code-%06d.plist", index))
-			if err := stageRoot.WriteFile(name, data, 0o600); err != nil {
-				return signingResignPreparedTree{}, fmt.Errorf("write nested code entitlements failed")
-			}
-			entitlementsPath = filepath.Join(stageRoot.Path(), name)
 		}
-		prepared.CodePlans = append(prepared.CodePlans, signingResignCodePlan{Path: codePath, EntitlementsPath: entitlementsPath})
+		codePlans = append(codePlans, signingResignCodePlan{Path: codePath, EntitlementsData: entitlementsData})
 	}
+
+	// All target and nested-code decisions above are read-only. Only after the
+	// entire IPA has a valid plan do we create generated documents, embed
+	// profiles, and publish the plan into the mutable staging tree.
+	if err := stageRoot.MkdirAll("entitlements", 0o700); err != nil {
+		return signingResignPreparedTree{}, fmt.Errorf("create private entitlements directory failed")
+	}
+	for index := range prepared.Archive.Targets {
+		target := &prepared.Archive.Targets[index]
+		profile := profiles[target.BundleID]
+		entitlementsName := filepath.Join("entitlements", fmt.Sprintf("target-%03d.plist", index))
+		if err := stageRoot.WriteFile(entitlementsName, targetPlans[index].EntitlementsData, 0o600); err != nil {
+			return signingResignPreparedTree{}, fmt.Errorf("write target %s entitlements failed", target.BundleID)
+		}
+		profileName := filepath.FromSlash(path.Join(target.RelativePath, "embedded.mobileprovision"))
+		profileMode := target.ProfileMode
+		if profileMode == 0 {
+			profileMode = 0o644
+		}
+		if err := treeRoot.WriteFile(profileName, profile.Data, profileMode); err != nil {
+			return signingResignPreparedTree{}, fmt.Errorf("embed profile for target %s failed", target.BundleID)
+		}
+		target.Profile = profile
+		target.EntitlementRewrites = append([]signingResignEntitlementRewrite(nil), targetPlans[index].Rewrites...)
+		target.EntitlementsPath = filepath.Join(stageRoot.Path(), entitlementsName)
+	}
+	for index := range codePlans {
+		if len(codePlans[index].EntitlementsData) == 0 {
+			continue
+		}
+		name := filepath.Join("entitlements", fmt.Sprintf("code-%06d.plist", index))
+		if err := stageRoot.WriteFile(name, codePlans[index].EntitlementsData, 0o600); err != nil {
+			return signingResignPreparedTree{}, fmt.Errorf("write nested code entitlements failed")
+		}
+		codePlans[index].EntitlementsPath = filepath.Join(stageRoot.Path(), name)
+	}
+	prepared.CodePlans = codePlans
 	return prepared, nil
 }
 
@@ -760,13 +840,17 @@ func signingResignTargetForCodePath(targets []signingResignTarget, treeRoot, cod
 	return selected, selectedLength >= 0
 }
 
-func validateSigningResignNestedEntitlements(entitlements, profile map[string]any) error {
+func validateSigningResignNestedEntitlements(entitlements, profile map[string]any, strict ...bool) error {
 	for key, value := range entitlements {
 		if _, identityKey := signingResignIdentityEntitlementKeys[key]; identityKey {
 			return fmt.Errorf("identity entitlement %s is not allowed on nested non-app code", key)
 		}
 		profileValue, exists := profile[key]
-		if !exists || !signingResignEntitlementValuePermits(profileValue, value) {
+		permitted := exists && signingResignEntitlementValuePermits(profileValue, value)
+		if len(strict) > 0 && strict[0] {
+			permitted = exists && signingResignStrictEntitlementValuePermits(profileValue, value)
+		}
+		if !permitted {
 			return fmt.Errorf("entitlement %s is not permitted by its target profile", key)
 		}
 	}
