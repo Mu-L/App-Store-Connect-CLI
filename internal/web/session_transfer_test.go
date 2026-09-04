@@ -777,6 +777,60 @@ func TestImportSessionBundlePersistsCookiesRefreshedDuringValidation(t *testing.
 	}
 }
 
+func TestImportSessionBundleDropsCookiesDeletedDuringValidation(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	bundle.Cookies = append(bundle.Cookies, SessionBundleCookie{
+		URL:     "https://appstoreconnect.apple.com/",
+		Name:    "itctx",
+		Value:   "context-token",
+		Path:    "/",
+		Expires: bundle.Cookies[0].Expires,
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "myacinfo=; Max-Age=0; Path=/")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"user":{"emailAddress":"user@example.com"}}`)
+	}))
+	t.Cleanup(server.Close)
+	appleOrigin, err := url.Parse("https://appstoreconnect.apple.com/")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	validator := func(ctx context.Context, client *http.Client) (string, error) {
+		info, err := getSessionInfoAt(ctx, client, server.URL)
+		if err != nil {
+			return "", err
+		}
+		// The test server stands in for Apple's endpoint, so replay its actual
+		// Set-Cookie header at the canonical imported origin.
+		response := &http.Response{Header: http.Header{
+			"Set-Cookie": {"myacinfo=; Max-Age=0; Path=/"},
+		}}
+		client.Jar.SetCookies(appleOrigin, response.Cookies())
+		return info.User.EmailAddress, nil
+	}
+
+	if _, err := importSessionBundleWithValidator(context.Background(), bundle, false, validator); err != nil {
+		t.Fatalf("importSessionBundleWithValidator() error = %v", err)
+	}
+	sess, ok, err := readSessionFromFile(webSessionCacheKey(bundle.AppleID))
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the imported session", ok, err)
+	}
+	cookies := sess.Cookies["https://appstoreconnect.apple.com/"]
+	values := map[string]string{}
+	for _, cookie := range cookies {
+		values[cookie.Name] = cookie.Value
+	}
+	if _, deleted := values["myacinfo"]; deleted {
+		t.Fatalf("cached cookies retained the cookie deleted by validation: %#v", values)
+	}
+	if values["itctx"] != "context-token" {
+		t.Fatalf("cached cookies lost the unaffected cookie: %#v", values)
+	}
+}
+
 func TestImportSessionBundleOverwriteRemovesFileFallbackOnKeychainBackend(t *testing.T) {
 	withArraySessionKeyring(t)
 	withSessionInfoStub(t)

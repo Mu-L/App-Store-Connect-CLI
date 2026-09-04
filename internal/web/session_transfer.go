@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -414,6 +415,67 @@ func importedCookieDeadline(expires *time.Time, maxAge int, now time.Time) (time
 	return utc, 0, false
 }
 
+type cookieJarDeletion struct {
+	origin string
+	cookie http.Cookie
+}
+
+// recordingCookieJar keeps the normal cookie-jar behavior while retaining
+// validation-time deletion events. cookiejar.Cookies only exposes the final
+// state, so a cookie removed by Apple's Set-Cookie response would otherwise be
+// indistinguishable from a cookie that was never present.
+type recordingCookieJar struct {
+	jar       http.CookieJar
+	mu        sync.Mutex
+	deletions []cookieJarDeletion
+}
+
+func (j *recordingCookieJar) Cookies(u *url.URL) []*http.Cookie {
+	if j == nil || j.jar == nil {
+		return nil
+	}
+	return j.jar.Cookies(u)
+}
+
+func (j *recordingCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	if j == nil || j.jar == nil {
+		return
+	}
+	origin := ""
+	if u != nil {
+		origin, _ = canonicalSessionCookieURL(u.String())
+	}
+	var deletions []cookieJarDeletion
+	if origin != "" {
+		for _, cookie := range cookies {
+			if cookie == nil || !isCookieDeletion(*cookie) {
+				continue
+			}
+			deletions = append(deletions, cookieJarDeletion{origin: origin, cookie: *cookie})
+		}
+	}
+	if len(deletions) > 0 {
+		j.mu.Lock()
+		j.deletions = append(j.deletions, deletions...)
+		j.mu.Unlock()
+	}
+	j.jar.SetCookies(u, cookies)
+}
+
+func (j *recordingCookieJar) cookieDeletions() []cookieJarDeletion {
+	if j == nil {
+		return nil
+	}
+	j.mu.Lock()
+	deletions := append([]cookieJarDeletion(nil), j.deletions...)
+	j.mu.Unlock()
+	return deletions
+}
+
+func isCookieDeletion(cookie http.Cookie) bool {
+	return cookie.MaxAge < 0 || (!cookie.Expires.IsZero() && cookie.Expires.Before(time.Now()))
+}
+
 // normalize converts a validated bundle into the cache representation, leaving
 // out cookies that already expired.
 func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImportSummary, error) {
@@ -535,21 +597,22 @@ func validateImportedSession(ctx context.Context, sess persistedSession, validat
 		return persistedSession{}, fmt.Errorf("%w: session bundle has no usable cookies", ErrSessionBundleValidationFailed)
 	}
 
-	appleID, err := validator(ctx, newWebHTTPClient(jar))
+	trackedJar := &recordingCookieJar{jar: jar}
+	appleID, err := validator(ctx, newWebHTTPClient(trackedJar))
 	if err != nil {
 		return persistedSession{}, fmt.Errorf("%w: %w", ErrSessionBundleValidationFailed, err)
 	}
 	if !strings.EqualFold(strings.TrimSpace(appleID), strings.TrimSpace(sess.UserEmail)) {
 		return persistedSession{}, fmt.Errorf("%w: authenticated Apple ID does not match bundle Apple ID", ErrSessionBundleValidationFailed)
 	}
-	return mergeRefreshedSessionCookies(sess, jar), nil
+	return mergeRefreshedSessionCookies(sess, trackedJar), nil
 }
 
 // mergeRefreshedSessionCookies folds the cookies Apple rotated or issued during
-// validation back into the session about to be cached. Values from the jar win,
-// and cookies the jar does not report keep the bundle entry, because
-// cookiejar.Cookies reports only names and values and would otherwise drop the
-// expiry and path metadata a bundle carries.
+// validation back into the session about to be cached. Explicit deletion events
+// are applied first; values from the jar then win, and cookies the jar does not
+// report keep the bundle entry because cookiejar.Cookies reports only names and
+// values and would otherwise drop the expiry and path metadata a bundle carries.
 func mergeRefreshedSessionCookies(sess persistedSession, jar http.CookieJar) persistedSession {
 	merged := persistedSession{
 		Version:   sess.Version,
@@ -559,6 +622,22 @@ func mergeRefreshedSessionCookies(sess persistedSession, jar http.CookieJar) per
 	}
 	for origin, list := range sess.Cookies {
 		merged.Cookies[origin] = append([]pCookie(nil), list...)
+	}
+	if recorder, ok := jar.(*recordingCookieJar); ok {
+		for _, deletion := range recorder.cookieDeletions() {
+			list := merged.Cookies[deletion.origin]
+			kept := list[:0]
+			for _, cookie := range list {
+				if !persistedCookieMatchesDeletion(cookie, deletion.cookie) {
+					kept = append(kept, cookie)
+				}
+			}
+			if len(kept) == 0 {
+				delete(merged.Cookies, deletion.origin)
+			} else {
+				merged.Cookies[deletion.origin] = kept
+			}
+		}
 	}
 
 	for _, u := range sessionCookieURLs() {
@@ -588,6 +667,19 @@ func mergeRefreshedSessionCookies(sess persistedSession, jar http.CookieJar) per
 		merged.Cookies[origin] = list
 	}
 	return merged
+}
+
+func persistedCookieMatchesDeletion(cookie pCookie, deletion http.Cookie) bool {
+	if cookie.Name != deletion.Name {
+		return false
+	}
+	if deletion.Path != "" && cookie.Path != deletion.Path {
+		return false
+	}
+	if deletion.Domain != "" && !strings.EqualFold(strings.TrimPrefix(cookie.Domain, "."), strings.TrimPrefix(deletion.Domain, ".")) {
+		return false
+	}
+	return true
 }
 
 func validateSessionInfo(ctx context.Context, client *http.Client) (string, error) {
