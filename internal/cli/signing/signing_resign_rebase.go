@@ -134,7 +134,7 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 			if graph != nil {
 				changed := false
 				if key == signingResignParentEntitlement || key == signingResignAssociatedAppClipEntitlement {
-					if _, err := signingResignConcreteStringList(value, key); err != nil {
+					if _, err := signingResignAppClipRelationshipList(value, key); err != nil {
 						return nil, nil, err
 					}
 				}
@@ -202,7 +202,7 @@ func buildSigningResignEntitlementPlan(existing, profile map[string]any, profile
 			}
 		}
 		if graph != nil && key == signingResignAssociatedAppClipEntitlement {
-			if _, err := signingResignConcreteStringList(value, key); err != nil {
+			if _, err := signingResignAppClipRelationshipList(value, key); err != nil {
 				return nil, nil, err
 			}
 			permitted = permitted && signingResignStrictEntitlementValuePermits(profileValue, value)
@@ -569,7 +569,7 @@ func buildSigningResignAppClipMapping(graph *signingResignRebaseGraph) error {
 			if !ok {
 				continue
 			}
-			values, err := signingResignConcreteStringList(value, key)
+			values, err := signingResignAppClipRelationshipList(value, key)
 			if err != nil {
 				return err
 			}
@@ -609,7 +609,7 @@ func buildSigningResignAppClipMapping(graph *signingResignRebaseGraph) error {
 					invalid = true
 					continue
 				}
-				counterpartValues, err := signingResignConcreteStringList(counterpart, counterpartKey)
+				counterpartValues, err := signingResignAppClipRelationshipList(counterpart, counterpartKey)
 				if err != nil {
 					invalid = true
 					continue
@@ -663,7 +663,7 @@ func buildSigningResignAppClipMapping(graph *signingResignRebaseGraph) error {
 }
 
 func (graph *signingResignRebaseGraph) appClipMappingExists(value any) bool {
-	values, err := signingResignConcreteStringList(value, "App Clip relationship")
+	values, err := signingResignAppClipRelationshipList(value, "App Clip relationship")
 	if err != nil {
 		return false
 	}
@@ -1017,6 +1017,28 @@ func signingResignConcreteStringList(value any, key string) ([]string, error) {
 	return result, nil
 }
 
+// signingResignAppClipRelationshipList validates the bundle identifier suffix
+// in each relationship reference before an unresolved edge can be preserved.
+// The generic prefixed-string validator intentionally permits dotted values
+// for claims such as keychain groups, but App Clip relationships must point to
+// a concrete target bundle identifier.
+func signingResignAppClipRelationshipList(value any, key string) ([]string, error) {
+	values, err := signingResignConcreteStringList(value, key)
+	if err != nil {
+		return nil, err
+	}
+	for _, relationship := range values {
+		separator := strings.IndexByte(relationship, '.')
+		if separator <= 0 || separator == len(relationship)-1 {
+			return nil, fmt.Errorf("existing entitlement %s contains an invalid relationship reference", key)
+		}
+		if err := validateSigningResignBundleID(relationship[separator+1:]); err != nil {
+			return nil, fmt.Errorf("existing entitlement %s contains an invalid relationship suffix", key)
+		}
+	}
+	return values, nil
+}
+
 func signingResignClaimStringHasControl(value string) bool {
 	for _, character := range value {
 		if unicode.IsControl(character) || unicode.Is(unicode.Cf, character) || unicode.In(character, unicode.Bidi_Control) {
@@ -1091,7 +1113,7 @@ func (graph *signingResignRebaseGraph) rebaseClaim(key string, value any) (any, 
 		return result, !signingResignEntitlementValuesEqual(value, result), nil
 	}
 	if key == signingResignParentEntitlement || key == signingResignAssociatedAppClipEntitlement {
-		values, err := signingResignConcreteStringList(value, key)
+		values, err := signingResignAppClipRelationshipList(value, key)
 		if err != nil {
 			return nil, false, err
 		}

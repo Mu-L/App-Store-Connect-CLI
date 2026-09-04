@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -665,6 +666,29 @@ func TestPlanSigningResignEntitlementsRejectsMalformedAssociatedAppClipProfile(t
 	}, map[string]signingResignProfile{target.BundleID: profile}, true)
 	if err == nil || !strings.Contains(err.Error(), signingResignAssociatedAppClipEntitlement) {
 		t.Fatalf("planSigningResignEntitlements() error = %v, want malformed associated-profile refusal", err)
+	}
+}
+
+func TestPlanSigningResignEntitlementsRejectsMalformedAppClipRelationshipSuffix(t *testing.T) {
+	for _, profileClaim := range []any{
+		[]any{"OLDPREFIX.com..example"},
+		[]any{"OLDPREFIX.*"},
+	} {
+		t.Run(fmt.Sprintf("profile-%v", profileClaim), func(t *testing.T) {
+			target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
+				signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com..example"},
+			})
+			profile := rebaseTestProfile(target.BundleID, "NEWPREFIX", map[string]any{
+				signingResignAssociatedAppClipEntitlement: profileClaim,
+			})
+			_, err := planSigningResignEntitlements(signingResignArchive{
+				MainPath: "Payload/App.app",
+				Targets:  []signingResignTarget{target},
+			}, map[string]signingResignProfile{target.BundleID: profile}, true)
+			if err == nil || !strings.Contains(err.Error(), "invalid relationship suffix") {
+				t.Fatalf("planSigningResignEntitlements() error = %v, want malformed relationship refusal", err)
+			}
+		})
 	}
 }
 
