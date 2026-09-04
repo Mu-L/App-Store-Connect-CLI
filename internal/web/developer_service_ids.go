@@ -355,8 +355,18 @@ func (c *Client) loadDeveloperServiceIDResourceAfterSession(ctx context.Context,
 }
 
 func buildDeveloperServiceIDRenamePayload(current developerBundleIDResponse, name, teamID string) (developerBundleIDPatchRequest, error) {
-	if _, ok := current.Data.Relationships["bundleIdCapabilities"]; !ok {
+	rawRelationship, ok := current.Data.Relationships["bundleIdCapabilities"]
+	if !ok {
 		return developerBundleIDPatchRequest{}, fmt.Errorf("cannot safely rename Services ID %q: Developer Portal omitted its bundleIdCapabilities relationship", current.Data.ID)
+	}
+	references, err := decodeStrictDeveloperRelationship(rawRelationship)
+	if err != nil {
+		return developerBundleIDPatchRequest{}, fmt.Errorf("cannot safely rename Services ID %q: bundleIdCapabilities relationship %w", current.Data.ID, err)
+	}
+	for _, reference := range references {
+		if reference.Type != "bundleIdCapabilities" || strings.TrimSpace(reference.ID) == "" || reference.ID != strings.TrimSpace(reference.ID) {
+			return developerBundleIDPatchRequest{}, fmt.Errorf("cannot safely rename Services ID %q: bundleIdCapabilities relationship contains an invalid reference (type %q, id %q)", current.Data.ID, reference.Type, reference.ID)
+		}
 	}
 	var attributes map[string]json.RawMessage
 	if err := json.Unmarshal(current.Data.Attributes, &attributes); err != nil {
