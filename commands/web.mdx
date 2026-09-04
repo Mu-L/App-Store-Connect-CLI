@@ -66,6 +66,8 @@ Common session commands:
 * `asc web auth login` - create or refresh the cached web session
 * `asc web auth status` - inspect whether the current session is usable
 * `asc web auth capabilities` - inspect web-visible API key roles and capabilities
+* `asc web auth export` [experimental] - write the cached session to a portable bundle file
+* `asc web auth import` [experimental] - load a session bundle into the cache
 * `asc web auth logout` - clear the cached web session
 
 ## Command families
@@ -81,6 +83,8 @@ Available commands:
   selected App Store Connect provider and any persisted Developer Portal team ID
   (`developerTeamId`)
 * `asc web auth capabilities` - inspect web-visible capability metadata
+* `asc web auth export` [experimental] - write the cached session to a portable bundle file
+* `asc web auth import` [experimental] - load a session bundle into the cache
 * `asc web auth logout` - clear the cached web session
 
 During an interactive trusted-device challenge, `asc` shows a phone-code
@@ -88,6 +92,42 @@ fallback hint when Apple reports a registered phone number. Enter an incorrect
 trusted-device code once; Apple then delivers the phone verification code by
 its configured method (including SMS) and `asc` prompts again. Automated flows
 rerun the configured `--two-factor-code-command` after phone fallback.
+
+#### [experimental] Moving a session to another machine or to CI
+
+`asc web auth export` writes the cached session to a JSON bundle, and
+`asc web auth import` loads that bundle into the cache `asc web auth login`
+writes, so a machine that cannot run an interactive two-factor challenge can
+reuse a session created elsewhere.
+
+```bash  theme={null}
+asc web auth export --output-path ./web-session.json --apple-id "user@example.com"
+asc web auth import --file ./web-session.json
+asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
+asc web auth status
+```
+
+The bundle contains live session cookies. `asc` writes it with `0600`
+permissions and never prints cookie values to stdout; store it in a secrets
+manager and delete the file once it is stored. Pass `--overwrite` to replace an
+existing destination file.
+
+Import performs local validation before writing anything: the document kind and
+version must match, cookies must belong to Apple's supported session origins,
+cookie domains must be storable for those origins, and expired cookies are
+dropped. A bundle with no usable cookie is refused without touching the cache.
+Pass `--apple-id` to refuse a bundle that belongs to a different Apple Account.
+Pass `--overwrite` to replace a cached session that already exists for that
+account. The imported session becomes the last cached session.
+
+Import does not contact Apple. Run `asc web auth status` afterwards, when
+network access is available, to validate that the resumed credentials are still
+live. A successful local import is therefore not proof that the copied session
+belongs to the named account or remains accepted by Apple.
+
+Isolate tests and automation with `ASC_WEB_SESSION_CACHE_DIR` and
+`ASC_WEB_SESSION_CACHE_BACKEND=file`. An unset or `auto` backend still falls
+back to the keychain when the file cache is empty.
 
 ### `asc web agreements`
 

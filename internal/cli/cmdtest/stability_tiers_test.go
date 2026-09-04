@@ -35,6 +35,8 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "agreements"}},
 		{[]string{"web", "agreements", "status"}},
 		{[]string{"web", "agreements", "accept"}},
+		{[]string{"web", "auth", "export"}},
+		{[]string{"web", "auth", "import"}},
 	}
 
 	for _, tc := range cases {
@@ -69,7 +71,23 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 		if sub.Name == "agreements" {
 			continue
 		}
+		if sub.Name == "auth" {
+			assertWebAuthStableSubcommandsExceptSessionTransfer(t, sub)
+			continue
+		}
 		assertCommandTreeDoesNotMentionExperimental(t, sub, []string{"web", sub.Name})
+	}
+}
+
+func assertWebAuthStableSubcommandsExceptSessionTransfer(t *testing.T, auth *ffcli.Command) {
+	t.Helper()
+	path := []string{"web", auth.Name}
+	assertCommandDoesNotMentionExperimental(t, auth, path)
+	for _, sub := range auth.Subcommands {
+		if sub.Name == "export" || sub.Name == "import" {
+			continue
+		}
+		assertCommandTreeDoesNotMentionExperimental(t, sub, append(path, sub.Name))
 	}
 }
 
