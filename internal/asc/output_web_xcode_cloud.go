@@ -1,5 +1,66 @@
 package asc
 
+import (
+	"fmt"
+	"strconv"
+)
+
+// WebXcodeCloudVersionAlias is the safe, scalar summary of one custom version alias.
+type WebXcodeCloudVersionAlias struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Locked         bool   `json:"locked"`
+	BuildName      string `json:"buildName,omitempty"`
+	BuildSupported bool   `json:"buildSupported"`
+}
+
+// WebXcodeCloudVersionAliasesResult is the computed alias list for one product.
+type WebXcodeCloudVersionAliasesResult struct {
+	ProductID      string                      `json:"productId"`
+	VersionAliases []WebXcodeCloudVersionAlias `json:"versionAliases"`
+}
+
+func webXcodeCloudVersionAliasesRows(r *WebXcodeCloudVersionAliasesResult) ([]string, [][]string) {
+	h := []string{"ID", "Name", "Type", "Locked", "Build name", "Build supported"}
+	if r == nil {
+		return h, nil
+	}
+	rows := make([][]string, 0, len(r.VersionAliases))
+	for _, a := range r.VersionAliases {
+		rows = append(rows, []string{a.ID, a.Name, a.Type, strconv.FormatBool(a.Locked), a.BuildName, strconv.FormatBool(a.BuildSupported)})
+	}
+	return h, rows
+}
+
+// WebXcodeCloudNextBuildNumberResult is the current next-build-number setting
+// and, after a mutation, its previously observed value. Apple's TestFlight URL
+// is intentionally omitted because it may carry sensitive query parameters.
+type WebXcodeCloudNextBuildNumberResult struct {
+	ProductID               string `json:"productId"`
+	PreviousNextBuildNumber *int   `json:"previousNextBuildNumber,omitempty"`
+	NextBuildNumber         int    `json:"nextBuildNumber"`
+	Updated                 bool   `json:"updated,omitempty"`
+}
+
+func webXcodeCloudNextBuildNumberRows(result *WebXcodeCloudNextBuildNumberResult) ([]string, [][]string) {
+	if result == nil {
+		result = &WebXcodeCloudNextBuildNumberResult{}
+	}
+	if result.PreviousNextBuildNumber == nil {
+		return []string{"Product ID", "Next Build Number"}, [][]string{{
+			result.ProductID,
+			strconv.Itoa(result.NextBuildNumber),
+		}}
+	}
+	return []string{"Product ID", "Previous Next Build Number", "Next Build Number", "Updated"}, [][]string{{
+		result.ProductID,
+		strconv.Itoa(*result.PreviousNextBuildNumber),
+		strconv.Itoa(result.NextBuildNumber),
+		fmt.Sprintf("%t", result.Updated),
+	}}
+}
+
 // WebXcodeCloudWorkflowsListResult is the computed list of Xcode Cloud workflows
 // for a product. The web CI list model only exposes id, name, and description.
 type WebXcodeCloudWorkflowsListResult struct {

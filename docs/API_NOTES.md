@@ -2,6 +2,14 @@
 
 Quirks and tips for specific App Store Connect API endpoints.
 
+## Web App Privacy Data Usage Updates
+
+- Live canary on 2026-09-04 using a disposable app and a redacted web session verified the private `PATCH /iris/v1/appDataUsages/{usageID}` contract for a same-category, same-purpose `DATA_LINKED_TO_YOU` to `DATA_NOT_LINKED_TO_YOU` identity flip. The request uses the existing `appDataUsages` JSON:API resource and its `dataProtection` relationship; Apple returned `200`, and a fresh GET showed the same usage ID with the new protection.
+- The reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition was not exercised by this canary and remains unverified; do not infer it from this note.
+- The canary seeded the tuple with `POST` (`201`), confirmed it by GET, then restored the semantic baseline by deleting it (`204`) and creating the `DATA_NOT_COLLECTED` declaration (`201`). Direct restore attempts via `POST` or `PATCH` to `DATA_NOT_COLLECTED` returned `409 STATE_ERROR`.
+- The direct mutations advanced the remote `lastPublished` value while `published` remained `true`, despite no publish endpoint being called. Treat this path as a published-state mutation; do not describe the canary or `asc web privacy apply` as unpublished-only.
+- For the verified transition, the planner must pair only the same-category, same-purpose identity flip into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations; other identity-transition directions are not covered by this live contract.
+
 ## Apple Ads Profile Context Isolation
 
 - Apple Ads named profiles use only the context stored on that profile: they do not inherit `ads.org_id` or `ads.ad_account_id` from root config or another profile. This prevents a selected profile from silently sending a request to the wrong organization or ad account. Profile-less access-token and environment authentication can still use matching root context.
@@ -126,8 +134,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## TestFlight Distribution
 
-- `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.
-- Migrate `--external-testing=true` to `asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm`. Migrate `--external-testing=false` to `asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm`; the old boolean cannot identify which group assignments to remove.
+- `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag was deprecated (parseable but failing before HTTP) and removed in 5.0.0; it is now an unknown flag.
+- External distribution is managed through group assignment: `asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm` to enable, and `asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm` to remove group assignments.
 - App Store Connect can briefly return a build-specific 404 from `POST /v1/builds/{id}/relationships/betaGroups` after an uploaded build is already readable and valid. `asc publish testflight` confirms the uploaded build with `GET /v1/builds/{id}` and retries only that post-upload propagation error with bounded backoff, reporting retry attempts on stderr. A confirmation in processing state `FAILED` or `INVALID` stops immediately without retrying distribution. A later post-upload failure emits a partial publish result with the recoverable `buildId`, terminal processing or notification outcome, and completed stages before exiting non-zero; notification follow-up failures use `failureStage=notification` after beta-group distribution succeeds.
 
 ## Game Center
@@ -140,8 +148,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - The relationship endpoint is replace-only (PATCH); GET relationship requests are rejected with "does not allow 'GET_RELATIONSHIP'... Allowed operation is: REPLACE".
 - Setting `challengesMinimumPlatformVersions` requires a live App Store version; non-live versions fail with `ENTITY_ERROR.RELATIONSHIP.INVALID.MIN_CHALLENGES_VERSION_MUST_BE_LIVE` ("must be live to be set as a minimum challenges version.").
 - App Store Connect has no direct GET for a leaderboard-set member localization. `asc game-center leaderboard-sets member-localizations view --id` resolves the localization's leaderboard and leaderboard set through their to-one endpoints, then finds the exact ID in the doubly filtered collection across all pages.
-- App Store Connect exposes a group's challenge relationships as read-only. `asc game-center groups challenges set` remains registered during a deprecation window and returns migration guidance without making an HTTP request; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
-- `asc game-center details list` is backed by the app's single Game Center detail. Its legacy `--limit`, `--next`, and `--paginate` flags remain registered during a deprecation window but return precise guidance to omit the unsupported flag.
+- App Store Connect exposes a group's challenge relationships as read-only, so there is no `asc game-center groups challenges set` command; create a group-owned challenge with `asc game-center challenges create --group-id` instead.
+- `asc game-center details list` is backed by the app's single Game Center detail, so it does not accept `--limit`, `--next`, or `--paginate`.
 
 ## Apple Ads Platform API v1
 
@@ -182,9 +190,12 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## Xcode Cloud workflows
 
+- The persistent next build number is available only through the private, web-session-backed CI API. `asc web xcode-cloud settings next-build-number show` sends `GET /ci/api/teams/{publicProviderID}/products/{productID}/next-build-number`; `set --value N --confirm` first reads the current value, requires `N` to be greater, sends a bodyless `PUT` to the same path with `next_build_number=N` as a query parameter, and verifies the value with a fresh GET. The team ID comes from the selected web session and the product is selected with `--product-id`. Apple's response can include a TestFlight URL; the CLI deliberately omits it from output because it may contain sensitive query parameters. This private endpoint is not in the public OpenAPI specification and may change without notice.
+- Custom Xcode Cloud version aliases are also private web-session resources. `asc web xcode-cloud settings version-aliases list` reads the live-captured `GET /ci/api/teams/{publicProviderID}/products/{productID}/configuration-options/version-aliases-v3?limit=100` contract. The current UI's list response is an `items` envelope and its item fields include `id`, `name`, `type`, `locked`, `build`, `build_name`, `related_workflow_summaries`, and `build_supported`. The CLI emits only the safe scalar alias fields and deliberately omits the raw nested build and workflow payloads. The endpoint accepts a continuation offset, but its continuation response contract has not been captured, so the CLI reports at most 100 aliases and does not expose `--paginate`. Viewing one alias and all mutation operations remain intentionally unsupported until their live endpoint and response contracts are verified. These endpoints are absent from the public OpenAPI specification and may change without notice.
 - `GET /v1/ciWorkflows/{id}` returns relationships with links only by default: `repository` and `buildRuns` come back without a `data` linkage, and `product`, `xcodeVersion`, and `macOsVersion` are absent from the response entirely. `POST /v1/ciWorkflows` requires all four linkages, so any read-then-recreate flow must request `?include=product,repository,xcodeVersion,macOsVersion`, which populates them.
 - `GET /v1/ciWorkflows/{id}` also emits JSON `null` for optional action and start-condition properties (`destination`, `testConfiguration`, `filesAndFoldersRule`) that `CiWorkflowCreateRequest` does not mark nullable. `workflows duplicate` omits those nulls so the create body stays schema-clean; unused nullable start conditions are omitted rather than sent as `null`.
 - `CiAction` has no post-actions: the public workflow schema covers `BUILD`, `ANALYZE`, `TEST`, and `ARCHIVE` actions plus `buildDistributionAudience`, but TestFlight post-actions (beta group and tester assignment) exist only in the private `/ci/api/` workflow payload. A workflow recreated through the public API therefore loses its TestFlight post-actions.
+- A live read on 2026-09-04 confirmed that private `workflows-v15` payloads expose TestFlight post-actions under `post_actions[].deployment_config.testflight_deployment_ids`. Two distinct `beta_group_ids` observed across two post-actions matched the same app's authenticated IRIS `betaGroups` IDs and the public command output from `asc testflight groups list --app APP_ID --paginate --output json` (three groups returned). Use `asc xcode-cloud products app --id PRODUCT_ID` to resolve a product to its app, then the public TestFlight group and tester commands when preparing a workflow edit; no duplicate web lookup command is needed. The scan covered 14 products/workflows; all observed `beta_tester_ids` arrays were empty, so tester-ID equivalence remains unverified.
 - Workflow-scoped environment variables and secrets are also absent from `CiWorkflowCreateRequest`; they live on the private `/ci/api/` workflow payload. `workflows duplicate` cannot copy them. Use `asc web xcode-cloud env-vars` after creating the copy.
 
 ## Devices
@@ -218,9 +229,43 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 ## Developer Portal session (web session)
 
 - Bundle IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
-- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids capabilities enable`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
+- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
+
+## [experimental] Developer Portal Bundle ID reads (web session)
+
+- `[experimental] asc web bundle-ids list` uses the captured cookie-authenticated JSON:API
+  proxy `POST /services-account/v1/bundleIds` with
+  `X-HTTP-Method-Override: GET`. Its JSON body carries the selected `teamId`
+  and `urlEncodedQueryParams`; the first slice sends
+  `limit=1000`, `sort=name`, and `filter[platform]=IOS,MACOS`. The response is
+  a JSON:API collection with `data`, optional `included`, `links`, and `meta`.
+  Bundle ID resources preserve their `type`, opaque `id`, attributes,
+  relationships, and resource links. Portal-only attributes observed in the
+  captured collection include `identifier`, `dateModified`,
+  `entitlementGroupName`, `bundleType`, `platform`, `wildcard`, `dateCreated`,
+  `bundleIdCapabilitiesSettingOption`, `seedId`, `name`, `platformName`,
+  `deploymentDataNotice`, and `responseId`.
+- `[experimental] asc web bundle-ids view --bundle-id ID` uses the captured detail form
+  `POST /services-account/v1/bundleIds/{id}` with the fields/include query in
+  the URL, `X-HTTP-Method-Override: GET`, and a JSON body containing only the
+  selected `teamId`.
+  The requested `fields[bundleIds]` are `name,identifier,platform,seedId,wildcard,~permissions.delete,~permissions.edit`.
+  The requested include graph covers `bundleIdCapabilities`, its
+  `capability`, `associatedBundleIds`, `appGroups`, `merchantIds`,
+  `cloudContainers`, `certificates`, `appConsentBundleId`, `macBundleId`,
+  `relatedAppConsentBundleIds`, `parentBundleId`, and
+  `mediaSharingProtocolIds`. The response is a single JSON:API `data` resource
+  plus any included capability resources. Table/Markdown output shows the
+  primary resource fields only and emits a diagnostic when included resources
+  are present; use `--output json` to inspect the complete capability graph.
+- Both read commands bootstrap the shared Developer Portal team session, carry
+  no credentials or CSRF values in output, and do not mutate Bundle IDs or
+  invalidate provisioning profiles. This first slice intentionally does not
+  follow `links.next` or claim pagination; a returned continuation remains
+  available in JSON for a later resource-family slice, and table/Markdown
+  output emits the standard more-pages warning when it is present.
 
 ## Developer Portal Agreements (web session)
 

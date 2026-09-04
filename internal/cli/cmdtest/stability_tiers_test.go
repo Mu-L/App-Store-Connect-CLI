@@ -35,6 +35,10 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "agreements"}},
 		{[]string{"web", "agreements", "status"}},
 		{[]string{"web", "agreements", "accept"}},
+		{[]string{"web", "auth", "export"}},
+		{[]string{"web", "auth", "import"}},
+		{[]string{"web", "bundle-ids", "list"}},
+		{[]string{"web", "bundle-ids", "view"}},
 	}
 
 	for _, tc := range cases {
@@ -65,11 +69,17 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 		t.Fatal("command [web] not found")
 	}
 	assertCommandDoesNotMentionExperimental(t, webCmd, []string{"web"})
+	allowed := map[string]struct{}{
+		"web auth export":     {},
+		"web auth import":     {},
+		"web bundle-ids list": {},
+		"web bundle-ids view": {},
+	}
 	for _, sub := range webCmd.Subcommands {
 		if sub.Name == "agreements" {
 			continue
 		}
-		assertCommandTreeDoesNotMentionExperimental(t, sub, []string{"web", sub.Name})
+		assertCommandTreeDoesNotMentionExperimentalExcept(t, sub, []string{"web", sub.Name}, allowed)
 	}
 }
 
@@ -83,13 +93,14 @@ func TestWebCommandsDoNotHaveEndpointWarningLabels(t *testing.T) {
 	assertCommandTreeDoesNotMentionEndpointWarnings(t, webCmd, []string{"web"})
 }
 
-func assertCommandTreeDoesNotMentionExperimental(t *testing.T, cmd *ffcli.Command, path []string) {
+func assertCommandTreeDoesNotMentionExperimentalExcept(t *testing.T, cmd *ffcli.Command, path []string, allowed map[string]struct{}) {
 	t.Helper()
 
-	assertCommandDoesNotMentionExperimental(t, cmd, path)
-
+	if _, ok := allowed[strings.Join(path, " ")]; !ok {
+		assertCommandDoesNotMentionExperimental(t, cmd, path)
+	}
 	for _, sub := range cmd.Subcommands {
-		assertCommandTreeDoesNotMentionExperimental(t, sub, append(path, sub.Name))
+		assertCommandTreeDoesNotMentionExperimentalExcept(t, sub, append(path, sub.Name), allowed)
 	}
 }
 
