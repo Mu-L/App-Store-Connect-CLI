@@ -189,26 +189,6 @@ func (c *Client) GetCIVersionAliases(ctx context.Context, teamID, productID stri
 	return &result, nil
 }
 
-// GetCIVersionAlias returns one custom alias for an Xcode Cloud product.
-func (c *Client) GetCIVersionAlias(ctx context.Context, teamID, productID, aliasID string) (*CIVersionAlias, error) {
-	teamID = strings.TrimSpace(teamID)
-	productID = strings.TrimSpace(productID)
-	aliasID = strings.TrimSpace(aliasID)
-	if teamID == "" || productID == "" || aliasID == "" {
-		return nil, fmt.Errorf("team id, product id, and version alias id are required")
-	}
-	path := "/teams/" + url.PathEscape(teamID) + "/products/" + url.PathEscape(productID) + "/configuration-options/version-aliases-v3/" + url.PathEscape(aliasID)
-	body, err := c.doRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-	var result CIVersionAlias
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to decode ci version alias: %w", err)
-	}
-	return &result, nil
-}
-
 // CINextBuildNumber is the next build number configured for an Xcode Cloud product.
 type CINextBuildNumber struct {
 	NextBuildNumber int    `json:"next_build_number"`

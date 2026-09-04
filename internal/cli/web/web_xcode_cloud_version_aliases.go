@@ -24,7 +24,6 @@ func webVersionAliasesGroup() *ffcli.Command {
 		FlagSet:    fs,
 		Subcommands: []*ffcli.Command{
 			webVersionAliasesList(),
-			webVersionAliasView(),
 		},
 		Exec: func(context.Context, []string) error { return flag.ErrHelp },
 	}
@@ -82,71 +81,6 @@ Example:
 			}
 			for _, item := range response.Items {
 				result.VersionAliases = append(result.VersionAliases, webVersionAliasOutput(item))
-			}
-			return shared.PrintOutputWithRenderers(
-				result,
-				*output.Output,
-				*output.Pretty,
-				func() error { return asc.PrintTable(result) },
-				func() error { return asc.PrintMarkdown(result) },
-			)
-		},
-	}
-}
-
-func webVersionAliasView() *ffcli.Command {
-	fs := flag.NewFlagSet("web xcode-cloud settings version-aliases view", flag.ExitOnError)
-	sessionFlags := bindWebSessionFlags(fs)
-	output := shared.BindOutputFlags(fs)
-	productID := fs.String("product-id", "", "Xcode Cloud product ID (required)")
-	aliasID := fs.String("id", "", "Version alias ID (required)")
-
-	return &ffcli.Command{
-		Name:       "view",
-		ShortUsage: "asc web xcode-cloud settings version-aliases view --product-id ID --id ID [flags]",
-		ShortHelp:  "View an Xcode Cloud custom version alias.",
-		LongHelp: `WEB SESSION WORKFLOWS
-
-View one custom version alias for an Xcode Cloud product.
-
-
-
-Example:
-  asc web xcode-cloud settings version-aliases view --product-id "UUID" --id "ALIAS_UUID" --apple-id "user@example.com"`,
-		UsageFunc: shared.DefaultUsageFunc,
-		FlagSet:   fs,
-		Exec: func(ctx context.Context, args []string) error {
-			if len(args) > 0 {
-				return shared.UsageError("web xcode-cloud settings version-aliases view does not accept positional arguments")
-			}
-			pid := strings.TrimSpace(*productID)
-			if pid == "" {
-				fmt.Fprintln(os.Stderr, "Error: --product-id is required")
-				return shared.MissingRequiredUsageError("--product-id")
-			}
-			id := strings.TrimSpace(*aliasID)
-			if id == "" {
-				fmt.Fprintln(os.Stderr, "Error: --id is required")
-				return shared.MissingRequiredUsageError("--id")
-			}
-
-			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, sessionFlags)
-			defer cancel()
-			if err != nil {
-				return err
-			}
-			teamID := strings.TrimSpace(session.PublicProviderID)
-			if teamID == "" {
-				return fmt.Errorf("xcode-cloud settings version-aliases view failed: session has no public provider ID")
-			}
-
-			item, err := newCIClientFn(session).GetCIVersionAlias(requestCtx, teamID, pid, id)
-			if err != nil {
-				return withWebAuthHint(err, "xcode-cloud settings version-aliases view")
-			}
-			result := &asc.WebXcodeCloudVersionAliasResult{
-				ProductID:    pid,
-				VersionAlias: webVersionAliasOutput(*item),
 			}
 			return shared.PrintOutputWithRenderers(
 				result,

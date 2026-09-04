@@ -19,11 +19,14 @@ func TestWebVersionAliasesHierarchy(t *testing.T) {
 	if group == nil {
 		t.Fatal("expected version-aliases subcommand")
 	}
-	for _, name := range []string{"list", "view"} {
+	for _, name := range []string{"list"} {
 		command := findSub(group, name)
 		if command == nil || command.UsageFunc == nil {
 			t.Fatalf("expected %q subcommand with UsageFunc", name)
 		}
+	}
+	if findSub(group, "view") != nil {
+		t.Fatal("version-aliases view must stay unavailable until its response contract is captured")
 	}
 }
 
@@ -68,29 +71,6 @@ func TestWebVersionAliasesListJSONOmitsNestedPayloads(t *testing.T) {
 	}
 }
 
-func TestWebVersionAliasViewJSON(t *testing.T) {
-	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
-		if got := req.URL.EscapedPath(); got != "/ci/api/teams/team-uuid/products/product%2Fone/configuration-options/version-aliases-v3/alias%2Fone" {
-			t.Fatalf("escaped path = %q", got)
-		}
-		return nextBuildNumberResponse(req, http.StatusOK, `{"id":"alias/one","name":"Latest","type":"CUSTOM","locked":false,"build_name":"43","build_supported":true}`), nil
-	})
-	cmd := webVersionAliasView()
-	if err := cmd.FlagSet.Parse([]string{"--product-id", "product/one", "--id", "alias/one", "--output", "json"}); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	stdout, _ := captureOutput(t, func() {
-		if err := cmd.Exec(context.Background(), nil); err != nil {
-			t.Fatalf("Exec() error = %v", err)
-		}
-	})
-	for _, want := range []string{`"productId":"product/one"`, `"id":"alias/one"`, `"name":"Latest"`, `"buildName":"43"`} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("output missing %s: %q", want, stdout)
-		}
-	}
-}
-
 func TestWebVersionAliasesValidateBeforeSession(t *testing.T) {
 	original := resolveSessionFn
 	called := false
@@ -104,31 +84,14 @@ func TestWebVersionAliasesValidateBeforeSession(t *testing.T) {
 	if err := list.Exec(context.Background(), nil); err == nil {
 		t.Fatal("expected missing product error")
 	}
-	view := webVersionAliasView()
-	if err := view.FlagSet.Parse([]string{"--product-id", "product"}); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if err := view.Exec(context.Background(), nil); err == nil {
-		t.Fatal("expected missing alias ID error")
-	}
 	if called {
 		t.Fatal("session resolution must not run for invalid input")
 	}
 }
 
 func TestWebVersionAliasesRejectPositionalArguments(t *testing.T) {
-	for _, command := range []struct {
-		name string
-		cmd  func() error
-	}{
-		{name: "list", cmd: func() error { return webVersionAliasesList().Exec(context.Background(), []string{"extra"}) }},
-		{name: "view", cmd: func() error { return webVersionAliasView().Exec(context.Background(), []string{"extra"}) }},
-	} {
-		t.Run(command.name, func(t *testing.T) {
-			if err := command.cmd(); err == nil || !strings.Contains(err.Error(), "does not accept positional arguments") {
-				t.Fatalf("error = %v", err)
-			}
-		})
+	if err := webVersionAliasesList().Exec(context.Background(), []string{"extra"}); err == nil || !strings.Contains(err.Error(), "does not accept positional arguments") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -145,12 +108,5 @@ func TestWebVersionAliasesRequirePublicProviderID(t *testing.T) {
 	}
 	if err := list.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "session has no public provider ID") {
 		t.Fatalf("list error = %v", err)
-	}
-	view := webVersionAliasView()
-	if err := view.FlagSet.Parse([]string{"--product-id", "product", "--id", "alias"}); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if err := view.Exec(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "session has no public provider ID") {
-		t.Fatalf("view error = %v", err)
 	}
 }

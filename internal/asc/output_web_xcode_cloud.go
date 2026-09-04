@@ -21,12 +21,6 @@ type WebXcodeCloudVersionAliasesResult struct {
 	VersionAliases []WebXcodeCloudVersionAlias `json:"versionAliases"`
 }
 
-// WebXcodeCloudVersionAliasResult is one custom version alias and its product.
-type WebXcodeCloudVersionAliasResult struct {
-	ProductID    string                    `json:"productId"`
-	VersionAlias WebXcodeCloudVersionAlias `json:"versionAlias"`
-}
-
 func webXcodeCloudVersionAliasesRows(r *WebXcodeCloudVersionAliasesResult) ([]string, [][]string) {
 	h := []string{"ID", "Name", "Type", "Locked", "Build name", "Build supported"}
 	if r == nil {
@@ -37,15 +31,6 @@ func webXcodeCloudVersionAliasesRows(r *WebXcodeCloudVersionAliasesResult) ([]st
 		rows = append(rows, []string{a.ID, a.Name, a.Type, strconv.FormatBool(a.Locked), a.BuildName, strconv.FormatBool(a.BuildSupported)})
 	}
 	return h, rows
-}
-
-func webXcodeCloudVersionAliasRows(r *WebXcodeCloudVersionAliasResult) ([]string, [][]string) {
-	h := []string{"ID", "Name", "Type", "Locked", "Build name", "Build supported"}
-	if r == nil {
-		return h, nil
-	}
-	a := r.VersionAlias
-	return h, [][]string{{a.ID, a.Name, a.Type, strconv.FormatBool(a.Locked), a.BuildName, strconv.FormatBool(a.BuildSupported)}}
 }
 
 // WebXcodeCloudNextBuildNumberResult is the current next-build-number setting

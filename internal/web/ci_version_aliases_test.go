@@ -40,27 +40,6 @@ func TestGetCIVersionAliases(t *testing.T) {
 	}
 }
 
-func TestGetCIVersionAlias(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Fatalf("method = %q, want GET", r.Method)
-		}
-		if got := r.URL.EscapedPath(); got != "/teams/team%2Fone/products/product%2Fone/configuration-options/version-aliases-v3/alias%2Fone" {
-			t.Fatalf("escaped path = %q", got)
-		}
-		_, _ = io.WriteString(w, `{"id":"alias/one","name":"Latest","type":"CUSTOM","locked":false,"build_name":"43","build_supported":true}`)
-	}))
-	defer server.Close()
-
-	item, err := testWebClient(server).GetCIVersionAlias(context.Background(), "team/one", "product/one", "alias/one")
-	if err != nil {
-		t.Fatalf("GetCIVersionAlias() error = %v", err)
-	}
-	if item.ID != "alias/one" || item.BuildName != "43" {
-		t.Fatalf("unexpected item: %+v", item)
-	}
-}
-
 func TestCIVersionAliasesRejectInvalidInputs(t *testing.T) {
 	client := &Client{httpClient: http.DefaultClient, baseURL: "http://localhost"}
 	tests := []struct {
@@ -70,18 +49,6 @@ func TestCIVersionAliasesRejectInvalidInputs(t *testing.T) {
 	}{
 		{name: "list empty team", run: func() error { _, err := client.GetCIVersionAliases(context.Background(), "", "product"); return err }, want: "team id and product id are required"},
 		{name: "list empty product", run: func() error { _, err := client.GetCIVersionAliases(context.Background(), "team", " "); return err }, want: "team id and product id are required"},
-		{name: "view empty team", run: func() error {
-			_, err := client.GetCIVersionAlias(context.Background(), "", "product", "alias")
-			return err
-		}, want: "team id, product id, and version alias id are required"},
-		{name: "view empty product", run: func() error {
-			_, err := client.GetCIVersionAlias(context.Background(), "team", "", "alias")
-			return err
-		}, want: "team id, product id, and version alias id are required"},
-		{name: "view empty alias", run: func() error {
-			_, err := client.GetCIVersionAlias(context.Background(), "team", "product", " ")
-			return err
-		}, want: "team id, product id, and version alias id are required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
