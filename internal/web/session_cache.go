@@ -26,9 +26,6 @@ const (
 	webSessionCacheDirEnv     = "ASC_WEB_SESSION_CACHE_DIR"
 	webSessionBackendEnv      = "ASC_WEB_SESSION_CACHE_BACKEND"
 
-	legacyIrisSessionCacheEnabledEnv = "ASC_IRIS_SESSION_CACHE"
-	legacyIrisSessionCacheDirEnv     = "ASC_IRIS_SESSION_CACHE_DIR"
-
 	webSessionCacheVersion = 1
 
 	webSessionKeyringService = "asc-web-session"
@@ -178,32 +175,6 @@ func webSessionCacheDir() (string, error) {
 	return filepath.Join(home, ".asc", "web"), nil
 }
 
-func legacyIrisSessionCacheEnabled() bool {
-	raw := strings.TrimSpace(os.Getenv(legacyIrisSessionCacheEnabledEnv))
-	if raw == "" {
-		return true
-	}
-	switch strings.ToLower(raw) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return true
-	}
-}
-
-func legacyIrisSessionCacheDir() (string, error) {
-	if custom := strings.TrimSpace(os.Getenv(legacyIrisSessionCacheDirEnv)); custom != "" {
-		return custom, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(home, ".asc", "iris"), nil
-}
-
 func webSessionCacheKey(username string) string {
 	normalized := strings.ToLower(strings.TrimSpace(username))
 	sum := sha256.Sum256([]byte(normalized))
@@ -220,22 +191,6 @@ func webSessionFilePath(key string) (string, error) {
 
 func webSessionLastFilePath() (string, error) {
 	dir, err := webSessionCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "last.json"), nil
-}
-
-func legacyIrisSessionFilePath(key string) (string, error) {
-	dir, err := legacyIrisSessionCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "session-"+key+".json"), nil
-}
-
-func legacyIrisLastFilePath() (string, error) {
-	dir, err := legacyIrisSessionCacheDir()
 	if err != nil {
 		return "", err
 	}
@@ -898,182 +853,6 @@ func readLastKeyFromFile() (string, bool, error) {
 	return strings.TrimSpace(last.Key), true, nil
 }
 
-func readLegacyIrisSessionFromFile(key string) (persistedSession, bool, error) {
-	return readLegacyIrisSessionFromFileWithCleanup(key, true)
-}
-
-func readLegacyIrisSessionFromFileReadOnly(key string) (persistedSession, bool, error) {
-	return readLegacyIrisSessionFromFileWithCleanup(key, false)
-}
-
-func readLegacyIrisSessionFromFileWithCleanup(key string, cleanupMalformed bool) (persistedSession, bool, error) {
-	if !legacyIrisSessionCacheEnabled() {
-		return persistedSession{}, false, nil
-	}
-	path, err := legacyIrisSessionFilePath(key)
-	if err != nil {
-		return persistedSession{}, false, err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return persistedSession{}, false, nil
-		}
-		return persistedSession{}, false, err
-	}
-	var sess persistedSession
-	if err := json.Unmarshal(raw, &sess); err != nil {
-		if cleanupMalformed {
-			_ = deleteLegacyIrisSessionFromFile(key)
-		}
-		return persistedSession{}, false, nil
-	}
-	if sess.Version != webSessionCacheVersion {
-		return persistedSession{}, false, nil
-	}
-	return sess, true, nil
-}
-
-func readLegacyIrisLastKeyFromFile() (string, bool, error) {
-	return readLegacyIrisLastKeyFromFileWithCleanup(true)
-}
-
-func readLegacyIrisLastKeyFromFileReadOnly() (string, bool, error) {
-	return readLegacyIrisLastKeyFromFileWithCleanup(false)
-}
-
-func readLegacyIrisLastKeyFromFileWithCleanup(cleanupMalformed bool) (string, bool, error) {
-	if !legacyIrisSessionCacheEnabled() {
-		return "", false, nil
-	}
-	path, err := legacyIrisLastFilePath()
-	if err != nil {
-		return "", false, err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
-	var last persistedLastSession
-	if err := json.Unmarshal(raw, &last); err != nil {
-		if cleanupMalformed {
-			_ = deleteLegacyIrisLastKeyFromFile()
-		}
-		return "", false, nil
-	}
-	if last.Version != webSessionCacheVersion || strings.TrimSpace(last.Key) == "" {
-		return "", false, nil
-	}
-	return strings.TrimSpace(last.Key), true, nil
-}
-
-// TODO(next-release-cycle): remove legacy IRIS session import after the apps-create deprecation window.
-func deleteLegacyIrisSessionFromFile(key string) error {
-	path, err := legacyIrisSessionFilePath(key)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func deleteLegacyIrisLastKeyFromFile() error {
-	path, err := legacyIrisLastFilePath()
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func deleteLegacyIrisSessionArtifacts(key string) error {
-	if !legacyIrisSessionCacheEnabled() {
-		return nil
-	}
-	if err := deleteLegacyIrisSessionFromFile(key); err != nil {
-		return err
-	}
-	lastKey, ok, err := readLegacyIrisLastKeyFromFile()
-	if err != nil {
-		_ = deleteLegacyIrisLastKeyFromFile()
-		return nil
-	}
-	if ok && lastKey == key {
-		return deleteLegacyIrisLastKeyFromFile()
-	}
-	return nil
-}
-
-func deleteAllLegacyIrisFromFile() error {
-	if !legacyIrisSessionCacheEnabled() {
-		return nil
-	}
-	dir, err := legacyIrisSessionCacheDir()
-	if err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if (strings.HasPrefix(name, "session-") && strings.HasSuffix(name, ".json")) || name == "last.json" {
-			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func migrateLegacyIrisSessionByKey(ctx context.Context, selection backendSelection, key string) (*AuthSession, bool, error) {
-	if selection.backend == sessionBackendOff {
-		return nil, false, nil
-	}
-	sess, ok, err := readLegacyIrisSessionFromFile(key)
-	if err != nil || !ok {
-		return nil, false, err
-	}
-
-	resumed, ok, err := resumeFromPersistedSession(ctx, sess)
-	if err != nil {
-		if errors.Is(err, ErrCachedSessionExpired) {
-			_ = deleteLegacyIrisSessionArtifacts(key)
-		}
-		return nil, false, err
-	}
-	if !ok || resumed == nil {
-		return nil, false, nil
-	}
-	// Migration bookkeeping is best-effort after the resumed session is already valid.
-	_ = PersistSession(resumed)
-	_ = deleteLegacyIrisSessionArtifacts(key)
-	return resumed, true, nil
-}
-
-func migrateLegacyIrisSessionByUsername(ctx context.Context, selection backendSelection, username string) (*AuthSession, bool, error) {
-	return migrateLegacyIrisSessionByKey(ctx, selection, webSessionCacheKey(username))
-}
-
-func migrateLegacyIrisLastSession(ctx context.Context, selection backendSelection) (*AuthSession, bool, error) {
-	key, ok, err := readLegacyIrisLastKeyFromFile()
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	return migrateLegacyIrisSessionByKey(ctx, selection, key)
-}
-
 func persistSessionBySelection(selection backendSelection, key string, sess persistedSession) error {
 	if selection.backend == sessionBackendOff {
 		return nil
@@ -1717,9 +1496,6 @@ func ResumeCachedSessionWithoutPersist(ctx context.Context, username string) (*A
 
 	key := webSessionCacheKey(username)
 	sess, ok, err := readSessionBySelection(selection, key)
-	if err == nil && !ok {
-		sess, ok, err = readLegacyIrisSessionFromFileReadOnly(key)
-	}
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -1746,11 +1522,8 @@ func TryResumeSession(ctx context.Context, username string) (*AuthSession, bool,
 
 	key := webSessionCacheKey(username)
 	sess, ok, err := readSessionBySelection(selection, key)
-	if err != nil {
+	if err != nil || !ok {
 		return nil, false, err
-	}
-	if !ok {
-		return migrateLegacyIrisSessionByUsername(ctx, selection, username)
 	}
 	resumed, ok, err := resumeFromPersistedSession(ctx, sess)
 	if err != nil || !ok || resumed == nil {
@@ -1789,15 +1562,6 @@ func ResumeLastCachedSessionWithoutPersist(ctx context.Context) (*AuthSession, b
 	}
 
 	sess, ok, err := readLastSessionBySelection(selection)
-	if err == nil && !ok {
-		key, legacyOK, legacyErr := readLegacyIrisLastKeyFromFileReadOnly()
-		if legacyErr != nil {
-			return nil, false, legacyErr
-		}
-		if legacyOK {
-			sess, ok, err = readLegacyIrisSessionFromFileReadOnly(key)
-		}
-	}
 	if err != nil || !ok {
 		return nil, false, err
 	}
@@ -1816,11 +1580,8 @@ func TryResumeLastSession(ctx context.Context) (*AuthSession, bool, error) {
 	}
 
 	sess, ok, err := readLastSessionBySelection(selection)
-	if err != nil {
+	if err != nil || !ok {
 		return nil, false, err
-	}
-	if !ok {
-		return migrateLegacyIrisLastSession(ctx, selection)
 	}
 	resumed, ok, err := resumeFromPersistedSession(ctx, sess)
 	if err != nil || !ok || resumed == nil {
@@ -1877,7 +1638,7 @@ func deleteSessionEntryLocked(selection backendSelection, key string) error {
 	default:
 		err = nil
 	}
-	return joinDeleteErrors(err, deleteLegacyIrisSessionArtifacts(key))
+	return err
 }
 
 // DeleteSessionIfMatches removes the cached web session for username only while
@@ -1968,7 +1729,7 @@ func deleteMatchedSessionEntryLocked(selection backendSelection, key string, ori
 	default:
 		return nil
 	}
-	return joinDeleteErrors(err, deleteLegacyIrisSessionArtifacts(key))
+	return err
 }
 
 // sessionMirrorEnabled reports whether the selection keeps entries in both
@@ -2058,17 +1819,17 @@ func deleteAllSessionsLocked(selection backendSelection) error {
 	default:
 		err = nil
 	}
-	return joinDeleteErrors(err, deleteAllLegacyIrisFromFile())
+	return err
 }
 
-func joinDeleteErrors(primaryErr, legacyErr error) error {
+func joinDeleteErrors(primaryErr, secondaryErr error) error {
 	if primaryErr == nil {
-		return legacyErr
+		return secondaryErr
 	}
-	if legacyErr == nil {
+	if secondaryErr == nil {
 		return primaryErr
 	}
-	return errors.Join(primaryErr, legacyErr)
+	return errors.Join(primaryErr, secondaryErr)
 }
 
 func ignoreUnavailableKeyringError(err error) error {
