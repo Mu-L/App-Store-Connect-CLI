@@ -558,6 +558,14 @@ func capabilityRows() []Capability {
 			NextAction: "Use Apple Developer Portal, or asc web app-groups.",
 		},
 		{
+			Area:       "signing",
+			Capability: "Developer Portal Website Push ID reads",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web website-push-ids list"},
+			Notes:      []string{"Read-only Website Push ID collection uses the captured Developer Portal legacy web-session endpoint and preserves Apple's root-level websitePushIdList response envelope. This slice requests the first page only; lifecycle operations remain unsupported pending captured contracts."},
+			NextAction: "Use asc web website-push-ids list.",
+		},
+		{
 			Area:       "automation",
 			Capability: "Xcode Cloud workflows and artifacts",
 			Status:     statusCLISupported,

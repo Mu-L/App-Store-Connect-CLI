@@ -30,6 +30,9 @@ asc web app-groups list --output table
 asc web bundle-ids list --output table
 asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
 
+# [experimental] List Developer Portal Website Push IDs unavailable through the public API
+asc web website-push-ids list --output table
+
 # Bootstrap app availability where the public API falls short
 asc web apps availability create --app "123456789" --territory "USA,GBR" --available-in-new-territories false
 
@@ -324,6 +327,36 @@ asc web bundle-ids capabilities sync-app-clip \
   --confirm
 ```
 
+### `asc web website-push-ids`
+
+Read Website Push IDs through the Developer Portal web session. The current
+slice is experimental and exposes the captured legacy list operation only.
+
+Available commands:
+
+* `asc web website-push-ids list` - [experimental] list the first captured
+  Website Push ID page for the selected Developer team
+
+`list` posts to Apple's legacy
+`/services-account/QH65B2/account/ios/identifiers/listWebsitePushIds.action`
+endpoint with `onlyCountLists=true`, `pageSize=1000`, `pageNumber=1`,
+`sort=name=asc`, and the selected `teamId`. The live response is a root object
+whose collection is `websitePushIdList`; JSON output preserves the complete
+Apple envelope, while table and Markdown output show a small scalar projection.
+No continuation contract was captured, so the command does not accept
+`--paginate` and reads only the first fixed page.
+
+Website Push ID view, create, rename, and delete are not available. Their
+modern JSON:API and capability graph contracts need row-level response and
+write captures before they can be implemented safely.
+
+Example:
+
+```bash  theme={null}
+asc web website-push-ids list --output table
+asc web website-push-ids list --developer-team "TEAM_ID" --output json
+```
+
 ### `asc web app-groups`
 
 App Group registration and Bundle ID assignment through Apple Developer Portal.
@@ -606,6 +639,7 @@ asc web api-keys --help
 asc web apps --help
 asc web removed-apps --help
 asc web bundle-ids --help
+asc web website-push-ids --help
 asc web privacy --help
 asc web review --help
 asc web analytics --help
