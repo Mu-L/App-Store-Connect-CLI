@@ -709,7 +709,10 @@ func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string,
 	}
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		if before == nil {
+			return nil
+		}
+		return fmt.Errorf("SwiftSupport directory disappeared during rooted open")
 	}
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport directory: %w", err)
@@ -771,6 +774,11 @@ func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string,
 			return err
 		}
 		name := entry.Name()
+		// Reject the final symlink from the directory entry itself. Some
+		// os.Root implementations may follow it during OpenFile.
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry")
+		}
 		file, _, err := openSigningResignRegularNoFollow(platform, name)
 		if err != nil {
 			return fmt.Errorf("SwiftSupport/iphoneos contains a nested or symbolic-link entry: %w", err)
@@ -818,7 +826,10 @@ func validateSigningResignWatchKitSupportRoot(ctx context.Context, treeRoot stri
 	}
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		if before == nil {
+			return nil
+		}
+		return fmt.Errorf("WatchKitSupport2 directory disappeared during rooted open")
 	}
 	if err != nil {
 		return fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
@@ -844,6 +855,9 @@ func validateSigningResignWatchKitSupportRoot(ctx context.Context, treeRoot stri
 	}
 	if len(entries) != 1 || entries[0].Name() != "WK" {
 		return fmt.Errorf("WatchKitSupport2 must contain only the WK binary")
+	}
+	if entries[0].Type()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WatchKitSupport2 contains a nested or symbolic-link entry")
 	}
 	file, info, err := openSigningResignRegularNoFollow(watch, "WK")
 	if err != nil {
@@ -872,7 +886,10 @@ func captureSigningResignWatchKitSupportInventoryRoot(ctx context.Context, root 
 	}
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		if before == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("WatchKitSupport2 directory disappeared during rooted open")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
@@ -882,9 +899,6 @@ func captureSigningResignWatchKitSupportInventoryRoot(ctx context.Context, root 
 		return nil, fmt.Errorf("WatchKitSupport2 directory changed during rooted open")
 	}
 	file, entryInfo, err := openSigningResignRegularNoFollow(watch, "WK")
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect WatchKitSupport2 entry: %w", err)
 	}
@@ -990,7 +1004,10 @@ func captureSigningResignSwiftSupportInventoryRoot(ctx context.Context, root *os
 	}
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		if before == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("SwiftSupport directory disappeared during rooted open")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect SwiftSupport directory: %w", err)

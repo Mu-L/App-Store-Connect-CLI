@@ -332,6 +332,16 @@ func TestCaptureSigningResignPreservedInventoryIncludesWatchKit(t *testing.T) {
 	}
 }
 
+func TestCaptureSigningResignWatchKitInventoryRejectsMissingEntry(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "WatchKitSupport2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureSigningResignPreservedInventory(context.Background(), root); err == nil || !strings.Contains(err.Error(), "inspect WatchKitSupport2 entry") {
+		t.Fatalf("captureSigningResignPreservedInventory() error = %v, want missing-entry failure", err)
+	}
+}
+
 func TestSigningResignCombinedPreservedOperationsShareOneStagingRoot(t *testing.T) {
 	originalTool := runSigningResignToolFn
 	t.Cleanup(func() { runSigningResignToolFn = originalTool })
