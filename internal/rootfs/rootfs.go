@@ -2112,6 +2112,11 @@ func (r Root) writeFileIfSame(
 	if written != int64(len(data)) {
 		return nil, errors.Join(io.ErrShortWrite, restoreQuarantine(quarantineName))
 	}
+	if preserveMetadata {
+		if err := restoreReplacementMode(temporary, quarantineInfo); err != nil {
+			return nil, errors.Join(err, restoreQuarantine(quarantineName))
+		}
+	}
 	if err := temporary.Sync(); err != nil {
 		return nil, errors.Join(err, restoreQuarantine(quarantineName))
 	}
