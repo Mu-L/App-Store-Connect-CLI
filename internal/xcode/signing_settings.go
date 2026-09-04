@@ -1412,6 +1412,11 @@ func (resolver *signingSettingResolver) resolveInheritedSettingValue(
 	if err == nil {
 		return inherited, nil
 	}
+	if errors.Is(err, errVersionSettingNotFound) {
+		if implicit, ok := signingImplicitSettingValue(resolver.project, expansionConfiguration, setting); ok {
+			return implicit, nil
+		}
+	}
 	if fallback := resolver.project.projectConfiguration(configuration.name); fallback != nil && fallback != configuration {
 		for _, key := range matchingBuildSettingKeys(fallback.buildSettings, setting) {
 			literal, ok := fallback.buildSettings[key].(string)
@@ -1484,7 +1489,58 @@ func (resolver *signingSettingResolver) resolveSettingReferenceWithContext(
 			return resolver.resolveSettingReferenceWithContext(fallback, expansionConfiguration, setting, stack)
 		}
 	}
+	// Only after every explicit pbxproj and xcconfig layer has been searched
+	// does the implicit context apply, so a project that assigns one of these
+	// names keeps Xcode's precedence.
+	if value, ok := signingImplicitSettingValue(resolver.project, expansionConfiguration, setting); ok {
+		return value, resolver.project.pbxprojPath, nil
+	}
 	return "", "", fmt.Errorf("setting not found")
+}
+
+// signingImplicitSettingValue supplies the build settings Xcode defines for
+// every project from the project's own location. Xcode sets them before any
+// pbxproj or xcconfig assignment is read, so a reference such as
+// $(SRCROOT)/App.entitlements is valid in a project that never assigns SRCROOT
+// itself and must not block an otherwise resolvable signing plan.
+//
+// Only values derivable from the selected .xcodeproj without running a build
+// are returned. Anything that depends on a build context - CONFIGURATION,
+// PLATFORM_NAME, SDKROOT, BUILT_PRODUCTS_DIR, and every other
+// xcodebuild-supplied setting - stays unresolved so the plan fails closed
+// instead of guessing which file it inventoried. A resolved path is still
+// bound to the project root by the caller's rooted, no-follow containment and
+// artifact-alias checks, so an implicit variable cannot widen the plan's
+// reach.
+func signingImplicitSettingValue(
+	project *structuredVersionProject,
+	configuration *versionConfiguration,
+	setting string,
+) (string, bool) {
+	if project == nil {
+		return "", false
+	}
+	switch setting {
+	case "SRCROOT", "SOURCE_ROOT", "PROJECT_DIR":
+		return project.rootDir, project.rootDir != ""
+	case "PROJECT_FILE_PATH":
+		return project.projectPath, project.projectPath != ""
+	case "PROJECT_NAME":
+		base := filepath.Base(project.projectPath)
+		name := strings.TrimSuffix(base, filepath.Ext(base))
+		if name == "" || name == "." || name == string(filepath.Separator) {
+			return "", false
+		}
+		return name, true
+	case "TARGET_NAME":
+		// A project-level configuration is shared by every target, so Xcode
+		// has no single TARGET_NAME to define there.
+		if configuration == nil || configuration.projectLevel || configuration.target == "" {
+			return "", false
+		}
+		return configuration.target, true
+	}
+	return "", false
 }
 
 // resolveXCConfigBaseWithContext returns the lower-layer state that the
@@ -1553,7 +1609,7 @@ func (resolver *signingSettingResolver) resolveXCConfigSettingStateWithContext(
 			return resolver.identifyXCConfigFor(configuration, includePath)
 		}
 	}
-	return resolveXCConfigSettingStateWithReaderAndIdentity(path, setting, base, read, stat, identify, observe)
+	return resolveXCConfigSettingStateWithReaderAndIdentity(path, setting, base, read, stat, identify, observe, nil)
 }
 
 func (resolver *signingSettingResolver) resolveConfigurationXCConfigWithContext(
@@ -1576,13 +1632,16 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfigWithContext(
 			return resolver.identifyXCConfigFor(configuration, includePath)
 		}
 	}
-	return resolveXCConfigSettingWithBaseReaderAndIdentity(
+	return resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
 		path,
 		setting,
 		base,
 		read,
 		stat,
 		identify,
+		func(name string) (string, bool) {
+			return signingImplicitSettingValue(resolver.project, expansionConfiguration, name)
+		},
 	)
 }
 
