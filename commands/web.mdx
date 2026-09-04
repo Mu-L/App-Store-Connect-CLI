@@ -425,7 +425,7 @@ asc web privacy publish --app "123456789" --confirm
 
 ### `asc web review`
 
-App-centric review, rejection, and subscription-selection inspection.
+Inspect app review and rejection information, send Resolution Center text replies, and manage subscription review selection.
 
 Available commands:
 
@@ -434,6 +434,7 @@ Available commands:
 * `asc web review threads` - list every Resolution Center thread on an app, including binary, metadata, and informational threads; `--drafts` reads each unsent draft (`--plain-text` projects HTML to plain text)
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
+* [experimental] `asc web review reply` - send one confirmed Resolution Center text reply
 
 Subscription JSON includes both `submitWithNextAppStoreVersion` and
 `submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
@@ -445,6 +446,8 @@ omitted the attachment attribute and the boolean value is not authoritative.
 ```bash  theme={null}
 asc web review iaps attach --app "123456789" --iap-id "PRODUCT_ID" --confirm
 ```
+
+`asc web review reply --thread-id THREAD_ID --message MESSAGE --confirm` creates a draft, sends it, and re-reads the thread to verify the resulting message. Attachments are unsupported, and an uncertain send is never retried automatically.
 
 ### `asc web subscriptions`
 
