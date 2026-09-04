@@ -778,17 +778,17 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 			continue
 		}
 		value := assignment.value
+		if !resolved.found && lookup != nil {
+			if implicit, ok := lookup(setting); ok {
+				resolved = xcconfigResolvedValue{value: implicit, path: "<implicit>", found: true, exact: true}
+			}
+		}
 		hadLowerValue := resolved.found
 		hasInherited := strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}")
 		value = strings.ReplaceAll(value, "$(inherited)", resolved.value)
 		value = strings.ReplaceAll(value, "${inherited}", resolved.value)
 		switch assignment.operator {
 		case "?=":
-			if !resolved.found && lookup != nil {
-				if implicit, ok := lookup(setting); ok {
-					resolved = xcconfigResolvedValue{value: implicit, path: "<implicit>", found: true, exact: true}
-				}
-			}
 			if resolved.found {
 				continue
 			}
