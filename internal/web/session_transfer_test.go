@@ -673,6 +673,116 @@ func TestImportSessionBundleNoOverwriteDoesNotReplaceKeychainSession(t *testing.
 	}
 }
 
+// The command-layer preflight can observe an empty file cache while another
+// process writes the same account to the keychain before import reaches its
+// final persistence boundary. The file backend's keychain fallback must treat
+// that writer as an occupied entry and preserve its last-session choice.
+func TestImportSessionBundleNoOverwritePreservesSessionWrittenDuringKeychainFallbackPreflight(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+	withStubbedSessionSharedLockRoot(t, t.TempDir())
+
+	key := webSessionCacheKey(webTestSessionEmail)
+	importer := backendSelection{backend: sessionBackendFile, fallbackKeychain: true}
+	writer := backendSelection{backend: sessionBackendKeychain}
+
+	if _, ok, err := readSessionBySelection(importer, key); err != nil || ok {
+		t.Fatalf("import preflight = (%v, %v), want an empty cache", ok, err)
+	}
+	if err := persistSessionBySelection(writer, key, webTestPersistedSession(t, "keychain-token", time.Now().UTC())); err != nil {
+		t.Fatalf("concurrent keychain writer error: %v", err)
+	}
+
+	err := persistImportedSessionBySelection(importer, key, webTestPersistedSession(t, "import-token", time.Now().UTC()), false)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("no-overwrite import error = %v, want an atomic keychain-fallback conflict", err)
+	}
+	stored, ok, err := readSessionFromKeychain(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromKeychain() = (%v, %v), want the concurrent writer", ok, err)
+	}
+	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "keychain-token" {
+		t.Fatalf("keychain cookie = %q, want keychain-token", got)
+	}
+	last, ok, err := readLastSessionFromKeychain()
+	if err != nil || !ok || last.UserEmail != webTestSessionEmail {
+		t.Fatalf("readLastSessionFromKeychain() = (%+v, %v, %v), want the concurrent writer's marker", last, ok, err)
+	}
+}
+
+// The selected file backend must enforce the same guarantee at its final
+// O_EXCL create, even when both the preflight and the writer use that backend.
+func TestImportSessionBundleNoOverwritePreservesSessionWrittenDuringFilePreflight(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+	withStubbedSessionSharedLockRoot(t, t.TempDir())
+
+	key := webSessionCacheKey(webTestSessionEmail)
+	selection := backendSelection{backend: sessionBackendFile}
+
+	if _, ok, err := readSessionBySelection(selection, key); err != nil || ok {
+		t.Fatalf("import preflight = (%v, %v), want an empty cache", ok, err)
+	}
+	if err := persistSessionBySelection(selection, key, webTestPersistedSession(t, "file-token", time.Now().UTC())); err != nil {
+		t.Fatalf("concurrent file writer error: %v", err)
+	}
+
+	err := persistImportedSessionBySelection(selection, key, webTestPersistedSession(t, "import-token", time.Now().UTC()), false)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("no-overwrite import error = %v, want an atomic file conflict", err)
+	}
+	stored, ok, err := readSessionFromFile(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the concurrent writer", ok, err)
+	}
+	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "file-token" {
+		t.Fatalf("file cookie = %q, want file-token", got)
+	}
+	lastKey, ok, err := readLastKeyFromFile()
+	if err != nil || !ok || lastKey != key {
+		t.Fatalf("readLastKeyFromFile() = (%q, %v, %v), want the concurrent writer's marker", lastKey, ok, err)
+	}
+}
+
+// The reverse configuration has the same final-write guarantee: a keychain
+// selected import must not replace a file entry that appeared after its
+// command-layer preflight.
+func TestImportSessionBundleNoOverwritePreservesSessionWrittenDuringFileFallbackPreflight(t *testing.T) {
+	withArraySessionKeyring(t)
+	t.Setenv(webSessionCacheEnabledEnv, "1")
+	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
+	withStubbedSessionSharedLockRoot(t, t.TempDir())
+
+	key := webSessionCacheKey(webTestSessionEmail)
+	importer := backendSelection{backend: sessionBackendKeychain, fallbackFile: true}
+	writer := backendSelection{backend: sessionBackendFile}
+
+	if _, ok, err := readSessionBySelection(importer, key); err != nil || ok {
+		t.Fatalf("import preflight = (%v, %v), want an empty cache", ok, err)
+	}
+	if err := persistSessionBySelection(writer, key, webTestPersistedSession(t, "file-token", time.Now().UTC())); err != nil {
+		t.Fatalf("concurrent file writer error: %v", err)
+	}
+
+	err := persistImportedSessionBySelection(importer, key, webTestPersistedSession(t, "import-token", time.Now().UTC()), false)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("no-overwrite import error = %v, want an atomic file-fallback conflict", err)
+	}
+	stored, ok, err := readSessionFromFile(key)
+	if err != nil || !ok {
+		t.Fatalf("readSessionFromFile() = (%v, %v), want the concurrent writer", ok, err)
+	}
+	if got := persistedMyacinfoCookieValue(stored, "https://appstoreconnect.apple.com/"); got != "file-token" {
+		t.Fatalf("file cookie = %q, want file-token", got)
+	}
+	lastKey, ok, err := readLastKeyFromFile()
+	if err != nil || !ok || lastKey != key {
+		t.Fatalf("readLastKeyFromFile() = (%q, %v, %v), want the concurrent writer's marker", lastKey, ok, err)
+	}
+}
+
 func TestImportSessionBundleOverwriteRemovesFileFallbackOnKeychainBackend(t *testing.T) {
 	withArraySessionKeyring(t)
 	withSessionInfoStub(t)
