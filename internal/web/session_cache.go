@@ -1252,18 +1252,8 @@ func persistImportedSessionBySelectionLocked(selection backendSelection, key str
 			}
 		}
 		if err := writeSessionToKeychainWithRecoveryUnlocked(key, sess, true); err != nil {
-			// A successful snapshot proves that keychain was the authoritative
-			// backend for this overwrite. If access disappears during the write,
-			// fail closed so the stale keychain entry cannot remain ahead of a
-			// replacement written only to the file fallback. File fallback is
-			// safe only when the snapshot established that keychain was already
-			// unavailable.
-			if selection.fallbackFile && isKeyringUnavailable(err) && keychainSnapshotAllowsFallback(state) {
-				if fileErr := writeSessionToFile(key, sess); fileErr != nil {
-					return errors.Join(fileErr, state.restore())
-				}
-				return nil
-			}
+			// Fail closed: a stale keychain entry must not remain ahead of a
+			// replacement written only to the file fallback.
 			return errors.Join(err, state.restore())
 		}
 		return nil
@@ -1295,10 +1285,6 @@ func persistImportedSessionBySelectionLocked(selection backendSelection, key str
 	default:
 		return nil
 	}
-}
-
-func keychainSnapshotAllowsFallback(state importedSessionState) bool {
-	return state.keychain == nil || !state.keychain.captured
 }
 
 func readSessionFromFileWithKeychainFallback(key string, fallbackKeychain bool) (persistedSession, bool, error) {
