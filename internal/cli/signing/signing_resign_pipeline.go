@@ -664,8 +664,20 @@ func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot 
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	candidate := filepath.Join(treeRoot, "WatchKitSupport2", "WK")
-	entryInfo, err := os.Lstat(candidate)
+	root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	watch, err := root.OpenRoot("WatchKitSupport2")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
+	}
+	defer watch.Close()
+	entryInfo, err := watch.Lstat("WK")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -678,7 +690,12 @@ func captureSigningResignWatchKitSupportInventory(ctx context.Context, treeRoot 
 	if entryInfo.Size() > signingResignSwiftSupportMaxBytes {
 		return nil, fmt.Errorf("WatchKitSupport2 entry exceeds %d bytes", signingResignSwiftSupportMaxBytes)
 	}
-	digest, err := hashSigningResignFile(ctx, candidate, entryInfo.Size())
+	file, err := watch.Open("WK")
+	if err != nil {
+		return nil, fmt.Errorf("open WatchKitSupport2 entry: %w", err)
+	}
+	defer file.Close()
+	digest, err := hashSigningResignOpenFile(ctx, file, entryInfo.Size())
 	if err != nil {
 		return nil, fmt.Errorf("hash WatchKitSupport2 entry: %w", err)
 	}
@@ -725,25 +742,30 @@ func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot str
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	swiftRoot := filepath.Join(treeRoot, "SwiftSupport", "iphoneos")
-	info, err := os.Lstat(filepath.Join(treeRoot, "SwiftSupport"))
+	root, err := openSigningResignTreeRoot(treeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open staging tree: %w", err)
+	}
+	defer root.Close()
+	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect SwiftSupport directory: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("SwiftSupport is not a regular directory")
-	}
-	platformInfo, err := os.Lstat(swiftRoot)
+	defer swift.Close()
+	platform, err := swift.OpenRoot("iphoneos")
 	if err != nil {
 		return nil, fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
 	}
-	if platformInfo.Mode()&os.ModeSymlink != 0 || !platformInfo.IsDir() {
-		return nil, fmt.Errorf("SwiftSupport/iphoneos is not a regular directory")
+	defer platform.Close()
+	dir, err := platform.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
 	}
-	entries, err := os.ReadDir(swiftRoot)
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, fmt.Errorf("read SwiftSupport/iphoneos directory: %w", err)
 	}
@@ -752,8 +774,7 @@ func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot str
 		if err := contextError(ctx); err != nil {
 			return nil, err
 		}
-		candidate := filepath.Join(swiftRoot, entry.Name())
-		entryInfo, err := os.Lstat(candidate)
+		entryInfo, err := entry.Info()
 		if err != nil {
 			return nil, fmt.Errorf("inspect SwiftSupport entry: %w", err)
 		}
@@ -763,7 +784,12 @@ func captureSigningResignSwiftSupportInventory(ctx context.Context, treeRoot str
 		if entryInfo.Size() > signingResignSwiftSupportMaxBytes {
 			return nil, fmt.Errorf("SwiftSupport entry exceeds %d bytes", signingResignSwiftSupportMaxBytes)
 		}
-		digest, err := hashSigningResignFile(ctx, candidate, entryInfo.Size())
+		file, err := platform.Open(entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("open SwiftSupport entry: %w", err)
+		}
+		digest, err := hashSigningResignOpenFile(ctx, file, entryInfo.Size())
+		file.Close()
 		if err != nil {
 			return nil, fmt.Errorf("hash SwiftSupport entry: %w", err)
 		}
