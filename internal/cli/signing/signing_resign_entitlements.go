@@ -618,6 +618,11 @@ func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {
 	profileList, profileIsList := signingResignEntitlementList(profileValue)
 	signedList, signedIsList := signingResignEntitlementList(signedValue)
 	if profileIsList && signedIsList {
+		for _, profileItem := range profileList {
+			if _, ok := profileItem.(string); !ok {
+				return false
+			}
+		}
 		for _, signedItem := range signedList {
 			permitted := false
 			for _, profileItem := range profileList {

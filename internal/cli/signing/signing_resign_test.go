@@ -686,6 +686,12 @@ func TestBuildSigningResignEntitlementsReplacesIdentity(t *testing.T) {
 	}
 }
 
+func TestSigningResignEntitlementValuePermitsRejectsNonStringProfileListEntries(t *testing.T) {
+	if signingResignEntitlementValuePermits([]any{123}, []any{123}) {
+		t.Fatal("non-string profile list entry must not authorize a signed value")
+	}
+}
+
 func TestBuildSigningResignEntitlementsDerivesPushEnvironmentFromProfileClass(t *testing.T) {
 	existing := map[string]any{
 		"application-identifier":              "OLDTEAM.com.example.app",
