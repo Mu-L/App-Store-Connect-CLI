@@ -26,13 +26,14 @@ import (
 )
 
 const (
-	signingResignMaxArchiveEntries               = 20_000
-	signingResignMaxArchiveMemberNameLen         = 4096
-	signingResignMaxExpandedBytes         uint64 = 16 << 30
-	signingResignMaxIPABytes              int64  = 8 << 30
-	signingResignSwiftSupportMaxBytes     int64  = 1 << 30
-	signingResignMaxTargetCount                  = 256
-	signingResignMaxCentralDirectoryBytes int64  = 1 << 30
+	signingResignMaxArchiveEntries                       = 20_000
+	signingResignMaxArchiveMemberNameLen                 = 4096
+	signingResignMaxExpandedBytes                 uint64 = 16 << 30
+	signingResignMaxIPABytes                      int64  = 8 << 30
+	signingResignSwiftSupportMaxBytes             int64  = 1 << 30
+	signingResignMaxTargetCount                          = 256
+	signingResignMaxCentralDirectoryBytes         int64  = 1 << 30
+	signingResignMaxCentralDirectoryMetadataBytes uint64 = 128 << 20
 )
 
 type signingResignTarget struct {
@@ -77,11 +78,12 @@ func preflightSigningResignArchive(ctx context.Context, file *os.File, size int6
 		if i+22+commentLength != len(buf) {
 			continue
 		}
+		eocdOffset := size - readSize + int64(i)
+		directoryEndOffset := eocdOffset
 		entries := uint64(binary.LittleEndian.Uint16(buf[i+10 : i+12]))
 		directoryBytes := uint64(binary.LittleEndian.Uint32(buf[i+12 : i+16]))
 		directoryOffset := uint64(binary.LittleEndian.Uint32(buf[i+16 : i+20]))
 		if entries == 0xffff || directoryBytes == 0xffffffff || directoryOffset == 0xffffffff {
-			eocdOffset := size - readSize + int64(i)
 			if eocdOffset < 20 {
 				return fmt.Errorf("IPA ZIP64 locator is missing")
 			}
@@ -92,10 +94,11 @@ func preflightSigningResignArchive(ctx context.Context, file *os.File, size int6
 			if binary.LittleEndian.Uint32(locator[0:4]) != 0x07064b50 {
 				return fmt.Errorf("IPA ZIP64 locator is malformed")
 			}
-			recordOffset := int64(binary.LittleEndian.Uint64(locator[8:16]))
-			if recordOffset < 0 || recordOffset > size-56 {
+			recordOffsetValue := binary.LittleEndian.Uint64(locator[8:16])
+			if recordOffsetValue > uint64(^uint64(0)>>1) || size < 56 || recordOffsetValue > uint64(size-56) {
 				return fmt.Errorf("IPA ZIP64 EOCD offset is out of bounds")
 			}
+			recordOffset := int64(recordOffsetValue)
 			record := make([]byte, 56)
 			if _, err := file.ReadAt(record, recordOffset); err != nil {
 				return fmt.Errorf("read IPA ZIP64 EOCD: %w", err)
@@ -107,6 +110,7 @@ func preflightSigningResignArchive(ctx context.Context, file *os.File, size int6
 			if recordSize < 44 || recordSize > uint64(size-recordOffset-12) {
 				return fmt.Errorf("IPA ZIP64 EOCD size is invalid")
 			}
+			directoryEndOffset = recordOffset
 			entries = binary.LittleEndian.Uint64(record[32:40])
 			directoryBytes = binary.LittleEndian.Uint64(record[40:48])
 			directoryOffset = binary.LittleEndian.Uint64(record[48:56])
@@ -117,13 +121,38 @@ func preflightSigningResignArchive(ctx context.Context, file *os.File, size int6
 		if directoryBytes > uint64(signingResignMaxCentralDirectoryBytes) {
 			return fmt.Errorf("IPA central directory exceeds %d bytes", signingResignMaxCentralDirectoryBytes)
 		}
-		if directoryOffset > uint64(size) || directoryBytes > uint64(size)-directoryOffset {
+		const maxInt64 = uint64(^uint64(0) >> 1)
+		if directoryOffset > maxInt64 || directoryBytes > maxInt64 || directoryBytes > maxInt64-directoryOffset {
 			return fmt.Errorf("IPA central directory is out of bounds")
 		}
-		end := directoryOffset + directoryBytes
-		position := directoryOffset
+		baseOffset := directoryEndOffset - int64(directoryBytes) - int64(directoryOffset)
+		physicalDirectoryOffset := directoryEndOffset - int64(directoryBytes)
+		// Keep the same zero-base fallback as archive/zip.Reader: some ZIP
+		// writers emit a non-zero base estimate even though directoryOffset is
+		// already an absolute file offset.
+		if baseOffset > 0 && size >= 46 && directoryOffset <= uint64(size-46) {
+			var header [46]byte
+			if _, err := file.ReadAt(header[:], int64(directoryOffset)); err == nil && binary.LittleEndian.Uint32(header[0:4]) == 0x02014b50 {
+				baseOffset = 0
+				physicalDirectoryOffset = int64(directoryOffset)
+			}
+		}
+		if physicalDirectoryOffset < 0 || physicalDirectoryOffset > directoryEndOffset || physicalDirectoryOffset >= size || directoryEndOffset > size {
+			return fmt.Errorf("IPA central directory is out of bounds")
+		}
+		// Keep baseOffset live in this calculation so the relationship stays
+		// explicit and cannot drift from archive/zip's seek position.
+		if baseOffset+int64(directoryOffset) != physicalDirectoryOffset {
+			return fmt.Errorf("IPA central directory is out of bounds")
+		}
+		physicalDirectoryBytes := uint64(directoryEndOffset - physicalDirectoryOffset)
+		if physicalDirectoryBytes > uint64(signingResignMaxCentralDirectoryBytes) {
+			return fmt.Errorf("IPA central directory exceeds %d bytes", signingResignMaxCentralDirectoryBytes)
+		}
+		position := physicalDirectoryOffset
 		actualEntries := uint64(0)
-		for position < end {
+		metadataBytes := uint64(0)
+		for position < directoryEndOffset {
 			if err := contextError(ctx); err != nil {
 				return err
 			}
@@ -137,14 +166,22 @@ func preflightSigningResignArchive(ctx context.Context, file *os.File, size int6
 			if binary.LittleEndian.Uint32(header[0:4]) != 0x02014b50 {
 				return fmt.Errorf("IPA central directory record is malformed")
 			}
+			nameBytes := uint64(binary.LittleEndian.Uint16(header[28:30]))
+			extraBytes := uint64(binary.LittleEndian.Uint16(header[30:32]))
+			commentBytes := uint64(binary.LittleEndian.Uint16(header[32:34]))
 			recordSize := uint64(46) + uint64(binary.LittleEndian.Uint16(header[28:30])) + uint64(binary.LittleEndian.Uint16(header[30:32])) + uint64(binary.LittleEndian.Uint16(header[32:34]))
-			if recordSize > end-position {
+			if recordSize > uint64(directoryEndOffset)-uint64(position) {
 				return fmt.Errorf("IPA central directory record is truncated")
 			}
-			position += recordSize
+			recordMetadata := nameBytes + extraBytes + commentBytes
+			if recordMetadata > signingResignMaxCentralDirectoryMetadataBytes-metadataBytes {
+				return fmt.Errorf("IPA central directory metadata exceeds %d bytes", signingResignMaxCentralDirectoryMetadataBytes)
+			}
+			metadataBytes += recordMetadata
+			position += int64(recordSize)
 			actualEntries++
 		}
-		if position != end {
+		if position != directoryEndOffset {
 			return fmt.Errorf("IPA central directory is malformed")
 		}
 		return nil

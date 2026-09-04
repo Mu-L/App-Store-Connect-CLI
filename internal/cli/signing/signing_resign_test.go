@@ -3401,3 +3401,135 @@ func TestPreflightSigningResignArchiveRejectsOversizedZIP64Inventory(t *testing.
 		t.Fatalf("error = %v, want ZIP64 entry-count rejection", err)
 	}
 }
+
+func TestPreflightSigningResignArchiveAcceptsPrefixedClassicDirectory(t *testing.T) {
+	data := buildSigningResignZip(t, []signingResignZipEntry{{name: "Payload/App.app/Info.plist", data: []byte("plist")}})
+	data = append([]byte("prefix"), data...)
+	path := filepath.Join(t.TempDir(), "prefixed.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err != nil {
+		t.Fatalf("prefixed classic directory rejected: %v", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveRejectsUnderstatedDirectoryBytes(t *testing.T) {
+	const actualEntries = signingResignMaxArchiveEntries + 1
+	directoryBytes := actualEntries * 46
+	data := make([]byte, directoryBytes+22)
+	for offset := 0; offset < directoryBytes; offset += 46 {
+		binary.LittleEndian.PutUint32(data[offset:], 0x02014b50)
+	}
+	eocd := data[directoryBytes:]
+	binary.LittleEndian.PutUint32(eocd[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocd[10:12], 1)
+	binary.LittleEndian.PutUint32(eocd[12:16], 46)
+
+	path := filepath.Join(t.TempDir(), "understated-directory.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err == nil || !strings.Contains(err.Error(), "too many archive entries") {
+		t.Fatalf("error = %v, want understated directory entry-count rejection", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveRejectsExcessCentralDirectoryMetadata(t *testing.T) {
+	const extraBytes = int64(65535)
+	const recordBytes = int64(46) + extraBytes
+	records := int64(signingResignMaxCentralDirectoryMetadataBytes)/extraBytes + 1
+	directoryBytes := records * recordBytes
+
+	path := filepath.Join(t.TempDir(), "oversized-metadata.ipa")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := file.Truncate(directoryBytes + 22); err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, 46)
+	binary.LittleEndian.PutUint32(header[0:4], 0x02014b50)
+	binary.LittleEndian.PutUint16(header[30:32], uint16(extraBytes))
+	for offset := int64(0); offset < directoryBytes; offset += recordBytes {
+		if written, err := file.WriteAt(header, offset); err != nil || written != len(header) {
+			t.Fatalf("write central directory header at %d: n=%d err=%v", offset, written, err)
+		}
+	}
+	eocd := make([]byte, 22)
+	binary.LittleEndian.PutUint32(eocd[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocd[8:10], uint16(records))
+	binary.LittleEndian.PutUint16(eocd[10:12], uint16(records))
+	binary.LittleEndian.PutUint32(eocd[12:16], uint32(directoryBytes))
+	if written, err := file.WriteAt(eocd, directoryBytes); err != nil || written != len(eocd) {
+		t.Fatalf("write EOCD: n=%d err=%v", written, err)
+	}
+
+	if err := preflightSigningResignArchive(context.Background(), file, directoryBytes+22); err == nil || !strings.Contains(err.Error(), "metadata exceeds") {
+		t.Fatalf("error = %v, want central-directory metadata rejection", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveAcceptsPrefixedZIP64Directory(t *testing.T) {
+	const prefixBytes = 7
+	const directoryBytes = 46
+	const zip64RecordBytes = 56
+	const locatorBytes = 20
+	const eocdBytes = 22
+	zip64Offset := prefixBytes + directoryBytes
+	locatorOffset := zip64Offset + zip64RecordBytes
+	eocdOffset := locatorOffset + locatorBytes
+	data := make([]byte, prefixBytes+directoryBytes+zip64RecordBytes+locatorBytes+eocdBytes)
+	for index := 0; index < prefixBytes; index++ {
+		data[index] = 0xA5
+	}
+	binary.LittleEndian.PutUint32(data[prefixBytes:prefixBytes+4], 0x02014b50)
+	zip64 := data[zip64Offset:]
+	binary.LittleEndian.PutUint32(zip64[0:4], 0x06064b50)
+	binary.LittleEndian.PutUint64(zip64[4:12], 44)
+	binary.LittleEndian.PutUint64(zip64[32:40], 1)
+	binary.LittleEndian.PutUint64(zip64[40:48], directoryBytes)
+	binary.LittleEndian.PutUint64(zip64[48:56], 0)
+	locator := data[locatorOffset:]
+	binary.LittleEndian.PutUint32(locator[0:4], 0x07064b50)
+	binary.LittleEndian.PutUint64(locator[8:16], uint64(zip64Offset))
+	binary.LittleEndian.PutUint32(locator[16:20], 1)
+	eocd := data[eocdOffset:]
+	binary.LittleEndian.PutUint32(eocd[0:4], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocd[8:10], 0xffff)
+	binary.LittleEndian.PutUint16(eocd[10:12], 0xffff)
+	binary.LittleEndian.PutUint32(eocd[12:16], 0xffffffff)
+	binary.LittleEndian.PutUint32(eocd[16:20], 0xffffffff)
+
+	path := filepath.Join(t.TempDir(), "prefixed-zip64.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err != nil {
+		t.Fatalf("prefixed ZIP64 directory rejected: %v", err)
+	}
+	reader, err := zip.NewReader(file, int64(len(data)))
+	if err != nil {
+		t.Fatalf("archive/zip rejected prefixed ZIP64 directory: %v", err)
+	}
+	if len(reader.File) != 1 {
+		t.Fatalf("archive/zip returned %d files, want one", len(reader.File))
+	}
+}
