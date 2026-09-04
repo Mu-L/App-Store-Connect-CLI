@@ -158,17 +158,20 @@ func SubscriptionsSetupCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	groupID := fs.String("group-id", "", "Existing subscription group ID")
 	groupReferenceName := fs.String("group-reference-name", "", "Reference name for a new subscription group")
+	groupRefNameAlias := fs.String("group-ref-name", "", "Reference name alias for a new subscription group")
 	groupLocale := fs.String("group-locale", "", "Locale for the subscription group localization (e.g., en-US)")
 	groupDisplayName := fs.String("group-display-name", "", "Localized display name for the subscription group")
 	groupCustomAppName := fs.String("group-custom-app-name", "", "Optional custom app name for the subscription group localization")
 
 	referenceName := fs.String("reference-name", "", "Subscription reference name")
+	refNameAlias := fs.String("ref-name", "", "Subscription reference name alias")
 	productID := fs.String("product-id", "", "Product ID (e.g., com.example.sub.monthly)")
 	subscriptionPeriod := fs.String("subscription-period", "", "Subscription period: "+strings.Join(subscriptionPeriodValues, ", "))
 	familySharable := fs.Bool("family-sharable", false, "Enable Family Sharing (cannot be undone)")
 
 	locale := fs.String("locale", "", "Locale for the first subscription localization (e.g., en-US)")
 	displayName := fs.String("display-name", "", "Display name for the first subscription localization")
+	nameAlias := fs.String("name", "", "Display name alias")
 	description := fs.String("description", "", "Description for the first subscription localization")
 	reviewScreenshot := fs.String("review-screenshot", "", "Path to the App Review screenshot for the subscription")
 
@@ -185,6 +188,10 @@ func SubscriptionsSetupCommand() *ffcli.Command {
 	noVerify := fs.Bool("no-verify", false, "Skip post-create readback verification for faster execution")
 	repair := fs.Bool("repair", false, "Atomically rebuild and re-save the complete equalized price matrix")
 	output := shared.BindOutputFlags(fs)
+
+	shared.HideFlagFromHelp(fs.Lookup("group-ref-name"))
+	shared.HideFlagFromHelp(fs.Lookup("ref-name"))
+	shared.HideFlagFromHelp(fs.Lookup("name"))
 
 	return &ffcli.Command{
 		Name:       "setup",
@@ -225,11 +232,19 @@ Examples:
 				return err
 			}
 
-			groupReferenceNameValue := strings.TrimSpace(*groupReferenceName)
-			referenceNameValue := strings.TrimSpace(*referenceName)
-			displayNameValue := strings.TrimSpace(*displayName)
+			groupReferenceNameValue, err := resolveSubscriptionsSetupAlias(*groupReferenceName, *groupRefNameAlias, "--group-reference-name", "--group-ref-name")
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			referenceNameValue, err := resolveSubscriptionsSetupAlias(*referenceName, *refNameAlias, "--reference-name", "--ref-name")
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
+			displayNameValue, err := resolveSubscriptionsSetupAlias(*displayName, *nameAlias, "--display-name", "--name")
+			if err != nil {
+				return shared.UsageError(err.Error())
+			}
 
-			var err error
 			priceTerritoryValue := strings.TrimSpace(*priceTerritory)
 			if priceTerritoryValue != "" {
 				priceTerritoryValue, err = ascterritory.Normalize(priceTerritoryValue)
@@ -1960,6 +1975,18 @@ func subscriptionsSetupVerificationPriceCoverage(verification *subscriptionsSetu
 		return "verified"
 	}
 	return "missing: " + strings.Join(verification.MissingPriceTerritories, ",")
+}
+
+func resolveSubscriptionsSetupAlias(primary, alias, primaryName, aliasName string) (string, error) {
+	trimmedPrimary := strings.TrimSpace(primary)
+	trimmedAlias := strings.TrimSpace(alias)
+	if trimmedPrimary == "" {
+		return trimmedAlias, nil
+	}
+	if trimmedAlias == "" || trimmedAlias == trimmedPrimary {
+		return trimmedPrimary, nil
+	}
+	return "", fmt.Errorf("%s and %s must match when both are provided", primaryName, aliasName)
 }
 
 func subscriptionsSetupVerificationStatus(verification *subscriptionsSetupVerification) string {

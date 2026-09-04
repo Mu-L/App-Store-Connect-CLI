@@ -187,8 +187,6 @@ and `asc apps app-encryption-declarations list`.
 | `--subscription-id` | `asc subscriptions view ...` | `--id` |
 | `--image-limit`, `--localization-limit` | `asc subscriptions versions list|view ...` | `--images-limit`, `--localizations-limit` |
 | `--id` | `asc subscriptions review screenshots delete ...` | `--screenshot-id` |
-| `--name`, `--ref-name`, `--group-ref-name` | `asc subscriptions setup ...` | `--display-name`, `--reference-name`, `--group-reference-name` |
-| `--name`, `--ref-name` | `asc iap setup ...` | `--display-name`, `--reference-name` |
 | `--price-id` | `asc offer-codes create ...` | `--prices` |
 | `--limit`, `--next`, `--paginate` | `asc game-center details list ...` | none; each app has a single Game Center detail |
 | `--challenge-enabled` | `asc game-center details create|update ...` | none; App Store Connect no longer accepts `challengeEnabled` |
@@ -251,6 +249,10 @@ asc builds wait --app "APP_ID" --build-number 42 --platform IOS
   than a CLI compatibility path.
 * `asc iap list --legacy` and `asc iap view --legacy` still switch to the v1
   in-app purchase endpoints. They were never deprecated.
+* The hidden `--ref-name` / `--name` spellings on `asc iap setup` and the
+  hidden `--group-ref-name` / `--ref-name` / `--name` spellings on
+  `asc subscriptions setup` still work. They were undocumented synonyms, never
+  deprecated, so they stay until a release announces their removal.
 * The temporary `--password` compatibility flag on `asc web apps create`
   remains available.
 * Commands that 1.0 and 4.0 already removed (`asc apps create ...`,

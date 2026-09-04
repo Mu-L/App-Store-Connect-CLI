@@ -70,7 +70,7 @@ func BuildsRelationshipsGetCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "view",
-		ShortUsage: "asc builds links view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER [--version VERSION] [--platform PLATFORM]) --type \"RELATIONSHIP\" [flags]",
+		ShortUsage: "asc builds links view (--build-id BUILD_ID | --app APP --latest | --app APP --build-number BUILD_NUMBER --platform PLATFORM [--version VERSION]) --type \"RELATIONSHIP\" [flags]",
 		ShortHelp:  "View relationship linkages for a build.",
 		LongHelp: `View relationship linkages for a build.
 

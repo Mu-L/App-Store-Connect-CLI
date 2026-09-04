@@ -30,12 +30,12 @@ func BuildsTestNotesCommand() *ffcli.Command {
 Build selector modes:
   --build-id BUILD_ID
   --app APP --latest [--version VER] [--platform PLATFORM]
-  --app APP --build-number NUM [--version VER] [--platform PLATFORM]
+  --app APP --build-number NUM --platform PLATFORM [--version VER]
 
 Examples:
   asc builds test-notes list --build-id "BUILD_ID"
   asc builds test-notes view --app "123456789" --latest --locale "en-US"
-  asc builds test-notes create --app "123456789" --build-number "42" --version "1.2.3" --locale "en-US" --whats-new "Test instructions"
+  asc builds test-notes create --app "123456789" --build-number "42" --platform IOS --version "1.2.3" --locale "en-US" --whats-new "Test instructions"
   asc builds test-notes update --build-id "BUILD_ID" --locale "en-US" --whats-new "Updated instructions"
   asc builds test-notes delete --build-id "BUILD_ID" --locale "en-US" --confirm`,
 		FlagSet:   fs,
@@ -66,19 +66,19 @@ func BuildsTestNotesListCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "list",
-		ShortUsage: "asc builds test-notes list [--build-id BUILD_ID | --app APP --latest [--version VER] [--platform PLATFORM] | --app APP --build-number NUM [--version VER] [--platform PLATFORM]] [flags]",
+		ShortUsage: "asc builds test-notes list [--build-id BUILD_ID | --app APP --latest [--version VER] [--platform PLATFORM] | --app APP --build-number NUM --platform PLATFORM [--version VER]] [flags]",
 		ShortHelp:  "List What to Test notes for a build.",
 		LongHelp: `List What to Test notes for a build.
 
 Build selector modes (one of):
   --build-id BUILD_ID
   --app APP --latest [--version VER] [--platform PLATFORM]
-  --app APP --build-number NUM [--version VER] [--platform PLATFORM]
+  --app APP --build-number NUM --platform PLATFORM [--version VER]
 
 Examples:
   asc builds test-notes list --build-id "BUILD_ID"
   asc builds test-notes list --app "123456789" --latest --locale "en-US,ja"
-  asc builds test-notes list --app "123456789" --build-number "42"
+  asc builds test-notes list --app "123456789" --build-number "42" --platform IOS
   asc builds test-notes list --build-id "BUILD_ID" --paginate`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -173,12 +173,12 @@ Selector modes:
   --locale LOCALE with one of:
     --build-id BUILD_ID
     --app APP --latest [--version VER] [--platform PLATFORM]
-    --app APP --build-number NUM [--version VER] [--platform PLATFORM]
+    --app APP --build-number NUM --platform PLATFORM [--version VER]
 
 Examples:
   asc builds test-notes view --build-id "BUILD_ID" --locale "en-US"
   asc builds test-notes view --app "123456789" --latest --locale "en-US"
-  asc builds test-notes view --app "123456789" --build-number "42" --version "1.2.3" --locale "en-US"`,
+  asc builds test-notes view --app "123456789" --build-number "42" --platform IOS --version "1.2.3" --locale "en-US"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -224,19 +224,19 @@ func BuildsTestNotesCreateCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "create",
-		ShortUsage: "asc builds test-notes create [--build-id BUILD_ID | --app APP --latest [--version VER] [--platform PLATFORM] | --app APP --build-number NUM [--version VER] [--platform PLATFORM]] [flags]",
+		ShortUsage: "asc builds test-notes create [--build-id BUILD_ID | --app APP --latest [--version VER] [--platform PLATFORM] | --app APP --build-number NUM --platform PLATFORM [--version VER]] [flags]",
 		ShortHelp:  "Create What to Test notes for a build.",
 		LongHelp: `Create What to Test notes for a build.
 
 Build selector modes (one of):
   --build-id BUILD_ID
   --app APP --latest [--version VER] [--platform PLATFORM]
-  --app APP --build-number NUM [--version VER] [--platform PLATFORM]
+  --app APP --build-number NUM --platform PLATFORM [--version VER]
 
 Examples:
   asc builds test-notes create --build-id "BUILD_ID" --locale "en-US" --whats-new "Test instructions"
   asc builds test-notes create --app "123456789" --latest --locale "en-US" --whats-new "Test instructions"
-  asc builds test-notes create --app "123456789" --build-number "42" --version "1.2.3" --locale "en-US" --whats-new "Test instructions"`,
+  asc builds test-notes create --app "123456789" --build-number "42" --platform IOS --version "1.2.3" --locale "en-US" --whats-new "Test instructions"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -301,11 +301,11 @@ Selector modes:
   --locale LOCALE with one of:
     --build-id BUILD_ID
     --app APP --latest [--version VER] [--platform PLATFORM]
-    --app APP --build-number NUM [--version VER] [--platform PLATFORM]
+    --app APP --build-number NUM --platform PLATFORM [--version VER]
 
 Examples:
   asc builds test-notes update --build-id "BUILD_ID" --locale "en-US" --whats-new "Updated notes"
-  asc builds test-notes update --app "123456789" --build-number "42" --version "1.2.3" --locale "en-US" --whats-new "Updated notes"`,
+  asc builds test-notes update --app "123456789" --build-number "42" --platform IOS --version "1.2.3" --locale "en-US" --whats-new "Updated notes"`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
@@ -372,11 +372,11 @@ Selector modes:
   --locale LOCALE with one of:
     --build-id BUILD_ID
     --app APP --latest [--version VER] [--platform PLATFORM]
-    --app APP --build-number NUM [--version VER] [--platform PLATFORM]
+    --app APP --build-number NUM --platform PLATFORM [--version VER]
 
 Examples:
   asc builds test-notes delete --build-id "BUILD_ID" --locale "en-US" --confirm
-  asc builds test-notes delete --app "123456789" --build-number "42" --version "1.2.3" --locale "en-US" --confirm`,
+  asc builds test-notes delete --app "123456789" --build-number "42" --platform IOS --version "1.2.3" --locale "en-US" --confirm`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
