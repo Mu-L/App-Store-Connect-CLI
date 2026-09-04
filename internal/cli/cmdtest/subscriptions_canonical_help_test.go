@@ -282,9 +282,14 @@ func TestSubscriptionsHelpShowsCanonicalCommerceSubcommands(t *testing.T) {
 		return
 	}
 	reviewUsage := reviewCmd.UsageFunc(reviewCmd)
-	for _, expected := range []string{"screenshots", "app-store-screenshot", "submit", "submit-group"} {
+	for _, expected := range []string{"screenshots", "app-store-screenshot"} {
 		if !usageListsSubcommand(reviewUsage, expected) {
 			t.Fatalf("expected subscriptions review help to list %s, got %q", expected, reviewUsage)
+		}
+	}
+	for _, removed := range []string{"submit", "submit-group"} {
+		if usageListsSubcommand(reviewUsage, removed) {
+			t.Fatalf("expected subscriptions review help to drop removed %s shim, got %q", removed, reviewUsage)
 		}
 	}
 

@@ -60,8 +60,6 @@ Examples:
 			SubscriptionsOffersCommand(),
 			SubscriptionsReviewCommand(),
 			SubscriptionsPromotedPurchasesCommand(),
-			SubscriptionsLocalizationsCommand(),
-			SubscriptionsImagesCommand(),
 			SubscriptionsVersionsCommand(),
 			SubscriptionsGracePeriodsCommand(),
 		},
@@ -94,7 +92,6 @@ Examples:
 			SubscriptionsGroupsGetCommand(),
 			SubscriptionsGroupsUpdateCommand(),
 			SubscriptionsGroupsDeleteCommand(),
-			SubscriptionsGroupsLocalizationsCommand(),
 			SubscriptionsGroupsVersionsCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {

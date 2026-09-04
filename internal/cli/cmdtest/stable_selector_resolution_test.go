@@ -457,7 +457,7 @@ func TestSubscriptionPromotedPurchaseViewResolvesStableSelectorWithAppFlag(t *te
 	}
 }
 
-func TestSubscriptionLocalizationsListFallsBackToNumericIDAfterLookupTimeout(t *testing.T) {
+func TestSubscriptionVersionsListFallsBackToNumericIDAfterLookupTimeout(t *testing.T) {
 	setupStableSelectorAuth(t)
 	t.Setenv("ASC_APP_ID", "")
 	t.Setenv("ASC_TIMEOUT", "10ms")
@@ -473,9 +473,9 @@ func TestSubscriptionLocalizationsListFallsBackToNumericIDAfterLookupTimeout(t *
 		case "/v1/apps/app-123/subscriptionGroups":
 			<-req.Context().Done()
 			return nil, req.Context().Err()
-		case "/v1/subscriptions/2024/subscriptionLocalizations":
+		case "/v1/subscriptions/2024/versions":
 			if err := req.Context().Err(); err != nil {
-				t.Fatalf("expected fresh localizations context after lookup timeout, got %v", err)
+				t.Fatalf("expected fresh versions context after lookup timeout, got %v", err)
 			}
 			return selectorJSONResponse(`{"data":[]}`), nil
 		default:
@@ -485,20 +485,18 @@ func TestSubscriptionLocalizationsListFallsBackToNumericIDAfterLookupTimeout(t *
 	})
 
 	stdout, stderr, runErr := runRootCommand(t, []string{
-		"subscriptions", "localizations", "list",
+		"subscriptions", "versions", "list",
 		"--app", "app-123",
 		"--subscription-id", "2024",
 	})
 	if runErr != nil {
 		t.Fatalf("expected nil error, got %v", runErr)
 	}
-	assertOnlyDeprecatedCommandWarnings(t, stderr)
-	const wantWarning = "Warning: `asc subscriptions localizations list` is deprecated by App Store Connect API 4.4.1. Use `asc subscriptions versions localizations list --version-id \"SUBSCRIPTION_VERSION_ID\"`."
-	if got := strings.TrimSpace(stderr); got != wantWarning {
-		t.Fatalf("expected only deprecation warning %q, got %q", wantWarning, stderr)
+	if stderr != "" {
+		t.Fatalf("expected empty stderr, got %q", stderr)
 	}
 	if requests != 2 {
-		t.Fatalf("expected lookup timeout followed by localizations fetch, got %d requests", requests)
+		t.Fatalf("expected lookup timeout followed by versions fetch, got %d requests", requests)
 	}
 	if !strings.Contains(stdout, `"data"`) {
 		t.Fatalf("expected JSON output, got %q", stdout)

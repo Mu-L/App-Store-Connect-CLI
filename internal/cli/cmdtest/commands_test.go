@@ -1624,46 +1624,6 @@ func TestSubscriptionsValidationErrors(t *testing.T) {
 			wantErr: "--renewal-type must be one of",
 		},
 		{
-			name:    "subscriptions localizations list missing subscription-id",
-			args:    []string{"subscriptions", "localizations", "list"},
-			wantErr: "--subscription-id is required",
-		},
-		{
-			name:    "subscriptions localizations create missing locale",
-			args:    []string{"subscriptions", "localizations", "create", "--subscription-id", "SUB_ID", "--name", "Pro"},
-			wantErr: "--locale is required",
-		},
-		{
-			name:    "subscriptions localizations update missing update flags",
-			args:    []string{"subscriptions", "localizations", "update", "--id", "LOC_ID"},
-			wantErr: "at least one update flag is required",
-		},
-		{
-			name:    "subscriptions localizations delete missing confirm",
-			args:    []string{"subscriptions", "localizations", "delete", "--id", "LOC_ID"},
-			wantErr: "--confirm is required",
-		},
-		{
-			name:    "subscriptions images list missing subscription-id",
-			args:    []string{"subscriptions", "images", "list"},
-			wantErr: "--subscription-id is required",
-		},
-		{
-			name:    "subscriptions images create missing file",
-			args:    []string{"subscriptions", "images", "create", "--subscription-id", "SUB_ID"},
-			wantErr: "--file is required",
-		},
-		{
-			name:    "subscriptions images update missing update flags",
-			args:    []string{"subscriptions", "images", "update", "--id", "IMAGE_ID"},
-			wantErr: "at least one update flag is required",
-		},
-		{
-			name:    "subscriptions images delete missing confirm",
-			args:    []string{"subscriptions", "images", "delete", "--id", "IMAGE_ID"},
-			wantErr: "--confirm is required",
-		},
-		{
 			name:    "subscriptions introductory-offers list missing subscription-id",
 			args:    []string{"subscriptions", "offers", "introductory", "list"},
 			wantErr: "--subscription-id is required",
@@ -1804,16 +1764,6 @@ func TestSubscriptionsValidationErrors(t *testing.T) {
 			wantErr: "--price-point-id is required",
 		},
 		{
-			name:    "subscriptions submit missing subscription-id",
-			args:    []string{"subscriptions", "review", "submit", "--confirm"},
-			wantErr: "--subscription-id is required",
-		},
-		{
-			name:    "subscriptions submit missing confirm",
-			args:    []string{"subscriptions", "review", "submit", "--subscription-id", "SUB_ID"},
-			wantErr: "--confirm is required",
-		},
-		{
 			name:    "subscriptions review-screenshots create missing file",
 			args:    []string{"subscriptions", "review", "screenshots", "create", "--subscription-id", "SUB_ID"},
 			wantErr: "--file is required",
@@ -1837,31 +1787,6 @@ func TestSubscriptionsValidationErrors(t *testing.T) {
 			name:    "subscriptions review screenshots get missing screenshot-id",
 			args:    []string{"subscriptions", "review", "screenshots", "view"},
 			wantErr: "--screenshot-id is required",
-		},
-		{
-			name:    "subscriptions review submit-group missing group-id",
-			args:    []string{"subscriptions", "review", "submit-group", "--confirm"},
-			wantErr: "--group-id is required",
-		},
-		{
-			name:    "subscriptions groups localizations list missing group-id",
-			args:    []string{"subscriptions", "groups", "localizations", "list"},
-			wantErr: "--group-id is required",
-		},
-		{
-			name:    "subscriptions groups localizations create missing locale",
-			args:    []string{"subscriptions", "groups", "localizations", "create", "--group-id", "GROUP_ID", "--name", "Premium"},
-			wantErr: "--locale is required",
-		},
-		{
-			name:    "subscriptions groups localizations update missing update flags",
-			args:    []string{"subscriptions", "groups", "localizations", "update", "--id", "LOC_ID"},
-			wantErr: "at least one update flag is required",
-		},
-		{
-			name:    "subscriptions groups localizations delete missing confirm",
-			args:    []string{"subscriptions", "groups", "localizations", "delete", "--id", "LOC_ID"},
-			wantErr: "--confirm is required",
 		},
 		{
 			name:    "apps subscription-grace-period get missing app",
