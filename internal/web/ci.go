@@ -153,6 +153,42 @@ type CIWorkflowListResponse struct {
 	Items []CIWorkflow `json:"items"`
 }
 
+// CIVersionAlias is a product version alias from the Xcode Cloud web API.
+type CIVersionAlias struct {
+	ID                       string                     `json:"id"`
+	Name                     string                     `json:"name"`
+	Type                     string                     `json:"type"`
+	Locked                   bool                       `json:"locked"`
+	Build                    json.RawMessage            `json:"build"`
+	BuildName                string                     `json:"build_name"`
+	RelatedWorkflowSummaries []CIRelatedWorkflowSummary `json:"related_workflow_summaries,omitempty"`
+	BuildSupported           bool                       `json:"build_supported"`
+}
+
+// CIVersionAliasListResponse is the version-alias list envelope.
+type CIVersionAliasListResponse struct {
+	Items []CIVersionAlias `json:"items"`
+}
+
+// GetCIVersionAliases returns up to 100 custom aliases for an Xcode Cloud product.
+func (c *Client) GetCIVersionAliases(ctx context.Context, teamID, productID string) (*CIVersionAliasListResponse, error) {
+	teamID = strings.TrimSpace(teamID)
+	productID = strings.TrimSpace(productID)
+	if teamID == "" || productID == "" {
+		return nil, fmt.Errorf("team id and product id are required")
+	}
+	path := "/teams/" + url.PathEscape(teamID) + "/products/" + url.PathEscape(productID) + "/configuration-options/version-aliases-v3?limit=100"
+	body, err := c.doRequest(ctx, "GET", path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result CIVersionAliasListResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode ci version aliases: %w", err)
+	}
+	return &result, nil
+}
+
 // CINextBuildNumber is the next build number configured for an Xcode Cloud product.
 type CINextBuildNumber struct {
 	NextBuildNumber int    `json:"next_build_number"`

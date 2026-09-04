@@ -57,3 +57,23 @@ func TestPrintWebXcodeCloudNextBuildNumberUsesRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintWebXcodeCloudVersionAliasesUsesRegistry(t *testing.T) {
+	aliases := &WebXcodeCloudVersionAliasesResult{
+		ProductID: "prod-1",
+		VersionAliases: []WebXcodeCloudVersionAlias{
+			{ID: "alias-1", Name: "Release", Type: "CUSTOM", Locked: true, BuildName: "42", BuildSupported: true},
+		},
+	}
+	outputs := map[string]string{
+		"list table":    captureStdout(t, func() error { return PrintTable(aliases) }),
+		"list markdown": captureStdout(t, func() error { return PrintMarkdown(aliases) }),
+	}
+	for name, output := range outputs {
+		for _, want := range []string{"ID", "Name", "Type", "Locked", "Build name", "Build supported", "alias-1", "Release", "CUSTOM", "42", "true"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("%s output missing %q: %q", name, want, output)
+			}
+		}
+	}
+}

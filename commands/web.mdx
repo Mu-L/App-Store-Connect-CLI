@@ -524,7 +524,7 @@ Available command groups:
 * `asc web xcode-cloud products` - list Xcode Cloud products
 * `asc web xcode-cloud workflows` - list, describe, create, edit, enable, and disable workflows
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
-* `asc web xcode-cloud settings` - inspect and change product settings such as the next build number
+* `asc web xcode-cloud settings` - inspect product settings and change the next build number
 
 TestFlight post-actions in a web workflow use beta-group or tester IDs. Resolve the
 Xcode Cloud product to its App Store Connect app, then use the public TestFlight
@@ -552,9 +552,12 @@ asc web xcode-cloud workflows list --product-id "UUID" --apple-id "user@example.
 asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json --apple-id "user@example.com"
 asc web xcode-cloud settings next-build-number show --product-id "UUID" --apple-id "user@example.com"
 asc web xcode-cloud settings next-build-number set --product-id "UUID" --value 102 --confirm --apple-id "user@example.com"
+asc web xcode-cloud settings version-aliases list --product-id "UUID" --apple-id "user@example.com"
 ```
 
 Changing the persistent next build number requires the App Store Connect Admin or App Manager role. The set command reads the value before and after the update, and reports an unverified outcome instead of inviting an unsafe retry when a transport failure leaves Apple's result unclear.
+
+The version-alias list command uses Apple's live-captured list response, returns at most 100 aliases, and omits nested build and workflow payloads that may contain sensitive data. Single-alias lookup and alias mutations remain unavailable until those private contracts are captured.
 
 ## Session upkeep
 
