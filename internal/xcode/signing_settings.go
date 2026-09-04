@@ -1909,7 +1909,21 @@ func reclassifySigningNoOps(
 			if err != nil && !errors.Is(err, errVersionSettingNotFound) {
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, err))
 			} else if err == nil && baselineResolver != nil {
-				baselineConfiguration := candidate.configuration
+				baselineProject := cloneSigningStructuredVersionProject(stagedProject)
+				var baselineConfiguration *versionConfiguration
+				for _, candidateConfiguration := range baselineProject.configurations {
+					if candidateConfiguration != nil && candidateConfiguration.id == candidate.configuration.id {
+						baselineConfiguration = candidateConfiguration
+						break
+					}
+				}
+				if baselineConfiguration == nil {
+					continue
+				}
+				for _, key := range matchingBuildSettingKeys(baselineConfiguration.buildSettings, candidate.setting) {
+					delete(baselineConfiguration.buildSettings, key)
+				}
+				baselineResolver = newSigningSettingResolver(baselineProject, baselineResolver.configFiles, baselineResolver.allowExternal, baselineResolver.lexicalConfigPaths)
 				baseline, _, baselineErr := baselineResolver.resolveSetting(baselineConfiguration, candidate.setting)
 				if signingRemovalFallbackChanged(resolved, err, baseline, baselineErr) && baselineErr == nil {
 					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q differs from value after removal alone %q; another operation in this plan would change the fallback", resolved, baseline)))
