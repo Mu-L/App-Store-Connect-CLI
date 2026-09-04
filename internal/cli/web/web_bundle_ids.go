@@ -3,10 +3,12 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -22,6 +24,14 @@ var syncAppClipBundleIDCapabilityFn = func(ctx context.Context, client *webcore.
 
 var enableDeveloperBundleIDCapabilityFn = func(ctx context.Context, client *webcore.Client, req webcore.DeveloperBundleIDCapabilityEnableRequest) (*webcore.DeveloperBundleIDCapabilityEnableResult, error) {
 	return client.EnableDeveloperBundleIDCapability(ctx, req)
+}
+
+var listDeveloperBundleIDsFn = func(ctx context.Context, client *webcore.Client) (*webcore.DeveloperBundleIDsListResult, error) {
+	return client.ListDeveloperBundleIDs(ctx)
+}
+
+var getDeveloperBundleIDFn = func(ctx context.Context, client *webcore.Client, bundleID string) (*webcore.DeveloperBundleIDGetResult, error) {
+	return client.GetDeveloperBundleID(ctx, bundleID)
 }
 
 // WebBundleIDsCommand returns the Bundle ID command group.
@@ -40,10 +50,183 @@ Manage Bundle ID operations that are only available through Apple web-session en
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
+			WebBundleIDsListCommand(),
+			WebBundleIDsViewCommand(),
 			WebBundleIDCapabilitiesCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
+			// Keep the former `get` spelling working without advertising it as a
+			// visible leaf. The command tree uses `view` as the canonical read
+			// verb, while this path protects existing scripts during the rename.
+			if len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "get") {
+				view := newWebBundleIDsViewCommand(flag.ContinueOnError)
+				view.FlagSet.SetOutput(io.Discard)
+				if err := view.FlagSet.Parse(args[1:]); err != nil {
+					if errors.Is(err, flag.ErrHelp) {
+						fmt.Fprint(os.Stdout, view.UsageFunc(view))
+						return nil
+					}
+					return shared.UsageError(err.Error())
+				}
+				fmt.Fprintln(os.Stderr, "Warning: `asc web bundle-ids get` is a compatibility alias; use `asc web bundle-ids view`.")
+				return view.Exec(ctx, view.FlagSet.Args())
+			}
 			return flag.ErrHelp
+		},
+	}
+}
+
+// WebBundleIDsListCommand lists Bundle IDs visible to the selected Developer
+// Portal team. It intentionally exposes the first web collection only; the
+// endpoint's captured 1000-resource request is not a pagination guarantee.
+func WebBundleIDsListCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("web bundle-ids list", flag.ExitOnError)
+	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "list",
+		ShortUsage: "asc web bundle-ids list [flags]",
+		ShortHelp:  "List Bundle IDs via a Developer Portal web session.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+List the iOS and Mac Bundle IDs visible to the selected Apple Developer team
+through the Developer Portal web-session endpoint. The command requests the
+captured 1000-resource collection and returns any links.next value Apple
+provides in JSON; pagination is not exposed by this first read-only slice.
+
+The ID column is Apple's opaque Bundle ID resource ID. Pass that value to
+"asc web bundle-ids view --bundle-id" or the capability commands.
+
+Examples:
+  asc web bundle-ids list --output table
+  asc web bundle-ids list --developer-team "TEAM_ID" --output json
+
+`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("web bundle-ids list does not accept positional arguments")
+			}
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
+			defer cancel()
+			if err != nil {
+				return withWebAuthHint(err, "web bundle-ids list")
+			}
+
+			var result *webcore.DeveloperBundleIDsListResult
+			err = withWebSpinner("Loading Developer Portal Bundle IDs", func() error {
+				var listErr error
+				result, listErr = listDeveloperBundleIDsFn(requestCtx, newDeveloperPortalClient(session, portalFlags))
+				return listErr
+			})
+			if err != nil {
+				return withWebAuthHint(err, "web bundle-ids list")
+			}
+			if result == nil {
+				return fmt.Errorf("web bundle-ids list failed: missing list result")
+			}
+			persistDeveloperPortalSession(session)
+
+			return shared.PrintOutputWithRenderers(
+				result,
+				*output.Output,
+				*output.Pretty,
+				func() error { return renderDeveloperBundleIDsTable(result) },
+				func() error { return renderDeveloperBundleIDsMarkdown(result) },
+			)
+		},
+	}
+}
+
+// WebBundleIDsViewCommand reads one opaque Developer Portal Bundle ID resource
+// and the capability graph returned by Apple's detail endpoint.
+func WebBundleIDsViewCommand() *ffcli.Command {
+	return newWebBundleIDsViewCommand(flag.ExitOnError)
+}
+
+// WebBundleIDsGetCommand is retained as a Go-level compatibility constructor.
+// The command it returns uses the canonical `view` verb; the former CLI
+// spelling is handled by WebBundleIDsCommand's compatibility dispatcher.
+func WebBundleIDsGetCommand() *ffcli.Command {
+	return WebBundleIDsViewCommand()
+}
+
+func newWebBundleIDsViewCommand(errorHandling flag.ErrorHandling) *ffcli.Command {
+	fs := flag.NewFlagSet("web bundle-ids view", errorHandling)
+	bundleID := fs.String("bundle-id", "", "Opaque Developer Portal Bundle ID resource ID")
+	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "view",
+		ShortUsage: "asc web bundle-ids view --bundle-id BUNDLE_RESOURCE_ID [flags]",
+		ShortHelp:  "Inspect one Bundle ID via a Developer Portal web session.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+Inspect one opaque Bundle ID resource and its included Developer Portal
+capability resources. Pass an ID returned by "asc web bundle-ids list". This is
+a read-only request; it does not alter the Bundle ID or invalidate profiles.
+
+Examples:
+  asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output table
+  asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
+
+`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("web bundle-ids view does not accept positional arguments")
+			}
+			resolvedBundleID := strings.TrimSpace(*bundleID)
+			if resolvedBundleID == "" {
+				return shared.UsageError("--bundle-id is required")
+			}
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
+				return shared.UsageError(err.Error())
+			}
+
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
+			defer cancel()
+			if err != nil {
+				return withWebAuthHint(err, "web bundle-ids view")
+			}
+
+			var result *webcore.DeveloperBundleIDGetResult
+			err = withWebSpinner("Loading Developer Portal Bundle ID", func() error {
+				var getErr error
+				result, getErr = getDeveloperBundleIDFn(requestCtx, newDeveloperPortalClient(session, portalFlags), resolvedBundleID)
+				return getErr
+			})
+			if err != nil {
+				return withWebAuthHint(err, "web bundle-ids view")
+			}
+			if result == nil {
+				return fmt.Errorf("web bundle-ids view failed: missing view result")
+			}
+			persistDeveloperPortalSession(session)
+
+			return shared.PrintOutputWithRenderers(
+				result,
+				*output.Output,
+				*output.Pretty,
+				func() error { return renderDeveloperBundleIDTable(result) },
+				func() error { return renderDeveloperBundleIDMarkdown(result) },
+			)
 		},
 	}
 }
@@ -364,4 +547,111 @@ func renderDeveloperBundleIDCapabilityEnableMarkdown(result *webcore.DeveloperBu
 		}},
 	)
 	return nil
+}
+
+func developerBundleIDHeaders() []string {
+	return []string{
+		"ID",
+		"Name",
+		"Identifier",
+		"Platform",
+		"Bundle Type",
+		"Wildcard",
+		"Seed ID",
+		"Entitlement Group",
+		"Platform Name",
+		"Created",
+		"Modified",
+	}
+}
+
+func developerBundleIDRows(resources []webcore.DeveloperBundleID) [][]string {
+	rows := make([][]string, 0, len(resources))
+	for _, resource := range resources {
+		rows = append(rows, []string{
+			shared.OrNA(resource.ID),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "name")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "identifier")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "platform")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "bundleType")),
+			shared.OrNA(developerBundleIDBoolAttribute(resource.Attributes, "wildcard")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "seedId")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "entitlementGroupName")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "platformName")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "dateCreated")),
+			shared.OrNA(developerBundleIDStringAttribute(resource.Attributes, "dateModified")),
+		})
+	}
+	return rows
+}
+
+func renderDeveloperBundleIDsTable(result *webcore.DeveloperBundleIDsListResult) error {
+	if result == nil {
+		asc.RenderTable(developerBundleIDHeaders(), nil)
+		return nil
+	}
+	asc.RenderTable(developerBundleIDHeaders(), developerBundleIDRows(result.Data))
+	return nil
+}
+
+func renderDeveloperBundleIDsMarkdown(result *webcore.DeveloperBundleIDsListResult) error {
+	if result == nil {
+		asc.RenderMarkdown(developerBundleIDHeaders(), nil)
+		return nil
+	}
+	asc.RenderMarkdown(developerBundleIDHeaders(), developerBundleIDRows(result.Data))
+	return nil
+}
+
+func renderDeveloperBundleIDTable(result *webcore.DeveloperBundleIDGetResult) error {
+	if result == nil {
+		asc.RenderTable(developerBundleIDHeaders(), nil)
+		return nil
+	}
+	asc.RenderTable(developerBundleIDHeaders(), developerBundleIDRows([]webcore.DeveloperBundleID{result.Data}))
+	return nil
+}
+
+func renderDeveloperBundleIDMarkdown(result *webcore.DeveloperBundleIDGetResult) error {
+	if result == nil {
+		asc.RenderMarkdown(developerBundleIDHeaders(), nil)
+		return nil
+	}
+	asc.RenderMarkdown(developerBundleIDHeaders(), developerBundleIDRows([]webcore.DeveloperBundleID{result.Data}))
+	return nil
+}
+
+func developerBundleIDStringAttribute(attributes map[string]any, key string) string {
+	if attributes == nil {
+		return ""
+	}
+	value, ok := attributes[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if stringValue, ok := value.(string); ok {
+		return strings.TrimSpace(stringValue)
+	}
+	if boolValue, ok := value.(bool); ok {
+		return strconv.FormatBool(boolValue)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func developerBundleIDBoolAttribute(attributes map[string]any, key string) string {
+	if attributes == nil {
+		return ""
+	}
+	value, ok := attributes[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if boolValue, ok := value.(bool); ok {
+		return strconv.FormatBool(boolValue)
+	}
+	return developerBundleIDStringAttribute(attributes, key)
 }
