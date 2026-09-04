@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,17 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWithSessionStoreLockFailsClosedWhenLockUnavailable(t *testing.T) {
+	previous := sessionSharedLockRoot
+	sessionSharedLockRoot = func() string { return t.TempDir() + "/blocked" }
+	t.Cleanup(func() { sessionSharedLockRoot = previous })
+	called := false
+	err := withSessionStoreLock(func() error { called = true; return nil })
+	if !errors.Is(err, errSessionStoreLockUnavailable) || called {
+		t.Fatalf("expected fail-closed lock error, called=%v err=%v", called, err)
+	}
+}
 
 // The lock is what makes a compare-and-delete and a persist mutually
 // exclusive, so overlapping holders must be impossible.

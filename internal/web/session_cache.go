@@ -120,6 +120,7 @@ var (
 	// delete in DeleteSessionIfMatches. Tests set it to schedule a concurrent
 	// persist inside that window; it is nil in production.
 	sessionCompareDeleteBarrier func()
+	sessionGenerationReader     = func(b []byte) (int, error) { return rand.Read(b) }
 )
 
 func webSessionCacheEnabled() bool {
@@ -254,11 +255,20 @@ func isExpiredCookie(c pCookie, now time.Time) bool {
 }
 
 func serializeCookieJar(jar http.CookieJar, userEmail string) persistedSession {
+	sess, _ := serializeCookieJarWithError(jar, userEmail)
+	return sess
+}
+
+func serializeCookieJarWithError(jar http.CookieJar, userEmail string) (persistedSession, error) {
 	now := time.Now().UTC()
+	var generation [16]byte
+	if _, err := sessionGenerationReader(generation[:]); err != nil {
+		return persistedSession{}, fmt.Errorf("generate session cache identity: %w", err)
+	}
 	out := persistedSession{
 		Version:    webSessionCacheVersion,
 		UpdatedAt:  now,
-		Generation: newSessionGeneration(),
+		Generation: fmt.Sprintf("%x", generation[:]),
 		UserEmail:  strings.TrimSpace(userEmail),
 		Cookies:    map[string][]pCookie{},
 	}
@@ -292,15 +302,7 @@ func serializeCookieJar(jar http.CookieJar, userEmail string) persistedSession {
 			out.Cookies[u.String()] = list
 		}
 	}
-	return out
-}
-
-func newSessionGeneration() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err == nil {
-		return fmt.Sprintf("%x", b[:])
-	}
-	return ""
+	return out, nil
 }
 
 func hydrateCookieJar(jar http.CookieJar, sess persistedSession) int {
@@ -1226,7 +1228,10 @@ func PersistSession(session *AuthSession) error {
 	}
 
 	key := webSessionCacheKey(username)
-	serialized := serializeCookieJar(session.Client.Jar, username)
+	serialized, err := serializeCookieJarWithError(session.Client.Jar, username)
+	if err != nil {
+		return err
+	}
 	serialized.DeveloperTeamID = strings.TrimSpace(session.DeveloperTeamID)
 	return persistSessionBySelection(selection, key, serialized)
 }
@@ -1545,7 +1550,9 @@ func sessionMirrorEnabled(selection backendSelection) bool {
 func fileSessionCarriesIdentity(key string, stamp time.Time, generation string) bool {
 	sess, ok, err := readSessionFromFile(key)
 	if err != nil {
-		return false
+		// A keychain entry already proven stale may safely clean up a corrupt
+		// mirrored file; leaving it causes repeated fallback failures.
+		return true
 	}
 	return ok && persistedSessionIdentityMatches(sess, stamp, generation)
 }

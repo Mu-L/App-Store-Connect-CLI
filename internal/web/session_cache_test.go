@@ -2659,7 +2659,7 @@ func TestDeleteSessionIfMatchesRemovesAMirrorCarryingTheSameStamp(t *testing.T) 
 func TestSerializeCookieJarAssignsUniqueGeneration(t *testing.T) {
 	jar := webTestSessionJar(t, "generation-token")
 	a := serializeCookieJar(jar, "user@example.com")
-	b := serializeCookieJar(jar, "user@example.com")
+	b := serializeCookieJar(jar, "other@example.com")
 	if a.Generation == "" || b.Generation == "" {
 		t.Fatal("expected non-empty session generations")
 	}
@@ -2700,6 +2700,15 @@ func TestPersistSessionConcurrentDifferentAppleIDsPreservesBothKeychainEntries(t
 		if stored.UserEmail != email {
 			t.Fatalf("stored wrong identity %q for %s", stored.UserEmail, email)
 		}
+	}
+}
+
+func TestSerializeCookieJarPropagatesGenerationFailure(t *testing.T) {
+	previous := sessionGenerationReader
+	sessionGenerationReader = func([]byte) (int, error) { return 0, errors.New("rng unavailable") }
+	t.Cleanup(func() { sessionGenerationReader = previous })
+	if _, err := serializeCookieJarWithError(webTestSessionJar(t, "token"), "user@example.com"); err == nil {
+		t.Fatal("expected generation failure")
 	}
 }
 

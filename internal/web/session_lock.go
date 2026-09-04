@@ -31,10 +31,11 @@ import (
 // optimization into an auth outage, and refusing to discard one would leave a
 // proven-stale jar to burn another 2FA code.
 var (
-	errSessionLockHeld      = errors.New("session lock is held")
-	sessionLockPollInterval = 2 * time.Millisecond
-	sessionLockWaitTimeout  = 2 * time.Second
-	sessionSharedLockRoot   = platformSessionLockRoot
+	errSessionLockHeld             = errors.New("session lock is held")
+	errSessionStoreLockUnavailable = errors.New("shared session-store lock unavailable")
+	sessionLockPollInterval        = 2 * time.Millisecond
+	sessionLockWaitTimeout         = 2 * time.Second
+	sessionSharedLockRoot          = platformSessionLockRoot
 )
 
 // withSessionEntryLock runs fn while holding the advisory lock for one cached
@@ -55,6 +56,8 @@ func withSessionStoreLock(fn func() error) error {
 	path := filepath.Join(dir, sessionSharedLockDirName(), "store.lock")
 	if release, ok := acquireSharedSessionLockFile(path); ok {
 		defer release()
+	} else {
+		return errSessionStoreLockUnavailable
 	}
 	return fn()
 }
