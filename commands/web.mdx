@@ -11,10 +11,11 @@ The `asc web` command family automates App Store Connect workflows through Apple
 asc web auth login --apple-id "user@example.com"
 asc web auth status
 
-# List and inspect API keys, then create a team key and save its one-time P8
+# List and inspect API keys, then create a team or individual key
 asc web api-keys list --output json
 asc web api-keys view --key-id KEY_ID
 asc web api-keys create --name "Release automation" --output-dir ~/.asc/keys
+asc web api-keys create-individual --user-id USER_UUID --output-dir ~/.asc/keys --confirm
 
 # Create an app through the web flow
 asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
@@ -180,13 +181,14 @@ receipt reflects that re-read state and includes `verified: true`.
 
 ### `asc web api-keys`
 
-Team and individual API key listing, team-key inspection, and team API key creation through an Apple Account web session.
+Team and individual API key listing, team-key inspection, and API key creation through an Apple Account web session.
 
 Available commands:
 
 * `asc web api-keys list` - list team and individual keys visible to the cached web session
 * `asc web api-keys view` - inspect one team API key by `--key-id`
 * `asc web api-keys create` - create an all-apps team key and save its one-time P8 as `AuthKey_<KEY_ID>.p8`
+* `asc web api-keys create-individual` - create an individual key for `--user-id`, save its generated P8 under required `--output-dir`, and require `--confirm`
 
 Example:
 
@@ -198,6 +200,12 @@ asc web api-keys create \
   --role APP_MANAGER \
   --output-dir ~/.asc/keys \
   --output json
+
+asc web api-keys create-individual \
+  --user-id USER_UUID \
+  --output-dir ~/.asc/keys \
+  --confirm \
+  --output json
 ```
 
 `list` and `view` print key ID, name, roles, and active state. They omit creation date because the existing web-session key readers do not expose it. Key material is never printed. `list` follows every page internally, so it does not accept `--paginate`. `view` uses the iris v1 team-key resource; individual keys appear in `list` but are not loaded by `view`.
@@ -205,6 +213,8 @@ asc web api-keys create \
 The create role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
 
 Role requirement: creating a team API key requires an Account Holder or Admin web session. The `--role` value must be one of Apple's selectable team-key roles. Matching is case-insensitive, so `--role app_manager` is sent as `APP_MANAGER`.
+
+Individual-key creation verifies that `--user-id` belongs to the authenticated session, refuses to create when an active individual key is already present, generates the P-256 private key locally, and registers only its public key with Apple. Apple’s empty create response is followed by an actor-filtered list; the command requires exactly one newly active key absent from the preflight snapshot and refuses ambiguous results or a key that already has a public key. The private P8 is written with mode `0600`; `--output-dir` is required so the operator chooses its destination. Existing files are preserved, and uncertain remote results retain the local artifact for recovery.
 
 ### `asc web apps`
 
