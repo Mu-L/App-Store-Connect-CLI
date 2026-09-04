@@ -796,8 +796,13 @@ failure after no-replace publication is reported as an ambiguous publication;
 the artifact is retained for inspection and must not be blindly retried.
 Errors expose only a stable phase/code; temporary paths, keychain names,
 profile source paths, passwords, and child-process diagnostics are kept out
-of stderr and all output formats. JSON, table, and Markdown outputs contain
-only the documented receipt fields and never raw profile data.
+of stderr and all output formats. The exception is an app-like target
+entitlement-remediation refusal during generated-entitlement preparation,
+when the replacement profile does not authorize an existing claim: that
+actionable detail names the target bundle identifier and includes only bounded
+entitlement names and values. Nested-code entitlement and Mach-O failures
+remain classified by stable phase/code. JSON, table, and Markdown outputs
+contain only the documented receipt fields and never raw profile data.
 
 ## Rotation and expiry
 
