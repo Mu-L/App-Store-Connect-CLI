@@ -2199,7 +2199,7 @@ func TestRun_UnknownIdentifierFlagsSuggestCommandSpecificFlags(t *testing.T) {
 	}
 }
 
-func TestRun_UnknownFlagSuggestsOnlyCanonicalSetupFlags(t *testing.T) {
+func TestRun_UnknownFlagDoesNotSuggestHiddenCompatibilityFlag(t *testing.T) {
 	resetReportFlags(t)
 
 	stdout, stderr := captureCommandOutput(t, func() {
@@ -2215,12 +2215,8 @@ func TestRun_UnknownFlagSuggestsOnlyCanonicalSetupFlags(t *testing.T) {
 		t.Fatalf("expected normalized unknown flag diagnostic, got %q", stderr)
 	}
 	for _, line := range strings.Split(stderr, "\n") {
-		if !strings.HasPrefix(line, "  --") {
-			continue
-		}
-		suggestion := strings.TrimSpace(line)
-		if suggestion == "--name" || suggestion == "--ref-name" {
-			t.Fatalf("removed compatibility spelling must not be suggested, got %q", stderr)
+		if strings.HasPrefix(line, "  --") && strings.Contains(line, "--name") {
+			t.Fatalf("hidden compatibility flag must not be suggested, got %q", stderr)
 		}
 	}
 }
