@@ -230,28 +230,18 @@ func (c *Client) GetCIVersionAliasRaw(ctx context.Context, teamID, productID, al
 	return append(json.RawMessage(nil), body...), &result, nil
 }
 
-// PutCIVersionAlias creates or updates one custom alias. The web endpoint
-// returns the raw alias object today, but callers must re-read after the PUT
-// because the response is not the verification boundary for a mutation.
-func (c *Client) PutCIVersionAlias(ctx context.Context, teamID, productID, aliasID string, request CIVersionAliasRequest) (*CIVersionAlias, error) {
+// PutCIVersionAlias creates or updates one custom alias. The response body is
+// intentionally ignored because callers must re-read after the PUT; it is not
+// the verification boundary for a mutation.
+func (c *Client) PutCIVersionAlias(ctx context.Context, teamID, productID, aliasID string, request CIVersionAliasRequest) error {
 	teamID = strings.TrimSpace(teamID)
 	productID = strings.TrimSpace(productID)
 	aliasID = strings.TrimSpace(aliasID)
 	if teamID == "" || productID == "" || aliasID == "" {
-		return nil, fmt.Errorf("team id, product id, and version alias id are required")
+		return fmt.Errorf("team id, product id, and version alias id are required")
 	}
-	body, err := c.doRequest(ctx, "PUT", ciVersionAliasPath(teamID, productID, aliasID), request)
-	if err != nil {
-		return nil, err
-	}
-	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, nil
-	}
-	var result CIVersionAlias
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to decode ci version alias save response: %w", err)
-	}
-	return &result, nil
+	_, err := c.doRequest(ctx, "PUT", ciVersionAliasPath(teamID, productID, aliasID), request)
+	return err
 }
 
 // DeleteCIVersionAlias deletes one custom alias for an Xcode Cloud product.

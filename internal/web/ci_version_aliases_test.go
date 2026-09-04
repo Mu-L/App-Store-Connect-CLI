@@ -84,7 +84,7 @@ func TestGetCIVersionAliasUsesDetailPathAndDecodesRawResponse(t *testing.T) {
 	}
 }
 
-func TestPutCIVersionAliasSendsCapturedBodyAndDecodesResponse(t *testing.T) {
+func TestPutCIVersionAliasSendsCapturedBodyAndIgnoresResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			t.Fatalf("method = %q, want PUT", r.Method)
@@ -120,17 +120,13 @@ func TestPutCIVersionAliasSendsCapturedBodyAndDecodesResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := testWebClient(server).PutCIVersionAlias(context.Background(), "team-uuid", "product-uuid", "alias-1", CIVersionAliasRequest{
+	if err := testWebClient(server).PutCIVersionAlias(context.Background(), "team-uuid", "product-uuid", "alias-1", CIVersionAliasRequest{
 		Name:   "Release",
 		Type:   "xcode_version",
 		Build:  json.RawMessage(`"build-1"`),
 		Locked: false,
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("PutCIVersionAlias() error = %v", err)
-	}
-	if result == nil || result.ID != "alias-1" || result.Name != "Release" {
-		t.Fatalf("unexpected save result: %+v", result)
 	}
 }
 
@@ -143,16 +139,12 @@ func TestPutCIVersionAliasAcceptsEmptyResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result, err := testWebClient(server).PutCIVersionAlias(context.Background(), "team-uuid", "product-uuid", "alias-1", CIVersionAliasRequest{
+	if err := testWebClient(server).PutCIVersionAlias(context.Background(), "team-uuid", "product-uuid", "alias-1", CIVersionAliasRequest{
 		Name:  "Release",
 		Type:  "xcode_version",
 		Build: json.RawMessage(`"build-1"`),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("PutCIVersionAlias() error = %v", err)
-	}
-	if result != nil {
-		t.Fatalf("empty response result = %+v, want nil", result)
 	}
 }
 
@@ -184,8 +176,7 @@ func TestCIVersionAliasMutationsRejectInvalidInputs(t *testing.T) {
 			return err
 		}},
 		{name: "put empty product", run: func() error {
-			_, err := client.PutCIVersionAlias(context.Background(), "team", " ", "alias", CIVersionAliasRequest{})
-			return err
+			return client.PutCIVersionAlias(context.Background(), "team", " ", "alias", CIVersionAliasRequest{})
 		}},
 		{name: "delete empty team", run: func() error { return client.DeleteCIVersionAlias(context.Background(), "", "product", "alias") }},
 	}

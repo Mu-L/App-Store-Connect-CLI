@@ -433,7 +433,7 @@ Example:
 				Locked: *locked,
 			}
 			client := newCIClientFn(session)
-			if _, err := client.PutCIVersionAlias(requestCtx, teamID, pid, aliasID, request); err != nil {
+			if err := client.PutCIVersionAlias(requestCtx, teamID, pid, aliasID, request); err != nil {
 				return verifyVersionAliasWrite(ctx, client, teamID, pid, aliasID, request, "create", err, output.Output, output.Pretty)
 			}
 			item, err := client.GetCIVersionAlias(requestCtx, teamID, pid, aliasID)
@@ -553,7 +553,7 @@ Example:
 				return shared.UsageError(err.Error())
 			}
 			request.Name = normalizedEffectiveName
-			if _, err := client.PutCIVersionAlias(requestCtx, teamID, pid, id, request); err != nil {
+			if err := client.PutCIVersionAlias(requestCtx, teamID, pid, id, request); err != nil {
 				return verifyVersionAliasWrite(ctx, client, teamID, pid, id, request, "update", err, output.Output, output.Pretty)
 			}
 			updated, err := client.GetCIVersionAlias(requestCtx, teamID, pid, id)

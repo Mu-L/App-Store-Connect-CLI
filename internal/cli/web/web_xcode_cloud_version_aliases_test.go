@@ -532,6 +532,49 @@ func TestWebVersionAliasUpdatePreservesUnspecifiedFields(t *testing.T) {
 	}
 }
 
+func TestWebVersionAliasUpdateVerifiesAfterMalformedSuccessfulPutResponse(t *testing.T) {
+	var calls []string
+	getCount := 0
+	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.Method)
+		switch req.Method {
+		case http.MethodGet:
+			getCount++
+			if getCount == 1 {
+				return nextBuildNumberResponse(req, http.StatusOK, versionAliasJSON("alias-1", "Old", true, "build-old", "41")), nil
+			}
+			return nextBuildNumberResponse(req, http.StatusOK, versionAliasJSON("alias-1", "New", true, "build-old", "42")), nil
+		case http.MethodPut:
+			return nextBuildNumberResponse(req, http.StatusOK, `{"id":"alias-1"`), nil
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+			return nil, nil
+		}
+	})
+
+	cmd := webVersionAliasUpdate()
+	if err := cmd.FlagSet.Parse([]string{"--product-id", "product", "--id", "alias-1", "--name", "New", "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	stdout, stderr := captureOutput(t, func() {
+		if err := cmd.Exec(context.Background(), nil); err != nil {
+			t.Fatalf("Exec() error = %v", err)
+		}
+	})
+	if stderr != "" {
+		t.Fatalf("stderr = %q", stderr)
+	}
+	if got := strings.Join(calls, ","); got != "GET,PUT,GET" {
+		t.Fatalf("call order = %q, want pre-read, write, and verification GET", got)
+	}
+	if getCount != 2 {
+		t.Fatalf("GET count = %d, want pre-read plus verification", getCount)
+	}
+	if !strings.Contains(stdout, `"action":"updated"`) || !strings.Contains(stdout, `"name":"New"`) {
+		t.Fatalf("unexpected update output: %q", stdout)
+	}
+}
+
 func TestWebVersionAliasDeleteRequiresConfirmedNotFound(t *testing.T) {
 	var calls []string
 	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
