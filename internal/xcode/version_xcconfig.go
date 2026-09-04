@@ -429,11 +429,44 @@ type xcconfigSourceBudget struct {
 	entries      []xcconfigSourceBudgetEntry
 	byPath       map[string][]int
 	byFoldedPath map[string][]int
+	roots        map[string]xcconfigSourceBudgetRoot
 }
 
 type xcconfigSourceBudgetEntry struct {
 	path string
 	info os.FileInfo
+}
+
+// xcconfigSourceBudgetRoot is a completed collection that can be replayed for
+// another configuration referring to the same lexical root. Keep the path
+// events so signing-plan hooks retain their per-configuration observations,
+// while avoiding another stat/read/parse traversal of the source graph.
+type xcconfigSourceBudgetRoot struct {
+	paths           []string
+	pathEvents      []string
+	optionalMissing []string
+	maxFiles        int
+}
+
+func (b *xcconfigSourceBudget) root(path string, maxFiles int) (xcconfigSourceBudgetRoot, bool) {
+	if b == nil || b.roots == nil {
+		return xcconfigSourceBudgetRoot{}, false
+	}
+	root, ok := b.roots[normalizeSigningLexicalPath(path)]
+	return root, ok && root.maxFiles == maxFiles
+}
+
+func (b *xcconfigSourceBudget) cacheRoot(path string, root xcconfigSourceBudgetRoot) {
+	if b == nil {
+		return
+	}
+	if b.roots == nil {
+		b.roots = make(map[string]xcconfigSourceBudgetRoot)
+	}
+	root.paths = append([]string(nil), root.paths...)
+	root.pathEvents = append([]string(nil), root.pathEvents...)
+	root.optionalMissing = append([]string(nil), root.optionalMissing...)
+	b.roots[normalizeSigningLexicalPath(path)] = root
 }
 
 func (b *xcconfigSourceBudget) contains(path string, info os.FileInfo) bool {
@@ -552,6 +585,50 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
 	optionalProbe func(string) (os.FileInfo, error),
 	budget *xcconfigSourceBudget,
 ) ([]string, error) {
+	if budget != nil {
+		if cached, ok := budget.root(root, maxFiles); ok {
+			for _, path := range cached.pathEvents {
+				if onPath != nil {
+					onPath(path)
+				}
+				if authorize != nil {
+					if err := authorize(path); err != nil {
+						if onError != nil {
+							onError(path, err)
+						}
+						return nil, err
+					}
+				}
+			}
+			for _, path := range cached.optionalMissing {
+				if optionalProbe == nil {
+					if onError != nil {
+						onError(path, os.ErrNotExist)
+					}
+					if onOptionalMissing != nil {
+						onOptionalMissing(path)
+					}
+					continue
+				}
+				_, probeErr := optionalProbe(path)
+				if errors.Is(probeErr, os.ErrNotExist) {
+					if onError != nil {
+						onError(path, probeErr)
+					}
+					if onOptionalMissing != nil {
+						onOptionalMissing(path)
+					}
+					continue
+				}
+				err := newXCConfigSourceGraphLimitError(path, maxFiles, probeErr)
+				if onError != nil {
+					onError(path, err)
+				}
+				return nil, err
+			}
+			return append([]string(nil), cached.paths...), nil
+		}
+	}
 	seen := make(map[string]bool)
 	type collectedIdentity struct {
 		path string
@@ -559,6 +636,8 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
 	}
 	var collected []collectedIdentity
 	var paths []string
+	var pathEvents []string
+	var optionalMissing []string
 	traversalKey := func(path string) string {
 		// With an identity callback, preserve the exact spelling. Identity
 		// checks below can safely coalesce an alias only after the platform's
@@ -574,6 +653,9 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
 	visit = func(path string, stack map[string][]os.FileInfo, optional bool) (error, bool) {
 		path = filepath.Clean(path)
 		pathKey := traversalKey(path)
+		if budget != nil {
+			pathEvents = append(pathEvents, path)
+		}
 		if onPath != nil {
 			onPath(path)
 		}
@@ -718,6 +800,9 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
 					return childErr, false
 				}
 				if include.optional && missingTarget {
+					if budget != nil {
+						optionalMissing = append(optionalMissing, includePath)
+					}
 					if onOptionalMissing != nil {
 						onOptionalMissing(includePath)
 					}
@@ -736,6 +821,14 @@ func collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
 	}
 	if err, _ := visit(root, make(map[string][]os.FileInfo), false); err != nil {
 		return nil, err
+	}
+	if budget != nil {
+		budget.cacheRoot(root, xcconfigSourceBudgetRoot{
+			paths:           paths,
+			pathEvents:      pathEvents,
+			optionalMissing: optionalMissing,
+			maxFiles:        maxFiles,
+		})
 	}
 	return paths, nil
 }

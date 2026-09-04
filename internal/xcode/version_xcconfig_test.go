@@ -122,6 +122,104 @@ func TestXCConfigCollectorSharesUniqueBudgetAcrossRoots(t *testing.T) {
 	}
 }
 
+func TestXCConfigCollectorReplaysCompletedRootWithoutRepeatedWork(t *testing.T) {
+	const sourceCount = signingPlanMaxFiles
+	rootDir := t.TempDir()
+	paths := make([]string, sourceCount)
+	for index := range paths {
+		paths[index] = filepath.Join(rootDir, fmt.Sprintf("Source-%04d.xcconfig", index))
+		contents := []byte("CODE_SIGN_STYLE = Manual")
+		if index+1 < len(paths) {
+			contents = []byte(fmt.Sprintf("#include \"Source-%04d.xcconfig\"", index+1))
+		}
+		if err := os.WriteFile(paths[index], contents, 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", paths[index], err)
+		}
+	}
+
+	readCount := make(map[string]int)
+	statCount := make(map[string]int)
+	read := func(path string) ([]byte, error) {
+		readCount[path]++
+		return os.ReadFile(path)
+	}
+	identify := func(path string) (os.FileInfo, error) {
+		statCount[path]++
+		return os.Stat(path)
+	}
+	budget := &xcconfigSourceBudget{}
+	collect := func() ([]string, error) {
+		return collectXCConfigFilesWithHooksAndIdentityAndOptionalMissingLimitWithBudget(
+			paths[0], read, nil, nil, nil, identify, nil, sourceCount, nil, budget,
+		)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		files, err := collect()
+		if err != nil || len(files) != sourceCount {
+			t.Fatalf("collection %d files=%d error=%v, want %d sources", attempt+1, len(files), err, sourceCount)
+		}
+	}
+	for _, path := range paths {
+		if readCount[path] != 1 || statCount[path] != 1 {
+			t.Fatalf("source %s read/stat counts = %d/%d, want 1/1", path, readCount[path], statCount[path])
+		}
+	}
+}
+
+func TestSigningXCConfigConsumersReuseRootIdentityWork(t *testing.T) {
+	projectPath := writeStructuredVersionProject(t, false)
+	attachSigningAppXCConfig(t, projectPath, "#include \"Shared.xcconfig\"\n")
+	sharedPath := filepath.Join(filepath.Dir(projectPath), "Configs", "Shared.xcconfig")
+	if err := os.WriteFile(sharedPath, []byte("CODE_SIGN_STYLE = Manual\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(Shared.xcconfig) error = %v", err)
+	}
+	project, err := openSigningStructuredVersionProject(projectPath)
+	if err != nil {
+		t.Fatalf("openSigningStructuredVersionProject() error = %v", err)
+	}
+
+	previousReader := signingXCConfigReadFileFn
+	previousIdentity := signingXCConfigIdentityFn
+	t.Cleanup(func() {
+		signingXCConfigReadFileFn = previousReader
+		signingXCConfigIdentityFn = previousIdentity
+	})
+	readCount := make(map[string]int)
+	identityCount := make(map[string]int)
+	signingXCConfigReadFileFn = func(path string, limit int64) ([]byte, error) {
+		readCount[path]++
+		return previousReader(path, limit)
+	}
+	signingXCConfigIdentityFn = func(path string) (os.FileInfo, error) {
+		identityCount[path]++
+		return os.Stat(path)
+	}
+
+	_, configFiles, _, _, _, _, _, _, _, err := project.signingXCConfigConsumersWithOptionalMissing(nil, false)
+	if err != nil {
+		t.Fatalf("signingXCConfigConsumersWithOptionalMissing() error = %v", err)
+	}
+	var appRoot string
+	for _, configuration := range project.configurations {
+		if configuration.target == "App" && configuration.baseReferenceID != "" {
+			if appRoot == "" {
+				appRoot = configFiles[configuration.id][0]
+			}
+			if len(configFiles[configuration.id]) != 2 {
+				t.Fatalf("App %s files=%#v, want shared two-source graph", configuration.name, configFiles[configuration.id])
+			}
+		}
+	}
+	if appRoot == "" {
+		t.Fatal("project fixture has no App xcconfig root")
+	}
+	for _, path := range []string{appRoot, sharedPath} {
+		if readCount[path] != 1 || identityCount[path] != 2 {
+			t.Fatalf("source %s read/identity counts = %d/%d, want 1/2", path, readCount[path], identityCount[path])
+		}
+	}
+}
+
 func TestXCConfigCollectorSharedBudgetSkipsAbsentOptionalIncludeAtLimit(t *testing.T) {
 	rootDir := t.TempDir()
 	root := filepath.Join(rootDir, "Root.xcconfig")

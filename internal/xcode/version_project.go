@@ -1581,20 +1581,25 @@ func (project *structuredVersionProject) xcconfigConsumersWithCollectorAndIdenti
 			collected[normalizeSigningLexicalPath(absolute)] = true
 		}
 		for _, path := range files {
-			identity, err := identityIndex.identity(path, collected, identify)
-			if err != nil {
-				if selectedIDs[configuration.id] {
-					selectedError = errors.Join(selectedError, fmt.Errorf("identify xcconfig for target %q configuration %q: %w", configuration.target, configuration.name, err))
+			normalizedPath := normalizeSigningLexicalPath(path)
+			identity, ok := fileIdentities[normalizedPath]
+			if !ok {
+				identity, err = identityIndex.identity(path, collected, identify)
+				if err != nil {
+					if selectedIDs[configuration.id] {
+						selectedError = errors.Join(selectedError, fmt.Errorf("identify xcconfig for target %q configuration %q: %w", configuration.target, configuration.name, err))
+						continue
+					}
+					uncertainConsumers = true
 					continue
 				}
-				uncertainConsumers = true
-				continue
+				fileIdentities[normalizedPath] = identity
 			}
 			// Keep the operator spelling as the map key. Windows can enable
 			// case-sensitive semantics per directory, so lowercasing here would
 			// discard a distinct file before operation keys can use its proven
 			// identity.
-			fileIdentities[normalizeSigningLexicalPath(path)] = identity
+			fileIdentities[normalizedPath] = identity
 			if consumers[identity] == nil {
 				consumers[identity] = make(map[string]bool)
 			}

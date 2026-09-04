@@ -6321,7 +6321,7 @@ func attachSigningWidgetXCConfig(t *testing.T, project, contents string) string 
 	return configPath
 }
 
-func attachSigningAppXCConfig(t *testing.T, project, contents string) string {
+func attachSigningAppXCConfig(t *testing.T, project, contents string) {
 	t.Helper()
 	projectRoot := filepath.Dir(project)
 	configDir := filepath.Join(projectRoot, "Configs")
@@ -6357,7 +6357,6 @@ func attachSigningAppXCConfig(t *testing.T, project, contents string) string {
 	if err := os.WriteFile(pbxprojPath, []byte(projectContents), 0o644); err != nil {
 		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
 	}
-	return configPath
 }
 
 func TestSigningPlanProtectsResolvedEntitlementsReference(t *testing.T) {
