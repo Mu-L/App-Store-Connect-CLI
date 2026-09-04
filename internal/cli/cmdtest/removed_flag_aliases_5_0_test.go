@@ -71,3 +71,52 @@ func TestRemovedHiddenFlagAliasesAreUnknownFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestRemovedVisibleAppInfoAliasesAreUnknownFlags locks the 5.0.0 removal of
+// the visible "Deprecated alias for ..." spellings on the apps info surface.
+func TestRemovedVisibleAppInfoAliasesAreUnknownFlags(t *testing.T) {
+	t.Setenv("ASC_APP_ID", "")
+	tests := []struct {
+		path  []string
+		alias string
+		args  []string
+	}{
+		{path: []string{"apps", "info", "view"}, alias: "app-info", args: []string{"apps", "info", "view", "--app-info", "info-1"}},
+		{path: []string{"apps", "info", "relationships", "primary-category"}, alias: "id", args: []string{"apps", "info", "relationships", "primary-category", "--id", "info-1"}},
+		{path: []string{"apps", "info", "relationships", "primary-subcategory-one"}, alias: "id", args: []string{"apps", "info", "relationships", "primary-subcategory-one", "--id", "info-1"}},
+		{path: []string{"apps", "info", "relationships", "primary-subcategory-two"}, alias: "id", args: []string{"apps", "info", "relationships", "primary-subcategory-two", "--id", "info-1"}},
+		{path: []string{"apps", "info", "relationships", "secondary-category"}, alias: "id", args: []string{"apps", "info", "relationships", "secondary-category", "--id", "info-1"}},
+		{path: []string{"apps", "info", "relationships", "secondary-subcategory-one"}, alias: "id", args: []string{"apps", "info", "relationships", "secondary-subcategory-one", "--id", "info-1"}},
+		{path: []string{"apps", "info", "relationships", "secondary-subcategory-two"}, alias: "id", args: []string{"apps", "info", "relationships", "secondary-subcategory-two", "--id", "info-1"}},
+		{path: []string{"apps", "info", "territory-age-ratings", "list"}, alias: "id", args: []string{"apps", "info", "territory-age-ratings", "list", "--id", "info-1"}},
+	}
+
+	installDefaultTransport(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		t.Fatalf("removed aliases must fail before HTTP: %s %s", req.Method, req.URL.String())
+		return nil, errors.New("unexpected request")
+	}))
+
+	root := RootCommand("1.2.3")
+	for _, test := range tests {
+		commandPath := strings.Join(test.path, " ")
+		t.Run(commandPath+" --"+test.alias, func(t *testing.T) {
+			command := findSubcommand(root, test.path...)
+			if command == nil {
+				t.Fatalf("command %q not found", commandPath)
+			}
+			if command.FlagSet.Lookup("info-id") == nil {
+				t.Fatalf("canonical flag --info-id not found on %q", commandPath)
+			}
+			if command.FlagSet.Lookup(test.alias) != nil {
+				t.Fatalf("removed alias --%s is still registered on %q", test.alias, commandPath)
+			}
+
+			usage := command.UsageFunc(command)
+			if strings.Contains(usage, "Deprecated alias") {
+				t.Fatalf("help for %q still advertises a deprecated alias: %q", commandPath, usage)
+			}
+
+			assertUsageExit(t, test.args, "Error: unknown flag `--"+test.alias+"` for `asc "+commandPath+"`")
+		})
+	}
+}

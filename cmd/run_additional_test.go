@@ -2271,23 +2271,6 @@ func TestRun_UnknownFlagDoesNotSuggestMixedCaseDeprecatedFlag(t *testing.T) {
 	}
 }
 
-func TestRun_UnknownFlagDoesNotSuggestDeprecatedAlias(t *testing.T) {
-	resetReportFlags(t)
-
-	stdout, stderr := captureCommandOutput(t, func() {
-		if code := Run([]string{"apps", "public", "view", "--idd", "APP_ID"}, "1.0.0"); code != ExitUsage {
-			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
-		}
-	})
-
-	if stdout != "" {
-		t.Fatalf("expected empty stdout, got %q", stdout)
-	}
-	if strings.Contains(stderr, "Try:\n  --id\n") {
-		t.Fatalf("deprecated alias must not be suggested, got %q", stderr)
-	}
-}
-
 func TestRun_UnknownFlagDoesNotSuggestSuffixDeprecatedAlias(t *testing.T) {
 	resetReportFlags(t)
 
