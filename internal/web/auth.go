@@ -112,7 +112,8 @@ type AuthSession struct {
 	// loaded from, zero for a freshly logged-in session. It lets a caller that
 	// proves the loaded jar unusable delete only that entry, leaving a
 	// replacement another process persisted in the meantime intact.
-	cachedUpdatedAt time.Time
+	cachedUpdatedAt  time.Time
+	cachedGeneration string
 
 	// Prepared 2FA delivery state so callers can request code delivery before prompting.
 	twoFactorMethod        string
@@ -1064,7 +1065,11 @@ func signinComplete(ctx context.Context, client *http.Client, username, m1, m2 s
 }
 
 func getSessionInfo(ctx context.Context, client *http.Client) (*sessionInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", olympusSessionURL, nil)
+	return getSessionInfoAt(ctx, client, olympusSessionURL)
+}
+
+func getSessionInfoAt(ctx context.Context, client *http.Client, endpoint string) (*sessionInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
