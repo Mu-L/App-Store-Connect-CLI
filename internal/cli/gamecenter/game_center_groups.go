@@ -337,7 +337,7 @@ func GameCenterGroupAchievementsCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "achievements",
-		ShortUsage: "asc game-center groups achievements set --group-id \"GROUP_ID\" --ids \"ACH_1,ACH_2\" [--confirm]",
+		ShortUsage: "asc game-center groups achievements set --group-id \"GROUP_ID\" --ids \"ACH_1,ACH_2\" --confirm",
 		ShortHelp:  "Manage group achievements relationships.",
 		LongHelp: `Manage group achievements relationships.
 
@@ -456,7 +456,7 @@ func GameCenterGroupAchievementsSetCommand() *ffcli.Command {
 	groupID := fs.String("group-id", "", "Game Center group ID")
 	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated achievement IDs")
 	v2 := fs.Bool("v2", false, "Use v2 relationships endpoint")
-	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing all relationships")
+	confirm := fs.Bool("confirm", false, "Confirm replacing all relationships (required)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -465,7 +465,7 @@ func GameCenterGroupAchievementsSetCommand() *ffcli.Command {
 		ShortHelp:  "Replace group achievements relationships.",
 		LongHelp: `Replace group achievements relationships.
 
-Because replacement can remove existing relationships, pass --confirm now; it will be required in 5.0.0.
+Because replacement can remove existing relationships, --confirm is required.
 
 Examples:
   asc game-center groups achievements set --group-id "GROUP_ID" --ids "ACH_1,ACH_2" --confirm
@@ -517,7 +517,7 @@ func GameCenterGroupLeaderboardsCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "leaderboards",
-		ShortUsage: "asc game-center groups leaderboards set --group-id \"GROUP_ID\" --ids \"LB_1,LB_2\" [--confirm]",
+		ShortUsage: "asc game-center groups leaderboards set --group-id \"GROUP_ID\" --ids \"LB_1,LB_2\" --confirm",
 		ShortHelp:  "Manage group leaderboards relationships.",
 		LongHelp: `Manage group leaderboards relationships.
 
@@ -636,7 +636,7 @@ func GameCenterGroupLeaderboardsSetCommand() *ffcli.Command {
 	groupID := fs.String("group-id", "", "Game Center group ID")
 	ids := shared.BindOnceCSVFlag(fs, "ids", "Comma-separated leaderboard IDs")
 	v2 := fs.Bool("v2", false, "Use v2 relationships endpoint")
-	confirm := fs.Bool("confirm", false, "[experimental] Confirm replacing all relationships")
+	confirm := fs.Bool("confirm", false, "Confirm replacing all relationships (required)")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -645,7 +645,7 @@ func GameCenterGroupLeaderboardsSetCommand() *ffcli.Command {
 		ShortHelp:  "Replace group leaderboards relationships.",
 		LongHelp: `Replace group leaderboards relationships.
 
-Because replacement can remove existing relationships, pass --confirm now; it will be required in 5.0.0.
+Because replacement can remove existing relationships, --confirm is required.
 
 Examples:
   asc game-center groups leaderboards set --group-id "GROUP_ID" --ids "LB_1,LB_2" --confirm
