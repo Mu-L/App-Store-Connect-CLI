@@ -761,9 +761,10 @@ different namespace and can make existing KVS data inaccessible. Repeated old KV
 keychain groups must each resolve to one planned value across the IPA, and
 distinct old values may not collapse into one destination. A concrete
 third-prefix value is preserved only when the replacement profile authorizes
-it. App Clip parent and associated-identifier relationship claims are deferred
-in this version: each is preserved only when already authorized unchanged, and
-neither is rewritten. The mode substitutes the signed source
+it. App Clip parent and associated-identifier relationship claims are rewritten
+only together for one proven reciprocal main-app/App-Clip pair; if pairing is
+ambiguous or cannot be proven, each existing claim is preserved only when
+already authorized unchanged. The mode substitutes the signed source
 `ApplicationIdentifierPrefix` with the replacement profile prefix for keychain
 groups, never `TeamID`, preserves list order and duplicates, and proves each
 resulting value against the replacement profile. Wildcards are authorization

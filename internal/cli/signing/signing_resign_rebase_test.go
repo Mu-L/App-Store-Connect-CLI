@@ -501,10 +501,10 @@ func TestPlanSigningResignEntitlementsPreservesAuthorizedAppClipParentWithoutRew
 		t.Fatalf("planSigningResignEntitlements() error = %v", err)
 	}
 	if got := plans[1].Entitlements[signingResignParentEntitlement]; !signingResignEntitlementValuesEqual(got, []string{"OLDPREFIX.com.example.app"}) {
-		t.Fatalf("parent application identifiers = %#v, want unchanged authorized value", got)
+		t.Fatalf("parent claim = %#v, want authorized unchanged value", got)
 	}
-	if len(plans[0].Rewrites) != 0 || len(plans[1].Rewrites) != 0 {
-		t.Fatalf("App Clip rewrites = %#v, %#v, want no relationship rewrite", plans[0].Rewrites, plans[1].Rewrites)
+	if len(plans[1].Rewrites) != 0 {
+		t.Fatalf("rewrites = %#v, want none", plans[1].Rewrites)
 	}
 }
 
@@ -524,7 +524,71 @@ func TestPlanSigningResignEntitlementsDoesNotRebaseUnauthorizedAppClipParent(t *
 		Targets:  []signingResignTarget{main, clip},
 	}, profiles, true)
 	if err == nil || !strings.Contains(err.Error(), signingResignParentEntitlement) {
-		t.Fatalf("planSigningResignEntitlements() error = %v, want unchanged parent authorization refusal", err)
+		t.Fatalf("planSigningResignEntitlements() error = %v, want unauthorized unchanged claim refusal", err)
+	}
+}
+
+func TestPlanSigningResignEntitlementsRebasesPairedAppClipClaimsTogether(t *testing.T) {
+	main := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
+		signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com.example.app.Clip"},
+	})
+	clip := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/Clip.app", "com.example.app.Clip", map[string]any{
+		signingResignParentEntitlement: []string{"OLDPREFIX.com.example.app"},
+	})
+	profiles := map[string]signingResignProfile{
+		main.BundleID: rebaseTestProfile(main.BundleID, "NEWMAIN", map[string]any{
+			signingResignAssociatedAppClipEntitlement: []any{"NEWCLIP.com.example.app.Clip"},
+		}),
+		clip.BundleID: rebaseTestProfile(clip.BundleID, "NEWCLIP", map[string]any{
+			signingResignParentEntitlement: []any{"NEWMAIN.com.example.app"},
+		}),
+	}
+	plans, err := planSigningResignEntitlements(signingResignArchive{MainPath: main.RelativePath, Targets: []signingResignTarget{main, clip}}, profiles, true)
+	if err != nil {
+		t.Fatalf("plan paired App Clip claims: %v", err)
+	}
+	if got := plans[0].Entitlements[signingResignAssociatedAppClipEntitlement]; !signingResignEntitlementValuesEqual(got, []string{"NEWCLIP.com.example.app.Clip"}) {
+		t.Fatalf("associated claim = %#v", got)
+	}
+	if got := plans[1].Entitlements[signingResignParentEntitlement]; !signingResignEntitlementValuesEqual(got, []string{"NEWMAIN.com.example.app"}) {
+		t.Fatalf("parent claim = %#v", got)
+	}
+	if len(plans[0].Rewrites) != 1 || len(plans[1].Rewrites) != 1 {
+		t.Fatalf("rewrites = %#v, %#v", plans[0].Rewrites, plans[1].Rewrites)
+	}
+}
+
+func TestPlanSigningResignEntitlementsPreservesPairedClaimsOnMismatchedPrefix(t *testing.T) {
+	main := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com.example.app.Clip"}})
+	clip := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/Clip.app", "com.example.app.Clip", map[string]any{signingResignParentEntitlement: []string{"WRONGPREFIX.com.example.app"}})
+	profiles := map[string]signingResignProfile{main.BundleID: rebaseTestProfile(main.BundleID, "NEWMAIN", map[string]any{signingResignAssociatedAppClipEntitlement: []any{"OLDPREFIX.com.example.app.Clip"}}), clip.BundleID: rebaseTestProfile(clip.BundleID, "NEWCLIP", map[string]any{signingResignParentEntitlement: []any{"WRONGPREFIX.com.example.app"}})}
+	plans, err := planSigningResignEntitlements(signingResignArchive{MainPath: main.RelativePath, Targets: []signingResignTarget{main, clip}}, profiles, true)
+	if err != nil {
+		t.Fatalf("plan mismatched prefix: %v", err)
+	}
+	if len(plans[0].Rewrites) != 0 || len(plans[1].Rewrites) != 0 {
+		t.Fatalf("one-sided rewrites: %#v %#v", plans[0].Rewrites, plans[1].Rewrites)
+	}
+}
+
+func TestPlanSigningResignEntitlementsRejectsMixedAppClipArrayWhenUnauthorized(t *testing.T) {
+	main := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com.example.app.Clip", "OLDPREFIX.com.example.missing"}})
+	clip := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/Clip.app", "com.example.app.Clip", map[string]any{signingResignParentEntitlement: []string{"OLDPREFIX.com.example.app"}})
+	profiles := map[string]signingResignProfile{main.BundleID: rebaseTestProfile(main.BundleID, "NEWMAIN", map[string]any{signingResignAssociatedAppClipEntitlement: []any{"NEWCLIP.com.example.app.Clip", "NEWCLIP.com.example.missing"}}), clip.BundleID: rebaseTestProfile(clip.BundleID, "NEWCLIP", map[string]any{signingResignParentEntitlement: []any{"NEWMAIN.com.example.app"}})}
+	_, err := planSigningResignEntitlements(signingResignArchive{MainPath: main.RelativePath, Targets: []signingResignTarget{main, clip}}, profiles, true)
+	if err == nil || !strings.Contains(err.Error(), signingResignAssociatedAppClipEntitlement) {
+		t.Fatalf("expected mixed-array refusal, got %v", err)
+	}
+}
+
+func TestPlanSigningResignEntitlementsRejectsMultipleAppClipEdges(t *testing.T) {
+	main := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com.example.one", "OLDPREFIX.com.example.two"}})
+	one := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/One.app", "com.example.one", map[string]any{signingResignParentEntitlement: []string{"OLDPREFIX.com.example.app"}})
+	two := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/Two.app", "com.example.two", map[string]any{signingResignParentEntitlement: []string{"OLDPREFIX.com.example.app"}})
+	profiles := map[string]signingResignProfile{main.BundleID: rebaseTestProfile(main.BundleID, "NEWMAIN", map[string]any{signingResignAssociatedAppClipEntitlement: []any{"NEWONE.com.example.one", "NEWTWO.com.example.two"}}), one.BundleID: rebaseTestProfile(one.BundleID, "NEWONE", map[string]any{signingResignParentEntitlement: []any{"NEWMAIN.com.example.app"}}), two.BundleID: rebaseTestProfile(two.BundleID, "NEWTWO", map[string]any{signingResignParentEntitlement: []any{"NEWMAIN.com.example.app"}})}
+	_, err := planSigningResignEntitlements(signingResignArchive{MainPath: main.RelativePath, Targets: []signingResignTarget{main, one, two}}, profiles, true)
+	if err == nil || !strings.Contains(err.Error(), "not authorized") {
+		t.Fatalf("expected multiple-edge refusal, got %v", err)
 	}
 }
 
@@ -540,13 +604,13 @@ func TestPlanSigningResignEntitlementsDoesNotRewriteAssociatedAppClipClaim(t *te
 		Targets:  []signingResignTarget{target},
 	}, map[string]signingResignProfile{target.BundleID: profile}, true)
 	if err != nil {
-		t.Fatalf("planSigningResignEntitlements() error = %v, want authorized associated claim preserved", err)
+		t.Fatalf("planSigningResignEntitlements() error = %v", err)
 	}
 	if got := plans[0].Entitlements[signingResignAssociatedAppClipEntitlement]; !signingResignEntitlementValuesEqual(got, []string{"OLDPREFIX.com.example.app.Clip"}) {
-		t.Fatalf("associated App Clip identifiers = %#v, want unchanged authorized value", got)
+		t.Fatalf("associated claim = %#v, want authorized unchanged value", got)
 	}
 	if len(plans[0].Rewrites) != 0 {
-		t.Fatalf("associated App Clip rewrites = %#v, want no relationship rewrite", plans[0].Rewrites)
+		t.Fatalf("rewrites = %#v, want none", plans[0].Rewrites)
 	}
 }
 
