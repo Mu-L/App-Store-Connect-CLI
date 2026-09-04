@@ -6030,6 +6030,50 @@ func TestSigningPlanKeepsSuccessfulInheritedXCConfigEntitlementReady(t *testing.
 	}
 }
 
+func TestSigningPlanDoesNotInventDoubleComposedXCConfigEntitlement(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999991",
+		`CODE_SIGN_ENTITLEMENTS = Base;`)
+	// Keep the unselected Widget configuration uncertain while giving it a
+	// divergent PBX assignment. Its xcconfig value must inherit from the
+	// project layer, not from this conditional PBX slot.
+	attachSigningWidgetXCConfig(t, project, "CODE_SIGN_ENTITLEMENTS = $(inherited)Suffix\n")
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`CODE_SIGN_ENTITLEMENTS = PBX.entitlements;`)
+	injectSigningBuildSetting(t, pbxprojPath, "999999999999999999999995",
+		`"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = Conditional.entitlements;`)
+
+	projectRoot := filepath.Dir(project)
+	planPath := filepath.Join(projectRoot, "BaseSuffixSuffix")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(plan) error = %v", err)
+	}
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: filepath.Join(root, "state"),
+	})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v, want non-alias plan path accepted", err)
+	}
+	for _, blocker := range plan.Blockers {
+		if strings.Contains(blocker, "aliases project input") {
+			t.Fatalf("double-composed xcconfig candidate blocked plan: %#v", plan.Blockers)
+		}
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("existing plan changed during planning: %q", got)
+	}
+}
+
 func TestSigningInheritedXCConfigSourceBypassesDivergentPBXSlot(t *testing.T) {
 	projectConfiguration := &versionConfiguration{projectLevel: true, name: "Debug", buildSettings: map[string]any{
 		"CODE_SIGN_ENTITLEMENTS": "Base",

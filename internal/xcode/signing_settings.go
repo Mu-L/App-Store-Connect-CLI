@@ -2911,6 +2911,7 @@ func signingProjectInputPaths(
 		}
 	}
 	entitlementCandidatesByConfiguration := make(map[string]map[string]map[int]bool)
+	entitlementAssignmentExpansionsByConfiguration := make(map[string]map[string]map[int]signingXCConfigEntitlementAssignmentExpansion)
 	configurationsByID := make(map[string]*versionConfiguration, len(project.configurations))
 	for _, configuration := range project.configurations {
 		configurationsByID[configuration.id] = configuration
@@ -2935,11 +2936,14 @@ func signingProjectInputPaths(
 				base = resolvedBase
 			}
 		}
-		candidates, composed, err := signingXCConfigEntitlementAssignmentCandidates(configurationsByID[configurationID], files, resolver, base)
+		candidates, composed, expansions, err := signingXCConfigEntitlementAssignmentCandidatesWithExpansions(
+			configurationsByID[configurationID], files, resolver, base,
+		)
 		if err != nil {
 			return nil, externalEntitlementPaths, inputBlockers, err
 		}
 		entitlementCandidatesByConfiguration[configurationID] = candidates
+		entitlementAssignmentExpansionsByConfiguration[configurationID] = expansions
 		configuration := configurationsByID[configurationID]
 		for _, value := range composed {
 			if err := appendResolvedEntitlements(configuration, "CODE_SIGN_ENTITLEMENTS", value, true); err != nil {
@@ -2998,7 +3002,16 @@ func signingProjectInputPaths(
 				// object's unconditional assignment is not this assignment's
 				// inherited base. Selector-aware composition inside an xcconfig
 				// is handled by signingXCConfigEntitlementAssignmentCandidates.
-				if err := appendResolvedEntitlements(configuration, "CODE_SIGN_ENTITLEMENTS", assignment.value, true); err != nil {
+				// For an uncertain configuration, that pass has already expanded
+				// every live assignment against the preceding xcconfig/project
+				// state. Re-resolving an inherited raw assignment through the
+				// configuration's whole xcconfig would use the final value of this
+				// same file as its base and compose the suffix twice.
+				rawValue := assignment.value
+				if expansion := entitlementAssignmentExpansionsByConfiguration[configuration.id][normalizeSigningLexicalPath(filePath)][assignment.lineIndex]; expansion.inheritedResolved {
+					rawValue = expansion.value
+				}
+				if err := appendResolvedEntitlements(configuration, "CODE_SIGN_ENTITLEMENTS", rawValue, true); err != nil {
 					if lexicalErr := appendLexicalEntitlementCandidate(assignment.value); lexicalErr != nil {
 						return nil, externalEntitlementPaths, inputBlockers, lexicalErr
 					}
@@ -3077,6 +3090,11 @@ func signingXCConfigSelectorIdentity(key string) string {
 	return base + strings.Join(selectors, "")
 }
 
+type signingXCConfigEntitlementAssignmentExpansion struct {
+	value             string
+	inheritedResolved bool
+}
+
 // signingXCConfigEntitlementAssignmentCandidates returns the assignments that
 // can still contribute to CODE_SIGN_ENTITLEMENTS when effective resolution is
 // uncertain. It uses the configuration-scoped resolver's event traversal and
@@ -3088,6 +3106,18 @@ func signingXCConfigEntitlementAssignmentCandidates(
 	resolver *signingSettingResolver,
 	base xcconfigResolvedValue,
 ) (map[string]map[int]bool, []string, error) {
+	candidates, composed, _, err := signingXCConfigEntitlementAssignmentCandidatesWithExpansions(
+		configuration, files, resolver, base,
+	)
+	return candidates, composed, err
+}
+
+func signingXCConfigEntitlementAssignmentCandidatesWithExpansions(
+	configuration *versionConfiguration,
+	files []string,
+	resolver *signingSettingResolver,
+	base xcconfigResolvedValue,
+) (map[string]map[int]bool, []string, map[string]map[int]signingXCConfigEntitlementAssignmentExpansion, error) {
 	type assignmentReference struct {
 		path        string
 		assignment  xcconfigAssignment
@@ -3100,7 +3130,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 	// an empty state so every target assignment remains protected.
 	hasExactValue := base.found
 	if len(files) == 0 {
-		return map[string]map[int]bool{}, nil, nil
+		return map[string]map[int]bool{}, nil, nil, nil
 	}
 	var observerErr error
 	observe := func(path string, assignment xcconfigAssignment) {
@@ -3180,18 +3210,22 @@ func signingXCConfigEntitlementAssignmentCandidates(
 		base,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if observerErr != nil {
-		return nil, nil, observerErr
+		return nil, nil, nil, observerErr
 	}
 	candidates := make(map[string]map[int]bool)
+	expansions := make(map[string]map[int]signingXCConfigEntitlementAssignmentExpansion)
 	for _, candidate := range active {
 		path := normalizeSigningLexicalPath(candidate.path)
 		if candidates[path] == nil {
 			candidates[path] = make(map[int]bool)
 		}
 		candidates[path][candidate.assignment.lineIndex] = true
+		if expansions[path] == nil {
+			expansions[path] = make(map[int]signingXCConfigEntitlementAssignmentExpansion)
+		}
 	}
 	composed := make([]string, 0)
 	if strings.TrimSpace(resolved.value) != "" {
@@ -3204,6 +3238,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 	for _, candidate := range active {
 		selector := candidate.selectorKey
 		value := strings.TrimSpace(candidate.assignment.value)
+		inheritedResolved := false
 		switch candidate.assignment.operator {
 		case "+=":
 			previous := accumulated[selector]
@@ -3211,6 +3246,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 				previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
 			}
 			if strings.Contains(value, "$(inherited)") || strings.Contains(value, "${inherited}") {
+				inheritedResolved = strings.TrimSpace(previous) != ""
 				value = strings.ReplaceAll(value, "$(inherited)", previous)
 				value = strings.ReplaceAll(value, "${inherited}", previous)
 				accumulated[selector] = strings.TrimSpace(value)
@@ -3227,10 +3263,19 @@ func signingXCConfigEntitlementAssignmentCandidates(
 				if previous == "" && selector != "CODE_SIGN_ENTITLEMENTS" {
 					previous = accumulated["CODE_SIGN_ENTITLEMENTS"]
 				}
+				inheritedResolved = strings.TrimSpace(previous) != ""
 				value = strings.ReplaceAll(value, "$(inherited)", previous)
 				value = strings.ReplaceAll(value, "${inherited}", previous)
 			}
 			accumulated[selector] = strings.TrimSpace(value)
+		}
+		path := normalizeSigningLexicalPath(candidate.path)
+		if expansions[path] == nil {
+			expansions[path] = make(map[int]signingXCConfigEntitlementAssignmentExpansion)
+		}
+		expansions[path][candidate.assignment.lineIndex] = signingXCConfigEntitlementAssignmentExpansion{
+			value:             strings.TrimSpace(value),
+			inheritedResolved: inheritedResolved,
 		}
 	}
 	for _, value := range accumulated {
@@ -3238,7 +3283,7 @@ func signingXCConfigEntitlementAssignmentCandidates(
 			composed = append(composed, value)
 		}
 	}
-	return candidates, composed, nil
+	return candidates, composed, expansions, nil
 }
 
 func validateSigningXCConfigPath(project *structuredVersionProject, path string, allowExternal bool) error {
