@@ -33,6 +33,11 @@ var beforeStaplerCommandCancelFn func(*exec.Cmd)
 // nil.
 var afterStaplerResolutionFn func()
 
+// beforeStaplerResolutionRunFn is a narrow test seam for a resolver process
+// that exits while cancellation cleanup is racing with Wait. Production leaves
+// it nil.
+var beforeStaplerResolutionRunFn func(*exec.Cmd)
+
 // StaplerOperation identifies the local ticket operation that was requested.
 type StaplerOperation string
 
@@ -380,6 +385,9 @@ func ensureStaplerAvailable(ctx context.Context) error {
 	stderr := newXcodeDiagnosticBuffer(staplerResolutionOutputLimit, nil)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if beforeStaplerResolutionRunFn != nil {
+		beforeStaplerResolutionRunFn(cmd)
+	}
 	if err := runXcodeCommand(cmd); err != nil {
 		if afterStaplerResolutionFn != nil {
 			afterStaplerResolutionFn()
@@ -390,15 +398,21 @@ func ensureStaplerAvailable(ctx context.Context) error {
 		}
 		commandErr := newStaplerCommandError(StaplerOperationResolve, failure)
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			if staplerHasProcessExitStatus(err) {
+				// Preserve a concrete resolver exit status when cancellation becomes
+				// visible in the same late-result window. A cancellation callback can
+				// report success for an already-exited process, so status wins over
+				// that callback marker.
+				return errors.Join(ctxErr, commandErr)
+			}
 			if contextCancelSucceeded.Load() {
 				return &staplerOperationAttemptedCancellationError{
 					err: errors.Join(commandErr, ctxErr),
 				}
 			}
-			if staplerHasProcessExitStatus(err) || staplerProcessWasSignaled(err) {
-				// Preserve a concrete resolver process result, including a signal
-				// termination with no ordinary exit code, when cancellation becomes
-				// visible in the same late-result window.
+			if staplerProcessWasSignaled(err) {
+				// A signal without an ordinary exit code remains a meaningful
+				// process result when cancellation did not terminate the child.
 				return errors.Join(ctxErr, commandErr)
 			}
 			if !errors.Is(err, ctxErr) {

@@ -400,6 +400,51 @@ func TestStaplerDirectoryInventoryEnforcesEntryBounds(t *testing.T) {
 	}
 }
 
+func TestStaplerDirectoryInventoryClassifiesKindSwapDuringOpenRootAsChange(t *testing.T) {
+	for _, replacementKind := range []string{"regular file", "symlink"} {
+		t.Run(replacementKind, func(t *testing.T) {
+			rootPath := t.TempDir()
+			entryPath := filepath.Join(rootPath, "Contents")
+			preservedPath := filepath.Join(rootPath, "Contents.original")
+			if err := os.Mkdir(entryPath, 0o700); err != nil {
+				t.Fatalf("create original directory: %v", err)
+			}
+			root, err := os.OpenRoot(rootPath)
+			if err != nil {
+				t.Fatalf("open inventory root: %v", err)
+			}
+			t.Cleanup(func() { _ = root.Close() })
+			before, err := root.Lstat("Contents")
+			if err != nil {
+				t.Fatalf("lstat original directory: %v", err)
+			}
+			if err := os.Rename(entryPath, preservedPath); err != nil {
+				t.Fatalf("preserve original directory: %v", err)
+			}
+			switch replacementKind {
+			case "regular file":
+				if err := os.WriteFile(entryPath, []byte("replacement"), 0o600); err != nil {
+					t.Fatalf("create regular replacement: %v", err)
+				}
+			case "symlink":
+				if err := os.Symlink("Contents.original", entryPath); err != nil {
+					t.Fatalf("create symlink replacement: %v", err)
+				}
+			}
+			t.Cleanup(func() {
+				_ = os.Remove(entryPath)
+				_ = os.Rename(preservedPath, entryPath)
+			})
+
+			scanner := staplerInventoryScanner{ctx: context.Background()}
+			err = scanner.recordDirectory(root, "Contents", "Contents", before)
+			if !errors.Is(err, errStaplerInventoryChanged) {
+				t.Fatalf("recordDirectory() error = %v, want inventory-change classification", err)
+			}
+		})
+	}
+}
+
 func TestStaplerDirectoryInventoryReadsLargeDirectoriesInBoundedBatches(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
 	if err := os.Mkdir(targetPath, 0o755); err != nil {
@@ -435,6 +480,14 @@ func TestStaplerDirectoryInventoryReadsLargeDirectoriesInBoundedBatches(t *testi
 	}
 	if strings.Contains(err.Error(), targetPath) {
 		t.Fatalf("inventory error = %q, must not expose target path", err.Error())
+	}
+	var identityErr *staplerTargetIdentityError
+	if errors.As(err, &identityErr) {
+		t.Fatalf("inventory error = %v, initial entry overflow must not be inventory change", err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if !errors.As(err, &verifyErr) {
+		t.Fatalf("inventory error = %T %v, want bounded inspection failure", err, err)
 	}
 }
 

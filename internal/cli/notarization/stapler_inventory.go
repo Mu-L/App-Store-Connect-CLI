@@ -580,6 +580,9 @@ type staplerInventoryScanner struct {
 	capturedEntries map[string]staplerInventoryEntryEvidence
 	expectedEntries map[string]staplerInventoryEntryEvidence
 	runTestHooks    bool
+	// initialDirectoryReads distinguishes the first bounded enumeration of each
+	// directory from the later name-set rechecks in the same initial pass.
+	initialDirectoryReads map[string]struct{}
 }
 
 func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relative string, initial os.FileInfo) error {
@@ -726,6 +729,16 @@ func (scanner *staplerInventoryScanner) readDirectoryNames(directory *os.Root, r
 	if maxNames < 0 {
 		return nil, errStaplerInventoryChanged
 	}
+	firstEnumeration := false
+	if scanner.expectedEntries == nil {
+		if scanner.initialDirectoryReads == nil {
+			scanner.initialDirectoryReads = make(map[string]struct{})
+		}
+		if _, seen := scanner.initialDirectoryReads[relative]; !seen {
+			firstEnumeration = true
+			scanner.initialDirectoryReads[relative] = struct{}{}
+		}
+	}
 	handle, err := directory.Open(".")
 	if err != nil {
 		return nil, fmt.Errorf("open inventory directory %q: %w", staplerInventoryDisplayPath(relative), err)
@@ -739,6 +752,9 @@ func (scanner *staplerInventoryScanner) readDirectoryNames(directory *os.Root, r
 		batch, readErr := readdirStaplerInventoryNamesFn(handle, staplerInventoryReadBatchSize)
 		if len(batch) > maxNames-len(names) {
 			_ = handle.Close()
+			if firstEnumeration {
+				return nil, fmt.Errorf("inventory contains more than %d entries", staplerInventoryMaxEntries)
+			}
 			return nil, errStaplerInventoryChanged
 		}
 		names = append(names, batch...)
@@ -766,7 +782,7 @@ func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, r
 	}
 	opened, err := parent.OpenRoot(name)
 	if err != nil {
-		if staplerInventoryEntryVanished(err) {
+		if staplerInventoryDirectoryChangedAtOpen(parent, name, err) {
 			return errStaplerInventoryChanged
 		}
 		return fmt.Errorf("open inventory directory %q: %w", relative, err)
@@ -803,6 +819,25 @@ func (scanner *staplerInventoryScanner) recordDirectory(parent *os.Root, name, r
 		return errStaplerInventoryChanged
 	}
 	return nil
+}
+
+// staplerInventoryDirectoryChangedAtOpen reports whether an already-enumerated
+// directory entry was replaced by a different kind before OpenRoot completed.
+// An operational error on an entry that is still the same directory remains an
+// inspection failure; only a vanished, non-directory, or symlink replacement is
+// inventory change evidence.
+func staplerInventoryDirectoryChangedAtOpen(parent *os.Root, name string, openErr error) bool {
+	if staplerInventoryPathVanished(openErr) || errors.Is(openErr, syscall.ELOOP) {
+		return true
+	}
+	if parent == nil {
+		return false
+	}
+	current, err := parent.Lstat(name)
+	if err != nil {
+		return staplerInventoryPathVanished(err)
+	}
+	return current.Mode()&os.ModeSymlink != 0 || !current.IsDir()
 }
 
 func (scanner *staplerInventoryScanner) recordDirectoryEntry(relative string, info os.FileInfo) error {

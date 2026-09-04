@@ -929,6 +929,10 @@ func validateStaplerTargetDetails(pathValue string) (*validatedStaplerTarget, er
 			} else if !errors.Is(accessErr, errStaplerRegularFileDirectory) && !errors.Is(accessErr, errStaplerRegularFileUnsupported) {
 				var notRegularErr *staplerRegularFileNotRegularError
 				switch {
+				case errors.Is(accessErr, os.ErrNotExist):
+					return nil, newStaplerTargetUsageError(fmt.Errorf("%q does not exist", absolute))
+				case errors.Is(accessErr, errStaplerRegularFileParentNotDirectory), errors.Is(accessErr, syscall.ENOTDIR):
+					return nil, newStaplerTargetUsageError(errors.New("artifact path contains a non-directory component before lexical parent traversal"))
 				case errors.As(accessErr, &notRegularErr):
 					return nil, newStaplerTargetUsageError(fmt.Errorf("%q is not a regular file or directory bundle", absolute))
 				case errors.Is(accessErr, rootfs.ErrSymlink):

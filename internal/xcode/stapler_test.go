@@ -1355,6 +1355,46 @@ func TestStaplerPreservesResolutionExitStatusWhenContextCancelsAfterLookup(t *te
 	}
 }
 
+func TestStaplerPreservesResolutionExitStatusWhenCancellationCleanupWinsRace(t *testing.T) {
+	previousOS := runtimeGOOS
+	runtimeGOOS = "darwin"
+	t.Cleanup(func() { runtimeGOOS = previousOS })
+	previousLookPath := lookPathFn
+	lookPathFn = func(string) (string, error) { return "/usr/bin/xcrun", nil }
+	t.Cleanup(func() { lookPathFn = previousLookPath })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	previousCommandContext := commandContextFn
+	commandContextFn = func(commandCtx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(commandCtx, "/bin/sh", "-c", "sleep 0.1; exit 64")
+	}
+	t.Cleanup(func() { commandContextFn = previousCommandContext })
+	previousHook := beforeStaplerResolutionRunFn
+	beforeStaplerResolutionRunFn = func(cmd *exec.Cmd) {
+		// Simulate CommandContext's cancellation callback reporting success for
+		// a process that has already exited, while Wait still returns its status.
+		cmd.Cancel = func() error { return nil }
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+		}()
+	}
+	t.Cleanup(func() { beforeStaplerResolutionRunFn = previousHook })
+
+	_, err := Staple(ctx, "/tmp/MyApp.dmg", nil)
+	if err == nil {
+		t.Fatal("Staple() error = nil, want resolver failure")
+	}
+	if IsStaplerOperationAttemptedCancellation(err) {
+		t.Fatalf("Staple() error = %v, concrete resolver status must not be cancellation-marked", err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationResolve) || commandErr.ExitCode != 64 {
+		t.Fatalf("Staple() error = %T %v, want resolve/64", err, err)
+	}
+}
+
 func TestStaplerClassifiesContextKilledResolverAsCancellation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("child process cancellation is not implemented on Windows")

@@ -4018,11 +4018,13 @@ func TestNotarizationValidateCommandPreservesSearchOnlyUsageErrors(t *testing.T)
 	skipIfDACOverrideForStaplerTest(t)
 
 	tests := []struct {
-		name           string
-		relative       bool
-		pathSuffix     string
-		contents       []byte
-		wantDiagnostic string
+		name               string
+		relative           bool
+		pathSuffix         string
+		contents           []byte
+		missingTarget      bool
+		nonDirectoryParent bool
+		wantDiagnostic     string
 	}{
 		{
 			name:           "relative requires directory",
@@ -4050,6 +4052,19 @@ func TestNotarizationValidateCommandPreservesSearchOnlyUsageErrors(t *testing.T)
 			contents:       []byte{},
 			wantDiagnostic: "artifact file must not be empty",
 		},
+		{
+			name:           "absolute missing file",
+			relative:       false,
+			missingTarget:  true,
+			wantDiagnostic: "does not exist",
+		},
+		{
+			name:               "absolute non-directory component",
+			relative:           false,
+			missingTarget:      true,
+			nonDirectoryParent: true,
+			wantDiagnostic:     "non-directory component",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -4065,8 +4080,18 @@ func TestNotarizationValidateCommandPreservesSearchOnlyUsageErrors(t *testing.T)
 				targetPath = filepath.Join(blockedParent, "App.dmg")
 				pathValue = targetPath + test.pathSuffix
 			}
-			if err := os.WriteFile(targetPath, test.contents, 0o600); err != nil {
-				t.Fatalf("write target: %v", err)
+			if test.nonDirectoryParent {
+				component := filepath.Join(blockedParent, "component")
+				if err := os.WriteFile(component, []byte("not a directory"), 0o600); err != nil {
+					t.Fatalf("write non-directory component: %v", err)
+				}
+				targetPath = filepath.Join(component, "App.dmg")
+				pathValue = targetPath + test.pathSuffix
+			}
+			if !test.missingTarget && !test.nonDirectoryParent {
+				if err := os.WriteFile(targetPath, test.contents, 0o600); err != nil {
+					t.Fatalf("write target: %v", err)
+				}
 			}
 
 			originalCWD, err := os.Getwd()
@@ -4094,6 +4119,13 @@ func TestNotarizationValidateCommandPreservesSearchOnlyUsageErrors(t *testing.T)
 					t.Errorf("restore parent permissions: %v", err)
 				}
 			})
+			if test.nonDirectoryParent {
+				previousOpenDir := openStaplerTargetDirFn
+				openStaplerTargetDirFn = func(rootfs.Root, string) (*os.File, error) {
+					return nil, &staplerTargetTraversalError{err: fmt.Errorf("%w: %w", errStaplerSearchFallbackEligible, syscall.EACCES)}
+				}
+				t.Cleanup(func() { openStaplerTargetDirFn = previousOpenDir })
+			}
 
 			previousRunner := runStaplerValidate
 			runnerCalls := 0
