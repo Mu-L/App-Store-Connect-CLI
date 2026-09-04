@@ -76,9 +76,8 @@ details in a finding. No URL request is made unless `--check-urls` is present.
 ## Check Apple's web-only blockers
 
 The experimental `--deep` mode keeps every public-API check above, then reads an
-existing file-backed Apple web session, including the legacy IRIS file cache. It
-doesn't open a login or Keychain prompt, accept agreements, publish privacy
-answers, or attach subscriptions.
+existing file-backed Apple web session. It doesn't open a login or Keychain
+prompt, accept agreements, publish privacy answers, or attach subscriptions.
 
 ```bash  theme={null}
 asc validate --app "123456789" --version "1.2.0" --deep

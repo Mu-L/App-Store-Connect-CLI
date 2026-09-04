@@ -589,8 +589,19 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, error) {
+	return resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(root, setting, base, read, stat, identify, nil)
+}
+
+func resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+	root, setting string,
+	base xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
+	identify func(string) (os.FileInfo, error),
+	lookup func(string) (string, bool),
+) (xcconfigResolvedValue, error) {
 	resolved, conditional, err := resolveXCConfigSettingStateWithReaderAndIdentity(
-		root, setting, base, read, stat, identify, nil,
+		root, setting, base, read, stat, identify, nil, lookup,
 	)
 	if err != nil {
 		return xcconfigResolvedValue{}, err
@@ -622,6 +633,31 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	return resolved, nil
 }
 
+// expandXCConfigLookupReferences expands only references supplied by lookup.
+// Unsupported or unresolved references stay intact so divergence checks remain
+// conservative rather than guessing a build-context value.
+func expandXCConfigLookupReferences(value string, lookup func(string) (string, bool)) string {
+	if lookup == nil {
+		return value
+	}
+	for iteration := 0; iteration < 32; iteration++ {
+		match := signingReferencePattern.FindStringSubmatchIndex(value)
+		if match == nil || match[4] >= 0 || match[8] >= 0 {
+			return value
+		}
+		nameStart, nameEnd := match[2], match[3]
+		if nameStart < 0 {
+			nameStart, nameEnd = match[6], match[7]
+		}
+		replacement, ok := lookup(value[nameStart:nameEnd])
+		if !ok {
+			return value
+		}
+		value = value[:match[0]] + replacement + value[match[1]:]
+	}
+	return value
+}
+
 // xcconfigAssignmentObserver receives each matching assignment in the same
 // include/event order used by the resolver, including assignments that the
 // resolver later skips because a lower or earlier value wins. Security-
@@ -640,9 +676,10 @@ func resolveXCConfigSettingStateWithReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 	observe xcconfigAssignmentObserver,
+	lookup func(string) (string, bool),
 ) (xcconfigResolvedValue, bool, error) {
 	return resolveXCConfigSettingRecursiveWithReaderAndIdentity(
-		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify, observe,
+		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify, observe, lookup,
 	)
 }
 
@@ -661,6 +698,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 	observe xcconfigAssignmentObserver,
+	lookup func(string) (string, bool),
 ) (xcconfigResolvedValue, bool, error) {
 	path = filepath.Clean(path)
 	pathKey := signingLexicalPathKey(path)
@@ -726,7 +764,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify, observe)
+			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify, observe, lookup)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
@@ -741,12 +779,42 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		if observe != nil {
 			observe(path, *assignment)
 		}
+		if !resolved.found && lookup != nil {
+			if implicit, ok := lookup(setting); ok {
+				// An implicit value is a lower-layer value, not a replacement
+				// for the conditional assignments already seen in this file.
+				// Keep explicit conditionals so the caller can reject a
+				// divergent SDK-specific value, while a conditional default
+				// remains shadowed by the implicit value just like ?= would be
+				// by any other lower-layer assignment.
+				conditionals := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
+				for _, conditional := range resolved.conditionals {
+					if conditional.operator != "?=" {
+						conditionals = append(conditionals, conditional)
+					}
+				}
+				resolved = xcconfigResolvedValue{
+					value:        implicit,
+					path:         "<implicit>",
+					found:        true,
+					exact:        true,
+					conditionals: conditionals,
+				}
+			}
+		}
 		if assignment.key != setting {
+			selector := signingXCConfigSelectorIdentity(assignment.key)
+			inheritedValue := resolved.value
+			for index := len(resolved.conditionals) - 1; index >= 0; index-- {
+				if signingXCConfigSelectorIdentity(resolved.conditionals[index].key) == selector {
+					inheritedValue = resolved.conditionals[index].value
+					break
+				}
+			}
 			if assignment.operator == "?=" && resolved.found {
 				continue
 			}
 			if assignment.operator == "=" {
-				selector := signingXCConfigSelectorIdentity(assignment.key)
 				filtered := make([]xcconfigConditionalValue, 0, len(resolved.conditionals))
 				for _, existing := range resolved.conditionals {
 					if signingXCConfigSelectorIdentity(existing.key) == selector {
@@ -756,9 +824,17 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				}
 				resolved.conditionals = filtered
 			}
+			conditionalValue := assignment.value
+			if resolved.found {
+				if strings.Contains(conditionalValue, "$(inherited)") || strings.Contains(conditionalValue, "${inherited}") {
+					conditionalValue = strings.ReplaceAll(conditionalValue, "$(inherited)", inheritedValue)
+					conditionalValue = strings.ReplaceAll(conditionalValue, "${inherited}", inheritedValue)
+				}
+				conditionalValue = expandXCConfigLookupReferences(conditionalValue, lookup)
+			}
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
 				key:      assignment.key,
-				value:    assignment.value,
+				value:    conditionalValue,
 				operator: assignment.operator,
 				path:     path,
 			})
