@@ -1590,10 +1590,8 @@ func TestRun_MetadataPullMissingVersionPointsToDiscovery(t *testing.T) {
 	}
 }
 
-func TestRun_XcodeCloudStatusIDAliasHelpAndConflictTelemetry(t *testing.T) {
+func TestRun_XcodeCloudStatusHelpOmitsRemovedIDAlias(t *testing.T) {
 	resetReportFlags(t)
-	originalEmitTelemetry := emitTelemetry
-	t.Cleanup(func() { emitTelemetry = originalEmitTelemetry })
 
 	stdout, stderr := captureCommandOutput(t, func() {
 		if code := Run([]string{"xcode-cloud", "status", "--help"}, "1.0.0"); code != ExitSuccess {
@@ -1603,30 +1601,28 @@ func TestRun_XcodeCloudStatusIDAliasHelpAndConflictTelemetry(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("help stderr = %q, want empty", stderr)
 	}
-	if !strings.Contains(stdout, "--id") || !strings.Contains(stdout, "DEPRECATED: use --run-id") {
-		t.Fatalf("help does not mark --id deprecated: %q", stdout)
+	if !strings.Contains(stdout, "--run-id") {
+		t.Fatalf("help does not document --run-id: %q", stdout)
+	}
+	if strings.Contains(stdout, "--id ") || strings.Contains(stdout, "DEPRECATED") {
+		t.Fatalf("help still documents the removed --id alias: %q", stdout)
 	}
 
-	var gotContext telemetry.EventContext
-	emitTelemetry = func(_ string, _ string, _ time.Duration, _ int, eventContext telemetry.EventContext) {
-		gotContext = eventContext
-	}
 	stdout, stderr = captureCommandOutput(t, func() {
-		if code := Run([]string{"xcode-cloud", "status", "--run-id", "run-1", "--id", "run-1"}, "1.0.0"); code != ExitUsage {
-			t.Fatalf("conflict exit code = %d, want %d", code, ExitUsage)
+		if code := Run([]string{"xcode-cloud", "status", "--id", "run-1"}, "1.0.0"); code != ExitUsage {
+			t.Fatalf("removed alias exit code = %d, want %d", code, ExitUsage)
 		}
 	})
 	if stdout != "" {
-		t.Fatalf("conflict stdout = %q, want empty", stdout)
+		t.Fatalf("removed alias stdout = %q, want empty", stdout)
 	}
-	if !strings.Contains(stderr, "--id conflicts with --run-id; use only --run-id") {
-		t.Fatalf("conflict stderr = %q", stderr)
-	}
-	if gotContext.FailureParameter != "--run-id" ||
-		gotContext.DiagnosticCode != string(shared.DiagnosticConflictingInput) ||
-		gotContext.FailureStage != telemetry.FailureStageValidation ||
-		gotContext.OutcomeKind != telemetry.OutcomeUsageError {
-		t.Fatalf("telemetry context = %+v, want canonical --run-id conflict", gotContext)
+	want := "Error: unknown flag `--id` for `asc xcode-cloud status`\n" +
+		"Try:\n" +
+		"  --run-id\n" +
+		"For help:\n" +
+		"  asc xcode-cloud status --help\n"
+	if stderr != want {
+		t.Fatalf("removed alias stderr = %q, want %q", stderr, want)
 	}
 }
 
