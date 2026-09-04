@@ -18,6 +18,9 @@ func registerAllOutputRenderers() {
 	registerRows(webAgreementsAcceptRows)
 	registerRows(webAgreementDownloadRows)
 	registerRows(webAppDeleteRows)
+	registerRows(webAppDeclarationListRows)
+	registerRows(webMedicalDeviceDeclarationStateRows)
+	registerRows(webMedicalDeviceDeclarationResultRows)
 	registerRows(webSubscriptionMonthlyCommitmentBootstrapRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
 	registerRows(webAppGroupDeleteRows)
@@ -163,8 +166,18 @@ func registerAllOutputRenderers() {
 		}
 		return nil
 	})
+	registerRows(signingResignResultRows)
 	registerRows(subscriptionAvailabilityRows)
 	registerRowsWithSingleResourceAdapter(subscriptionPlanAvailabilitiesRows)
+	registerDirect(func(v *SubscriptionPlanAvailabilitySetResult, render func([]string, [][]string)) error {
+		h, r := subscriptionPlanAvailabilitySetSummaryRows(v)
+		render(h, r)
+		th, tr := subscriptionPlanAvailabilitySetTerritoryRows(v)
+		if len(tr) > 0 {
+			render(th, tr)
+		}
+		return nil
+	})
 	registerRows(subscriptionGracePeriodRows)
 	registerRowsWithSingleResourceAdapter(territoriesRows)
 	registerRowsErr(territoryAgeRatingsRows)
@@ -288,6 +301,10 @@ func registerAllOutputRenderers() {
 	})
 	registerRows(buildExpireAllResultRows)
 	registerRows(appScreenshotListResultRows)
+	registerDirect(matrixResultTables)
+	registerRows(matrixCellResultRows)
+	registerRows(matrixReviewResultRows)
+	registerDirect(matrixReviewManifestTables)
 	registerRows(screenshotSizesRows)
 	registerRows(appPreviewListResultRows)
 	registerDirect(func(v *AppScreenshotUploadResult, render func([]string, [][]string)) error {
@@ -529,6 +546,7 @@ func registerAllOutputRenderers() {
 	registerRows(passTypeIDDeleteResultRows)
 	registerRows(bundleIDCapabilityDeleteResultRows)
 	registerRows(certificateRevokeResultRows)
+	registerRows(certificateExportResultRows)
 	registerRows(profileDeleteResultRows)
 	registerRows(endUserLicenseAgreementRows)
 	registerRows(endUserLicenseAgreementDeleteResultRows)
@@ -537,6 +555,8 @@ func registerAllOutputRenderers() {
 	registerRows(signingSyncRows)
 	registerRows(signingKeychainInstallRows)
 	registerRows(xcodeTestResultRows)
+	registerRows(xcodeSigningPlanOutputRows)
+	registerRows(xcodeSigningApplyOutputRows)
 	registerRows(xcodeCloudRunResultRows)
 	registerRows(xcodeCloudStatusResultRows)
 	registerDirect(xcodeCloudDoctorResultTables)

@@ -5,45 +5,54 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
 
 // Cached web sessions are shared mutable state across concurrent `asc`
-// processes. A per-entry advisory lock serializes the read/modify/write
-// transactions used by the file and keychain backends. The file backend also
-// has an O_EXCL create boundary below; the lock is what gives the keychain's
-// read-then-write aggregate the same no-overwrite behavior.
+// processes: one can persist a refreshed session while another is deciding
+// whether the entry it loaded is still the one to delete. A per-entry advisory
+// lock file serializes those transactions so a compare and the delete it
+// authorizes cannot straddle a persist.
 //
-// Locking is bounded and stale lock files are reclaimed. Ordinary refresh and
-// login writes are best effort so a cache lock cannot turn an optional cache
-// into an authentication outage. Import persistence uses the required variant
-// because allowing it to continue unlocked could replace a session created
-// while the bundle was being validated.
-const (
-	sessionLockPollInterval = 2 * time.Millisecond
-	sessionLockWaitTimeout  = 2 * time.Second
-	sessionLockStaleAfter   = 30 * time.Second
+// The lock is taken at two anchors, in a fixed order so concurrent holders
+// cannot deadlock against each other. The session cache directory covers
+// file-backed entries, which live there anyway. A stable per-user OS directory
+// covers the keychain store, which is global to the user: two processes that
+// select the keychain backend under different ASC_WEB_SESSION_CACHE_DIR or HOME
+// values share no cache directory, yet still read and write the same keychain
+// item. Holding whichever anchors can be created makes those processes exclude
+// each other as long as either anchor is shared.
+//
+// The lock is advisory and best effort by design. Acquisition is bounded, a
+// lock left behind by a killed process remains harmless because advisory locks
+// are released when descriptors close, and any failure to lock falls through
+// to the unlocked operation: refusing to persist or discard a session because
+// a lock file cannot be created would turn a cache
+// optimization into an auth outage, and refusing to discard one would leave a
+// proven-stale jar to burn another 2FA code.
+var (
+	errSessionLockHeld        = errors.New("session lock is held")
+	errSessionLockUnavailable = errors.New("cached web session could not be locked")
+	sessionLockPollInterval   = 2 * time.Millisecond
+	sessionLockWaitTimeout    = 2 * time.Second
+	sessionSharedLockRoot     = platformSessionLockRoot
 )
 
-var errSessionLockUnavailable = errors.New("cached web session could not be locked")
-
 // withSessionEntryLock runs fn while holding the advisory lock for one cached
-// session entry. If the cache directory cannot hold a lock, it falls through
-// to preserve the existing best-effort cache behavior for login/refresh.
+// session entry.
 func withSessionEntryLock(key string, fn func() error) error {
-	release, _ := acquireSessionEntryLock(key)
+	release := acquireSessionEntryLock(key)
 	defer release()
 	return fn()
 }
 
-// withRequiredSessionEntryLock refuses to mutate an import when the lock
-// cannot be acquired. This is needed for the keychain backend: unlike a file
-// create, its aggregate API has no create-only operation, so a failed lock
-// would make a no-overwrite check racy.
+// withRequiredSessionEntryLock refuses to mutate an import when no complete
+// lock set can be acquired. This is needed for the keychain backend: unlike a
+// file create, its aggregate API has no create-only operation, so a failed
+// lock would make a no-overwrite check racy.
 func withRequiredSessionEntryLock(key string, fn func() error) error {
-	release, ok := acquireSessionEntryLock(key)
+	release, ok := acquireRequiredSessionEntryLock(key)
 	if !ok {
 		return fmt.Errorf("%w: %s", errSessionLockUnavailable, key)
 	}
@@ -51,58 +60,133 @@ func withRequiredSessionEntryLock(key string, fn func() error) error {
 	return fn()
 }
 
-func acquireSessionEntryLock(key string) (func(), bool) {
+// acquireRequiredSessionEntryLock acquires every lock anchor used by the
+// best-effort lock. Requiring all anchors keeps the keychain guard safe even
+// when the cache directory and the stable per-user keychain anchor differ.
+func acquireRequiredSessionEntryLock(key string) (func(), bool) {
 	noop := func() {}
 	if strings.TrimSpace(key) == "" {
 		return noop, true
 	}
-	path, err := sessionEntryLockPath(key)
-	if err != nil {
+	paths := sessionEntryLockPaths(key)
+	if len(paths) == 0 {
 		return noop, false
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return noop, false
+	sharedPath := sessionSharedEntryLockPath(key)
+	releases := make([]func(), 0, len(paths))
+	for _, path := range paths {
+		acquire := acquireLockFile
+		if path == sharedPath {
+			acquire = acquireSharedSessionLockFile
+		}
+		release, ok := acquire(path)
+		if !ok {
+			for i := len(releases) - 1; i >= 0; i-- {
+				releases[i]()
+			}
+			return noop, false
+		}
+		releases = append(releases, release)
 	}
+	return func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}, true
+}
 
+// acquireSessionEntryLock takes the entry lock at every anchor that can be
+// locked and returns a release func for them. Anchors that cannot be taken are
+// skipped rather than reported: see the fail-open rationale above.
+func acquireSessionEntryLock(key string) func() {
+	if strings.TrimSpace(key) == "" {
+		return func() {}
+	}
+	paths := sessionEntryLockPaths(key)
+	sharedPath := sessionSharedEntryLockPath(key)
+	releases := make([]func(), 0, len(paths))
+	for _, path := range paths {
+		acquire := acquireLockFile
+		if path == sharedPath {
+			acquire = acquireSharedSessionLockFile
+		}
+		if release, ok := acquire(path); ok {
+			releases = append(releases, release)
+		}
+	}
+	return func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+}
+
+// sessionEntryLockPaths returns the lock anchors for one entry, in the fixed
+// order every caller acquires them.
+func sessionEntryLockPaths(key string) []string {
+	name := "session-" + key + ".lock"
+	paths := make([]string, 0, 2)
+	if dir, err := webSessionCacheDir(); err == nil && strings.TrimSpace(dir) != "" {
+		paths = append(paths, filepath.Join(dir, name))
+	}
+	if path := sessionSharedEntryLockPath(key); path != "" {
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+func sessionSharedEntryLockPath(key string) string {
+	dir := strings.TrimSpace(sessionSharedLockRoot())
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, sessionSharedLockDirName(), "session-"+key+".lock")
+}
+
+// sessionSharedLockDirName keeps the persistent shared anchor per OS user. Its
+// parent is stable across process-local cache, HOME, and temporary-directory
+// settings so processes that reach the same keychain derive the same path.
+func sessionSharedLockDirName() string { return platformSessionLockDirName() }
+
+func acquireLockFile(path string) (func(), bool) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, false
+	}
+	return acquirePreparedLockFile(path, func(path string) (*os.File, error) {
+		return os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	})
+}
+
+func acquirePreparedLockFile(path string, openFile func(string) (*os.File, error)) (func(), bool) {
 	deadline := time.Now().Add(sessionLockWaitTimeout)
 	for {
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		file, err := openFile(path)
 		if err == nil {
-			_, _ = file.WriteString(strconv.Itoa(os.Getpid()))
+			if err := lockSessionFile(file); err == nil {
+				return func() {
+					_ = unlockSessionFile(file)
+					_ = file.Close()
+				}, true
+			} else if !isSessionLockHeld(err) {
+				_ = file.Close()
+				return nil, false
+			}
 			_ = file.Close()
-			return func() { _ = os.Remove(path) }, true
-		}
-		if !os.IsExist(err) {
-			return noop, false
-		}
-		if breakStaleSessionEntryLock(path) {
+			if !time.Now().Before(deadline) {
+				return nil, false
+			}
+			time.Sleep(sessionLockPollInterval)
 			continue
 		}
+		if !os.IsNotExist(err) && !os.IsPermission(err) {
+			// A read-only or otherwise unusable directory cannot be locked.
+			return nil, false
+		}
 		if !time.Now().Before(deadline) {
-			return noop, false
+			return nil, false
 		}
 		time.Sleep(sessionLockPollInterval)
 	}
 }
 
-func sessionEntryLockPath(key string) (string, error) {
-	dir, err := webSessionCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "session-"+key+".lock"), nil
-}
-
-// breakStaleSessionEntryLock removes a lock left by a process that died
-// before releasing it, reporting whether the next acquisition attempt should
-// be made immediately.
-func breakStaleSessionEntryLock(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return os.IsNotExist(err)
-	}
-	if time.Since(info.ModTime()) < sessionLockStaleAfter {
-		return false
-	}
-	return os.Remove(path) == nil
-}
+func isSessionLockHeld(err error) bool { return errors.Is(err, errSessionLockHeld) }

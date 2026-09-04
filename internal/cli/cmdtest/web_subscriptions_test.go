@@ -879,3 +879,41 @@ func monthlyCommitmentBootstrapTransport(t *testing.T, opts monthlyCommitmentBoo
 		}
 	})
 }
+
+func TestWebSubscriptionsPricingMonthlyCommitmentBootstrapPointsAtPlanAvailabilitySet(t *testing.T) {
+	restoreSession := webcmd.SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{
+			Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodGet && req.URL.Path == "/iris/v1/subscriptions/sub-1/planAvailabilities" {
+					return webSubscriptionsJSONResponse(`{"data":[
+						{"type":"subscriptionPlanAvailabilities","id":"plan-monthly","attributes":{"planType":"MONTHLY"},"relationships":{"availableTerritories":{"data":[{"type":"territories","id":"DEU"}]}}}
+					]}`), nil
+				}
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.String())
+				return nil, nil
+			})},
+		}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+
+	stdout, stderr := captureOutput(t, func() {
+		code := cmd.Run([]string{
+			"web", "subscriptions", "pricing", "monthly-commitment", "bootstrap",
+			"--subscription-id", "sub-1",
+			"--territory", "NOR",
+			"--upfront-price-point-id", "upfront-point",
+			"--monthly-price-point-id", "monthly-point",
+			"--confirm",
+			"--output", "json",
+		}, "1.0.0")
+		if code != cmd.ExitError {
+			t.Fatalf("exit code = %d, want %d", code, cmd.ExitError)
+		}
+	})
+	if stdout != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "asc subscriptions pricing plan-availability set --subscription-id sub-1 --plan-type MONTHLY") {
+		t.Fatalf("expected the error to point at plan-availability set, got %q", stderr)
+	}
+}

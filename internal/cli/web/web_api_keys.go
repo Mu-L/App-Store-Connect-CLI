@@ -119,9 +119,8 @@ Examples:
 				return shared.UsageError(err.Error())
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -190,9 +189,8 @@ Examples:
 				return shared.UsageError("--key-id is required")
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -274,11 +272,12 @@ Create an all-apps App Store Connect team API key using a cached Apple Account
 web session. The one-time P8 is saved as AuthKey_<KEY_ID>.p8 with mode 0600.
 The P8 contents are never written to command output.
 
-Account Holder or Admin access is required. The role defaults to ADMIN and must
-be an uppercase identifier such as ADMIN or APP_MANAGER. Documented roles that
-cannot be selected for a team API key are rejected. Roles missing from the
-bundled snapshot are sent to App Store Connect with a warning instead of being
-rejected client-side.
+Account Holder or Admin access is required. The role defaults to ADMIN and is a
+role identifier such as ADMIN or APP_MANAGER. Matching is case-insensitive:
+lowercase input such as app_manager is sent to App Store Connect as
+APP_MANAGER. Documented roles that cannot be selected for a team API key are
+rejected. Roles missing from the bundled snapshot are sent to App Store Connect
+with a warning instead of being rejected client-side.
 
 Examples:
   asc web api-keys create --name "Release automation"
@@ -315,9 +314,8 @@ Examples:
 				return fmt.Errorf("prepare API key output directory: %w", err)
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -435,7 +433,7 @@ func normalizeWebAPIKeyRole(value string) (string, error) {
 		return "", fmt.Errorf("--role is required")
 	}
 	if !isWebAPIKeyRoleIdentifier(role) {
-		return "", fmt.Errorf("--role must be an uppercase identifier such as ADMIN or APP_MANAGER")
+		return "", fmt.Errorf("--role must be a role identifier such as ADMIN or APP_MANAGER (letters, digits, and underscores; case-insensitive)")
 	}
 	if err := classifyWebAPIKeyRole(role); err != nil {
 		return "", err

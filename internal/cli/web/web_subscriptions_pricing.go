@@ -156,9 +156,8 @@ resolution but does not mutate App Store Connect.
 				}
 			}
 
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}
@@ -185,7 +184,13 @@ resolution but does not mutate App Store Connect.
 			monthlyAvailability, found := findPlanAvailabilityByType(availabilities, "MONTHLY")
 			created := false
 			if found && availabilityExcludesTerritory(monthlyAvailability, territoryID) {
-				return fmt.Errorf("MONTHLY plan availability %q exists but does not include %s; update its territories before bootstrapping prices", monthlyAvailability.ID, territoryID)
+				return fmt.Errorf(
+					"MONTHLY plan availability %q exists but does not include %s; add it with 'asc subscriptions pricing plan-availability set --subscription-id %s --plan-type MONTHLY --territories <complete list including %s> --confirm' before bootstrapping prices",
+					monthlyAvailability.ID,
+					territoryID,
+					id,
+					territoryID,
+				)
 			}
 			if *dryRun {
 				result := asc.WebSubscriptionMonthlyCommitmentBootstrapResult{
@@ -281,9 +286,8 @@ func WebSubscriptionsPricingAdjustedEqualizationsViewCommand() *ffcli.Command {
 			if normalizedPlanType != "MONTHLY" {
 				return shared.UsageError(`--plan-type only supports "MONTHLY"; Apple's endpoint rejects UPFRONT`)
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()
-			session, err := resolveWebSessionForCommand(requestCtx, authFlags)
 			if err != nil {
 				return err
 			}

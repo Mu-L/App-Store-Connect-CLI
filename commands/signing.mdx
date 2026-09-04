@@ -23,6 +23,7 @@ Apple code signing has four separate pieces:
 | Re-encrypt the repository with a replacement password | `asc signing sync rotate-password --confirm` |
 | Plan profiles for every target in an iOS archive and an exact device set | `asc signing reconcile plan` |
 | Apply an approved reconciliation plan | `asc signing reconcile apply --confirm` |
+| Re-sign an existing IPA (experimental) | `asc signing resign` |
 | Run one release-testing command with a temporary keychain | `asc signing run` |
 | Keep one identity in a new dedicated keychain (experimental) | `asc signing keychain install --confirm` |
 
@@ -689,6 +690,78 @@ Preview cleanup before confirming it:
 asc profiles local clean --expired --dry-run
 asc profiles local clean --expired --confirm
 ```
+
+## Re-sign an Existing IPA (Experimental)
+
+`asc signing resign` is an experimental, macOS-only operation. It creates a
+new IPA from an existing archive and never overwrites the input or an existing
+output. Every app-like target, including nested extensions, watch targets,
+and App Clips, must have an explicit profile mapping. Nested Mach-O code such
+as frameworks and dylibs inherits the containing target's profile and must
+not appear in the manifest; an extra mapping is rejected as an undiscovered
+target.
+
+```bash  theme={null}
+asc signing resign \
+  --ipa ./build/App.ipa \
+  --output ./build/App-resigned.ipa \
+  --identity ./signing/distribution.p12 \
+  --identity-password-file ./secrets/p12-password \
+  --profiles-manifest ./signing/profiles.json \
+  --format json
+```
+
+All command-specific flags are experimental. `--ipa`, `--output`,
+`--identity`, and `--profiles-manifest` are required;
+`--identity-password-file` is optional. The manifest is strict JSON with no
+unknown or duplicate fields:
+
+```json
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "bundleId": "com.example.app",
+      "profilePath": "profiles/app.mobileprovision"
+    },
+    {
+      "bundleId": "com.example.app.share",
+      "profilePath": "profiles/share.mobileprovision"
+    }
+  ]
+}
+```
+
+`profilePath` is relative to the manifest directory and is read without
+following symlinks. The mapping must contain exactly one entry for each
+discovered target. Profiles must be valid Apple-signed development, ad-hoc,
+or App Store profiles that match their target and the supplied identity.
+
+The archive is validated before signing: unsafe paths, duplicate or
+colliding entries, symlinks, encrypted members, oversized expansion, and
+unsupported target metadata fail without creating the output parent. A valid
+`SwiftSupport` directory, when present, is exactly
+`SwiftSupport/iphoneos/*.dylib`: it has no root files, alternate platform
+directories, nested entries, symlinks, or non-dylib files. A valid
+`WatchKitSupport2` directory, when present, contains only the regular `WK`
+binary. Each preserved runtime is
+verified against Apple's generic code-signing anchor before and after repack.
+The initial and final direct-runtime inventories must match exactly by
+normalized relative path, bounded size (at most 1 GiB per file), SHA-256
+digest, and validated permission mode. Runtime files are not re-signed. This
+repository does not include a genuine live Apple-signed SwiftSupport fixture;
+local tests use a provenance stub and do not establish acceptance of a real
+runtime.
+
+Usage or flag-shape errors return exit code 2. Archive, profile, identity,
+entitlement, signing, verification, publication, and cleanup failures return
+exit code 1. Output is written only after every validation succeeds. A
+failure after no-replace publication is reported as an ambiguous publication;
+the artifact is retained for inspection and must not be blindly retried.
+Errors expose only a stable phase/code; temporary paths, keychain names,
+profile source paths, passwords, and child-process diagnostics are kept out
+of stderr and all output formats. JSON, table, and Markdown outputs contain
+only the documented receipt fields and never raw profile data.
 
 ## Rotation and expiry
 

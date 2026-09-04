@@ -17,7 +17,6 @@ import (
 )
 
 const (
-	developerPortalLegacyPath        = "/services-account/QH65B2"
 	developerAppGroupsListPath       = "/account/ios/identifiers/listApplicationGroups.action"
 	developerAppGroupsCreatePath     = "/account/ios/identifiers/addApplicationGroup.action"
 	developerAppGroupsDeletePath     = "/account/ios/identifiers/deleteApplicationGroup.action"
@@ -928,34 +927,6 @@ func validateDeveloperPortalLegacyResponse(response developerPortalLegacyRespons
 		return fmt.Errorf("developer portal request failed (result code %d, request ID %s): %s", *response.ResultCode, response.RequestID, message)
 	}
 	return fmt.Errorf("developer portal request failed (result code %d): %s", *response.ResultCode, message)
-}
-
-func (c *Client) doDeveloperPortalLegacyFormRequest(ctx context.Context, path string, values url.Values, requireCSRF bool) ([]byte, error) {
-	headers := developerPortalHeaders("")
-	headers.Set("Accept", "application/json, text/javascript, */*; q=0.01")
-	headers.Set("Content-Type", "application/x-www-form-urlencoded")
-	csrf, csrfTS := c.developerCSRFTokens()
-	if csrf != "" {
-		headers.Set("csrf", csrf)
-	}
-	if csrfTS != "" {
-		headers.Set("csrf_ts", csrfTS)
-	}
-	if requireCSRF && (csrf == "" || csrfTS == "") {
-		return nil, fmt.Errorf("missing Developer Portal CSRF headers; %s", developerPortalAuthHint)
-	}
-	body, response, err := c.doDeveloperPortalHTTP(ctx, http.MethodPost, c.developerPortalOrigin()+developerPortalLegacyPath+path, values, headers)
-	if err != nil {
-		return nil, err
-	}
-	c.captureDeveloperCSRFTokens(response.Header)
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return nil, developerPortalSessionError(response.StatusCode)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, &APIError{Status: response.StatusCode, AppleRequestID: extractAppleRequestID(response.Header), rawBody: body}
-	}
-	return body, nil
 }
 
 // developerBundleIDAppGroupsState reads the APP_GROUPS capability of a Bundle
