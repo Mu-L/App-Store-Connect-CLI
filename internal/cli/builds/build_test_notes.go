@@ -13,8 +13,6 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 )
 
-const legacyLocalizationIDWarning = "Warning: `--id` is deprecated. Use `--localization-id`."
-
 type testNotesBuildSelectorFlags struct {
 	buildSelectorFlags
 }
@@ -85,9 +83,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
 			if *limit != 0 && (*limit < 1 || *limit > 200) {
 				return shared.UsageError("builds test-notes list: --limit must be between 1 and 200")
 			}
@@ -164,7 +159,6 @@ func BuildsTestNotesViewCommand() *ffcli.Command {
 
 	selectors := bindTestNotesBuildSelectorFlags(fs)
 	localizationID := fs.String("localization-id", "", "Localization ID (low-level escape hatch)")
-	legacyLocalizationID := bindHiddenLocalizationIDFlag(fs)
 	locale := fs.String("locale", "", "Locale (e.g., en-US, required with build selectors)")
 	output := shared.BindOutputFlags(fs)
 
@@ -188,13 +182,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
-			if err := applyLegacyLocalizationIDAlias(localizationID, legacyLocalizationID); err != nil {
-				return err
-			}
-
 			id := strings.TrimSpace(*localizationID)
 			localeValue := strings.TrimSpace(*locale)
 			if err := validateTestNotesLocalizationTarget(id, localeValue, selectors); err != nil {
@@ -253,10 +240,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
-
 			localeValue := strings.TrimSpace(*locale)
 			if localeValue == "" {
 				fmt.Fprintln(os.Stderr, "Error: --locale is required")
@@ -303,7 +286,6 @@ func BuildsTestNotesUpdateCommand() *ffcli.Command {
 
 	selectors := bindTestNotesBuildSelectorFlags(fs)
 	localizationID := fs.String("localization-id", "", "Localization ID (low-level escape hatch)")
-	legacyLocalizationID := bindHiddenLocalizationIDFlag(fs)
 	locale := fs.String("locale", "", "Locale (e.g., en-US, required with build selectors)")
 	whatsNew := fs.String("whats-new", "", "What to Test notes")
 	output := shared.BindOutputFlags(fs)
@@ -327,13 +309,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
-			if err := applyLegacyLocalizationIDAlias(localizationID, legacyLocalizationID); err != nil {
-				return err
-			}
-
 			id := strings.TrimSpace(*localizationID)
 			localeValue := strings.TrimSpace(*locale)
 			if err := validateTestNotesLocalizationTarget(id, localeValue, selectors); err != nil {
@@ -382,7 +357,6 @@ func BuildsTestNotesDeleteCommand() *ffcli.Command {
 
 	selectors := bindTestNotesBuildSelectorFlags(fs)
 	localizationID := fs.String("localization-id", "", "Localization ID (low-level escape hatch)")
-	legacyLocalizationID := bindHiddenLocalizationIDFlag(fs)
 	locale := fs.String("locale", "", "Locale (e.g., en-US, required with build selectors)")
 	confirm := fs.Bool("confirm", false, "Confirm deletion")
 	output := shared.BindOutputFlags(fs)
@@ -406,13 +380,6 @@ Examples:
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
-			if err := selectors.applyLegacyAliases(); err != nil {
-				return err
-			}
-			if err := applyLegacyLocalizationIDAlias(localizationID, legacyLocalizationID); err != nil {
-				return err
-			}
-
 			id := strings.TrimSpace(*localizationID)
 			localeValue := strings.TrimSpace(*locale)
 			if err := validateTestNotesLocalizationTarget(id, localeValue, selectors); err != nil {
@@ -461,7 +428,7 @@ func bindTestNotesBuildSelectorFlags(fs *flag.FlagSet) testNotesBuildSelectorFla
 			latestUsage:      "Resolve the latest matching build for --app context",
 			versionUsage:     "App version string (e.g., 1.2.3)",
 			buildNumberUsage: "Build number (CFBundleVersion)",
-			platformUsage:    "Platform: IOS, MAC_OS, TV_OS, VISION_OS",
+			platformUsage:    "Platform (required with --build-number): IOS, MAC_OS, TV_OS, VISION_OS",
 		}),
 	}
 }
@@ -486,17 +453,6 @@ func (f testNotesBuildSelectorFlags) resolveBuild(ctx context.Context, client *a
 	defer cancel()
 
 	return ResolveBuild(requestCtx, client, opts)
-}
-
-func bindHiddenLocalizationIDFlag(fs *flag.FlagSet) *trackedStringFlag {
-	value := &trackedStringFlag{}
-	fs.Var(value, "id", "DEPRECATED: use --localization-id")
-	shared.HideFlagFromHelp(fs.Lookup("id"))
-	return value
-}
-
-func applyLegacyLocalizationIDAlias(localizationID *string, legacyLocalizationID *trackedStringFlag) error {
-	return applyLegacyStringAlias(localizationID, legacyLocalizationID, "--id", "--localization-id", legacyLocalizationIDWarning)
 }
 
 func validateTestNotesLocalizationTarget(localizationID, locale string, selectors testNotesBuildSelectorFlags) error {

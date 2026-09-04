@@ -94,13 +94,11 @@ func IAPSetupCommand() *ffcli.Command {
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	iapType := fs.String("type", "", "IAP type: CONSUMABLE, NON_CONSUMABLE, NON_RENEWING_SUBSCRIPTION")
 	referenceName := fs.String("reference-name", "", "Reference name")
-	refNameAlias := fs.String("ref-name", "", "Reference name alias")
 	productID := fs.String("product-id", "", "Product ID (e.g., com.example.product)")
 	familySharable := fs.Bool("family-sharable", false, "Enable Family Sharing (cannot be undone)")
 
 	locale := fs.String("locale", "", "Locale for the first localization (e.g., en-US)")
 	displayName := fs.String("display-name", "", "Display name for the first localization")
-	nameAlias := fs.String("name", "", "Display name alias")
 	description := fs.String("description", "", "Description for the first localization")
 
 	baseTerritory := fs.String("base-territory", "", "Base territory input for the initial price schedule (accepts alpha-2, alpha-3, or exact English country name)")
@@ -111,9 +109,6 @@ func IAPSetupCommand() *ffcli.Command {
 	refresh := fs.Bool("refresh", false, "Force refresh of the price-point tier cache when resolving --tier or --price")
 	noVerify := fs.Bool("no-verify", false, "Skip post-create readback verification for faster execution")
 	output := shared.BindOutputFlags(fs)
-
-	shared.HideFlagFromHelp(fs.Lookup("ref-name"))
-	shared.HideFlagFromHelp(fs.Lookup("name"))
 
 	return &ffcli.Command{
 		Name:       "setup",
@@ -145,16 +140,9 @@ Examples:
 				return shared.UsageError("iap setup does not accept positional arguments")
 			}
 
-			referenceNameValue, err := resolveIAPSetupAlias(*referenceName, *refNameAlias, "--reference-name", "--ref-name")
-			if err != nil {
-				return shared.UsageError(err.Error())
-			}
-			displayNameValue, err := resolveIAPSetupAlias(*displayName, *nameAlias, "--display-name", "--name")
-			if err != nil {
-				return shared.UsageError(err.Error())
-			}
 			baseTerritoryValue := strings.TrimSpace(*baseTerritory)
 			if baseTerritoryValue != "" {
+				var err error
 				baseTerritoryValue, err = ascterritory.Normalize(baseTerritoryValue)
 				if err != nil {
 					return shared.UsageError(err.Error())
@@ -163,11 +151,11 @@ Examples:
 
 			opts := iapSetupOptions{
 				AppID:            shared.ResolveAppID(*appID),
-				ReferenceName:    referenceNameValue,
+				ReferenceName:    strings.TrimSpace(*referenceName),
 				ProductID:        strings.TrimSpace(*productID),
 				FamilySharable:   *familySharable,
 				Locale:           strings.TrimSpace(*locale),
-				DisplayName:      displayNameValue,
+				DisplayName:      strings.TrimSpace(*displayName),
 				Description:      strings.TrimSpace(*description),
 				BaseTerritory:    baseTerritoryValue,
 				PricePointID:     strings.TrimSpace(*pricePointID),
@@ -771,18 +759,6 @@ func printIAPSetupResult(result *iapSetupResult, format string, pretty bool) err
 			return nil
 		},
 	)
-}
-
-func resolveIAPSetupAlias(primary, alias, primaryName, aliasName string) (string, error) {
-	trimmedPrimary := strings.TrimSpace(primary)
-	trimmedAlias := strings.TrimSpace(alias)
-	if trimmedPrimary == "" {
-		return trimmedAlias, nil
-	}
-	if trimmedAlias == "" || trimmedAlias == trimmedPrimary {
-		return trimmedPrimary, nil
-	}
-	return "", fmt.Errorf("%s and %s must match when both are provided", primaryName, aliasName)
 }
 
 func iapSetupVerificationStatus(verification *iapSetupVerification) string {
