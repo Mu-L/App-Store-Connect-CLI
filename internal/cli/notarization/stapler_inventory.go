@@ -394,7 +394,7 @@ func (target *validatedStaplerTarget) captureDirectoryInventory(ctx context.Cont
 	}
 	finalPathInfo, err := filesystemRoot.Lstat(target.relative)
 	if err != nil {
-		if staplerInventoryEntryVanished(err) {
+		if staplerInventoryPathVanished(err) {
 			// The command retained and scanned this bundle, so a pathname that no
 			// longer resolves proves the artifact changed rather than an
 			// operational filesystem failure.
@@ -599,7 +599,7 @@ func (scanner *staplerInventoryScanner) scanDirectory(directory *os.Root, relati
 		case info.Mode()&os.ModeSymlink != 0:
 			target, err := directory.Readlink(name)
 			if err != nil {
-				if staplerInventoryEntryVanished(err) {
+				if staplerInventoryEntryVanished(err) || errors.Is(err, syscall.EINVAL) {
 					return errStaplerInventoryChanged
 				}
 				return fmt.Errorf("read inventory symlink %q: %w", entryRelative, err)

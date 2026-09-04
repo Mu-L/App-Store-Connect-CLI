@@ -1238,6 +1238,14 @@ func staplerTargetSemanticError(err error, absolute string) error {
 func reportStaplerFailure(command string, err error) error {
 	var partialErr *localxcode.StaplerPartialMutationError
 	partialMutation := command == "staple" && errors.As(err, &partialErr)
+	if !partialMutation && localxcode.IsStaplerOperationAttemptedCancellation(err) {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "Error: notarization %s timed out\n", command)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: notarization %s was canceled\n", command)
+		}
+		return shared.NewReportedError(err)
+	}
 	var commandErr *localxcode.StaplerCommandError
 	if errors.As(err, &commandErr) {
 		if partialMutation {
@@ -1332,7 +1340,51 @@ func reportStaplerPartialMutation(err *localxcode.StaplerPartialMutationError) {
 		fmt.Fprintln(os.Stderr, "Error: notarization staple failed during staple before a usable exit status was available; the artifact may have been modified but was not verified")
 		return
 	}
+	if err != nil && err.Operation == localxcode.StaplerOperationStaple {
+		var stageErr *localxcode.StaplerStageVerificationError
+		if errors.As(err, &stageErr) {
+			reportStaplerPartialStageVerification(stageErr)
+			return
+		}
+	}
 	fmt.Fprintln(os.Stderr, "Error: notarization staple completed, but follow-up validation failed; the artifact may have been modified but was not verified")
+}
+
+func reportStaplerPartialStageVerification(stageErr *localxcode.StaplerStageVerificationError) {
+	stage := staplerStageVerificationDescription(stageErr)
+	var identityErr *staplerTargetIdentityError
+	if errors.As(stageErr, &identityErr) {
+		fmt.Fprintf(os.Stderr, "Error: notarization staple completed, but artifact target changed %s; the artifact may have been modified but was not verified\n", stage)
+		return
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(stageErr, &verifyErr) {
+		fmt.Fprintf(os.Stderr, "Error: notarization staple completed, but could not inspect artifact filesystem %s; the artifact may have been modified but was not verified\n", stage)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: notarization staple completed, but stapler verification failed %s; the artifact may have been modified but was not verified\n", stage)
+}
+
+func staplerStageVerificationDescription(stageErr *localxcode.StaplerStageVerificationError) string {
+	if stageErr == nil {
+		return "at an unknown stage"
+	}
+	switch {
+	case stageErr.Operation == localxcode.StaplerOperationStaple && stageErr.Before:
+		return "before stapling"
+	case stageErr.Operation == localxcode.StaplerOperationStaple:
+		return "after stapling"
+	case stageErr.Operation == localxcode.StaplerOperationValidate && stageErr.Before:
+		return "before validation"
+	case stageErr.Operation == localxcode.StaplerOperationValidate:
+		return "after validation"
+	default:
+		position := "after"
+		if stageErr.Before {
+			position = "before"
+		}
+		return position + " " + string(stageErr.Operation)
+	}
 }
 
 // staplerStapleChildFailure reports whether err carries a stapler child failure

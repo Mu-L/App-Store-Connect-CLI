@@ -166,6 +166,55 @@ func TestStaplerDirectoryInventoryAllowsContainedSymlinkWithoutFollowing(t *test
 	}
 }
 
+func TestStaplerDirectoryInventoryRejectsSymlinkReplacedBeforeReadlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixtures require platform support")
+	}
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	versionedPath := filepath.Join(targetPath, "Versions", "1")
+	if err := os.MkdirAll(versionedPath, 0o755); err != nil {
+		t.Fatalf("create versioned bundle: %v", err)
+	}
+	linkPath := filepath.Join(targetPath, "Versions", "Current")
+	if err := os.Symlink("1", linkPath); err != nil {
+		t.Fatalf("create contained symlink: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := afterStaplerInventoryEntryLstatFn
+	replaced := false
+	afterStaplerInventoryEntryLstatFn = func(relative string) {
+		if replaced || relative != "Versions/Current" {
+			return
+		}
+		replaced = true
+		if err := os.Remove(linkPath); err != nil {
+			t.Fatalf("remove retained symlink: %v", err)
+		}
+		if err := os.WriteFile(linkPath, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("write replacement entry: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerInventoryEntryLstatFn = previous })
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want symlink replacement rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity rather than verification error", err, err)
+	}
+}
+
 func TestStaplerDirectoryInventoryHonorsCanceledContext(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
 	if err := os.Mkdir(targetPath, 0o755); err != nil {
@@ -813,6 +862,61 @@ func TestStaplerDirectoryInventoryRejectsBundleRemovedBeforeFinalRebind(t *testi
 	var identityErr *staplerTargetIdentityError
 	if !errors.As(err, &identityErr) {
 		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+}
+
+func TestStaplerDirectoryInventoryRejectsParentReplacedByRegularFileBeforeFinalRebind(t *testing.T) {
+	root := t.TempDir()
+	parentPath := filepath.Join(root, "parent")
+	originalParentPath := filepath.Join(root, "parent.original")
+	targetPath := filepath.Join(parentPath, "MyApp.app")
+	if err := os.MkdirAll(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetPath, "Info.plist"), []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write bundle file: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := afterStaplerDirectoryInventoryScanFn
+	replaced := false
+	afterStaplerDirectoryInventoryScanFn = func() {
+		if replaced {
+			return
+		}
+		replaced = true
+		if err := os.Rename(parentPath, originalParentPath); err != nil {
+			t.Fatalf("preserve scanned parent: %v", err)
+		}
+		if err := os.WriteFile(parentPath, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("replace parent with regular file: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerDirectoryInventoryScanFn = previous })
+	t.Cleanup(func() {
+		if err := os.Remove(parentPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("remove replacement parent: %v", err)
+		}
+		if err := os.Rename(originalParentPath, parentPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("restore original parent: %v", err)
+		}
+	})
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want parent replacement rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity rather than verification error", err, err)
 	}
 }
 

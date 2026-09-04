@@ -3170,11 +3170,72 @@ func TestNotarizationStaplePrioritizesPostStaplePartialMutation(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("stdout = %q, want no success JSON", stdout)
 	}
-	if !strings.Contains(stderr, "staple completed") || !strings.Contains(stderr, "not verified") {
+	if !strings.Contains(stderr, "staple completed") ||
+		!strings.Contains(stderr, "could not inspect artifact filesystem") ||
+		!strings.Contains(stderr, "after stapling") ||
+		!strings.Contains(stderr, "not verified") {
 		t.Fatalf("stderr = %q, want post-staple warning", stderr)
 	}
 	if strings.Contains(stderr, target) {
 		t.Fatalf("stderr = %q, must not expose target path", stderr)
+	}
+}
+
+func TestNotarizationStaplePreValidationVerifierFailureReportsActualStage(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	previous := runStaplerStaple
+	runStaplerStaple = func(_ context.Context, _ string, _ io.Writer, verifier localxcode.StaplerStageVerifier) (*localxcode.StaplerResult, error) {
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, true); err != nil {
+			return nil, err
+		}
+		if err := invokeStaplerStage(verifier, localxcode.StaplerOperationStaple, false); err != nil {
+			return nil, err
+		}
+		return nil, &localxcode.StaplerPartialMutationError{
+			Operation: localxcode.StaplerOperationStaple,
+			Err: &localxcode.StaplerStageVerificationError{
+				Operation: localxcode.StaplerOperationValidate,
+				Before:    true,
+				Err:       &staplerTargetIdentityError{stage: "before validation"},
+			},
+		}
+	}
+	t.Cleanup(func() { runStaplerStaple = previous })
+
+	cmd := stapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	stdout, stderr := captureNotarizationOutput(t, func() { runErr = cmd.Exec(context.Background(), nil) })
+	if runErr == nil {
+		t.Fatal("command error = nil, want pre-validation verifier failure")
+	}
+	var partialErr *localxcode.StaplerPartialMutationError
+	if !errors.As(runErr, &partialErr) || partialErr.Operation != localxcode.StaplerOperationStaple {
+		t.Fatalf("command error = %T %v, want staple partial marker", runErr, runErr)
+	}
+	var stageErr *localxcode.StaplerStageVerificationError
+	if !errors.As(runErr, &stageErr) || stageErr.Operation != localxcode.StaplerOperationValidate || !stageErr.Before {
+		t.Fatalf("command error = %T %v, want pre-validation stage marker", runErr, runErr)
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(runErr, &identityErr) {
+		t.Fatalf("command error = %T %v, want target identity cause", runErr, runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "staple completed") ||
+		!strings.Contains(stderr, "artifact target changed before validation") ||
+		!strings.Contains(stderr, "not verified") {
+		t.Fatalf("stderr = %q, want pre-validation partial-mutation warning", stderr)
+	}
+	if strings.Contains(stderr, "follow-up validation failed") || strings.Contains(stderr, target) {
+		t.Fatalf("stderr = %q, must identify the pre-validation stage without claiming validation failure or exposing target", stderr)
 	}
 }
 
@@ -3305,6 +3366,95 @@ func TestNotarizationStapleProductionRunnerProjectsInventoryMismatchAsPartialMut
 	}
 	if string(contents) != canary {
 		t.Fatalf("nested file = %q, want fake validator mutation", contents)
+	}
+}
+
+func TestNotarizationValidateCommandReportsContextKilledChildAsCanceled(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("local stapler is macOS-only")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	readyPath := filepath.Join(t.TempDir(), "validate-ready")
+	fakeBin := t.TempDir()
+	fakeXcrun := filepath.Join(fakeBin, "xcrun")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--find\" ] && [ \"$2\" = \"stapler\" ]; then\n" +
+		"  printf '%s\\n' /usr/bin/stapler\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"stapler\" ] && [ \"$2\" = \"validate\" ]; then\n" +
+		"  printf '%s' ready > \"$ASC_STAPLER_VALIDATE_READY_PATH\"\n" +
+		"  exec /usr/bin/tail -f /dev/null\n" +
+		"fi\n" +
+		"exit 2\n"
+	if err := os.WriteFile(fakeXcrun, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake xcrun: %v", err)
+	}
+	oldPath, hadPath := os.LookupEnv("PATH")
+	pathValue := fakeBin
+	if hadPath {
+		pathValue += string(os.PathListSeparator) + oldPath
+	}
+	t.Setenv("PATH", pathValue)
+	t.Setenv("ASC_STAPLER_VALIDATE_READY_PATH", readyPath)
+
+	previous := runStaplerValidate
+	runStaplerValidate = localxcode.ValidateWithVerifier
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	var stdout, stderr string
+	done := make(chan struct{})
+	go func() {
+		stdout, stderr = captureNotarizationOutput(t, func() { runErr = cmd.Exec(ctx, nil) })
+		close(done)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+			t.Fatal("validation child did not report readiness")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("validate command did not return after context cancellation")
+	}
+	if runErr == nil || !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("validate command error = %v, want context cancellation", runErr)
+	}
+	if !localxcode.IsStaplerOperationAttemptedCancellation(runErr) {
+		t.Fatalf("validate command error = %T %v, want attempted-cancellation marker from real runner", runErr, runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "notarization validate was canceled") {
+		t.Fatalf("stderr = %q, want canceled validation diagnostic", stderr)
+	}
+	if strings.Contains(stderr, "failed during validate before a usable exit status was available") {
+		t.Fatalf("stderr = %q, must not route context cancellation through generic command-status handling", stderr)
 	}
 }
 

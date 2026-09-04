@@ -1008,6 +1008,61 @@ func TestValidatePreservesSignaledChildWhenContextCancelsAfterWait(t *testing.T)
 	}
 }
 
+func TestValidateClassifiesContextKilledChildAsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("child process cancellation is not implemented on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_WAIT", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct {
+		result *StaplerResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := ValidateStaple(ctx, target, nil)
+		done <- struct {
+			result *StaplerResult
+			err    error
+		}{result: result, err: err}
+	}()
+	waitForStaplerCommand(t, logPath, "xcrun|stapler|validate|")
+	cancel()
+
+	select {
+	case outcome := <-done:
+		if outcome.result != nil {
+			t.Fatalf("ValidateStaple() result = %#v, want nil after context cancellation", outcome.result)
+		}
+		if !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("ValidateStaple() error = %v, want context cancellation", outcome.err)
+		}
+		if !isStaplerOperationAttemptedCancellation(outcome.err) {
+			t.Fatalf("ValidateStaple() error = %T %v, want attempted-cancellation marker", outcome.err, outcome.err)
+		}
+		if isStaplerOperationAttemptedSignal(outcome.err) {
+			t.Fatalf("ValidateStaple() error = %T %v, want cancellation marker instead of signal marker", outcome.err, outcome.err)
+		}
+		var commandErr *StaplerCommandError
+		if !errors.As(outcome.err, &commandErr) || commandErr.Operation != string(StaplerOperationValidate) || commandErr.ExitCode != -1 {
+			t.Fatalf("ValidateStaple() error = %T %v, want preserved canceled validate command cause", outcome.err, outcome.err)
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(outcome.err, &exitErr) || !staplerExitWasSignaled(exitErr) {
+			t.Fatalf("ValidateStaple() error = %T %v, want underlying context-killed child cause", outcome.err, outcome.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ValidateStaple() did not return after context cancellation")
+	}
+}
+
 func TestStaplePreservesChildExitWhenContextCancelsAfterStartBeforeWait(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
