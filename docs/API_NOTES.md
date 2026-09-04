@@ -125,8 +125,8 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## TestFlight Distribution
 
-- `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag remains parseable during its deprecation window and fails before HTTP instead of sending an unsupported update.
-- Migrate `--external-testing=true` to `asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm`. Migrate `--external-testing=false` to `asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm`; the old boolean cannot identify which group assignments to remove.
+- `asc testflight distribution edit --external-testing` shipped in 0.35.3 but App Store Connect does not allow `externalBuildState` in the build beta detail PATCH request. The flag was deprecated (parseable but failing before HTTP) and removed in 5.0.0; it is now an unknown flag.
+- External distribution is managed through group assignment: `asc builds add-groups --build-id "BUILD_ID" --group "GROUP_ID" --submit --confirm` to enable, and `asc builds remove-groups --build-id "BUILD_ID" --group "GROUP_ID" --confirm` to remove group assignments.
 - App Store Connect can briefly return a build-specific 404 from `POST /v1/builds/{id}/relationships/betaGroups` after an uploaded build is already readable and valid. `asc publish testflight` confirms the uploaded build with `GET /v1/builds/{id}` and retries only that post-upload propagation error with bounded backoff, reporting retry attempts on stderr. A confirmation in processing state `FAILED` or `INVALID` stops immediately without retrying distribution. A later post-upload failure emits a partial publish result with the recoverable `buildId`, terminal processing or notification outcome, and completed stages before exiting non-zero; notification follow-up failures use `failureStage=notification` after beta-group distribution succeeds.
 
 ## Game Center

@@ -2229,25 +2229,6 @@ func TestRun_UnknownFlagSuggestsOnlyCanonicalSetupFlags(t *testing.T) {
 	}
 }
 
-func TestRun_UnknownFlagDoesNotSuggestDeprecatedFlag(t *testing.T) {
-	resetReportFlags(t)
-
-	stdout, stderr := captureCommandOutput(t, func() {
-		if code := Run([]string{
-			"testflight", "beta-details", "update", "--external-testin", "true",
-		}, "1.0.0"); code != ExitUsage {
-			t.Fatalf("Run() exit code = %d, want %d", code, ExitUsage)
-		}
-	})
-
-	if stdout != "" {
-		t.Fatalf("expected empty stdout, got %q", stdout)
-	}
-	if strings.Contains(stderr, "Try:\n  --external-testing\n") {
-		t.Fatalf("deprecated flag must not be suggested, got %q", stderr)
-	}
-}
-
 func TestRun_UnknownFlagDoesNotSuggestMixedCaseDeprecatedFlag(t *testing.T) {
 	resetReportFlags(t)
 

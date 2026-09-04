@@ -897,13 +897,13 @@ func TestBuildsExpiredFlagsInvalidBooleanExitCode(t *testing.T) {
 	}
 }
 
-func TestTestFlightExternalTestingInvalidBooleanExitCode(t *testing.T) {
+func TestTestFlightDistributionEditExternalTestingIsUnknownFlag(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		flag []string
 	}{
-		{name: "equals", flag: []string{"--external-testing=maybe"}},
-		{name: "space separated", flag: []string{"--external-testing", "maybe"}},
+		{name: "equals", flag: []string{"--external-testing=true"}},
+		{name: "space separated", flag: []string{"--external-testing", "true"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			resetReportFlags(t)
@@ -922,8 +922,11 @@ func TestTestFlightExternalTestingInvalidBooleanExitCode(t *testing.T) {
 			if stdout != "" {
 				t.Fatalf("expected empty stdout, got %q", stdout)
 			}
-			if !strings.Contains(stderr, "invalid boolean value") || !strings.Contains(stderr, "external-testing") {
-				t.Fatalf("expected invalid --external-testing boolean diagnostic, got %q", stderr)
+			if !strings.Contains(stderr, "Error: unknown flag `--external-testing`") {
+				t.Fatalf("expected unknown flag diagnostic for --external-testing, got %q", stderr)
+			}
+			if strings.Contains(stderr, "is deprecated") {
+				t.Fatalf("removed flag must not emit deprecation guidance, got %q", stderr)
 			}
 		})
 	}
