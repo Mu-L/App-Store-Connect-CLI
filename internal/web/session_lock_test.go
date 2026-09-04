@@ -84,7 +84,6 @@ func TestDeleteAllSessionsWaitsForFileMutationLock(t *testing.T) {
 	t.Setenv(webSessionCacheEnabledEnv, "1")
 	t.Setenv(webSessionBackendEnv, "file")
 	t.Setenv(webSessionCacheDirEnv, filepath.Join(t.TempDir(), "web-cache"))
-	t.Setenv(legacyIrisSessionCacheEnabledEnv, "0")
 
 	key := webSessionCacheKey("user@example.com")
 	if err := writeSessionToFile(key, persistedSession{
