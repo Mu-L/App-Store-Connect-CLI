@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/mail"
 	"os"
 	"strings"
@@ -233,7 +234,7 @@ func sandboxDeleteMutationError(err error) error {
 	}
 	var apiErr *webcore.APIError
 	if errors.As(err, &apiErr) {
-		if apiErr.Status >= 500 && apiErr.Status < 600 {
+		if apiErr.Status == http.StatusRequestTimeout || apiErr.Status >= 500 && apiErr.Status < 600 {
 			return sandboxDeleteUnknownOutcome("delete request", err)
 		}
 		return withWebAuthHint(err, "web sandbox delete")

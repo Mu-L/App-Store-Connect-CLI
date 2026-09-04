@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -497,6 +498,53 @@ func TestWebSandboxDeleteTreatsServerErrorAsUnknownOutcome(t *testing.T) {
 	err := cmd.Exec(context.Background(), nil)
 	if err == nil || !strings.Contains(err.Error(), "outcome unknown") {
 		t.Fatalf("expected unknown-outcome error for server failure, got %v", err)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls = %d, want 1", deleteCalls)
+	}
+	if listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1; command must not retry or verify after ambiguous delete", listCalls)
+	}
+}
+
+func TestWebSandboxDeleteTreatsRequestTimeoutAsUnknownOutcome(t *testing.T) {
+	origResolveSession := resolveSessionFn
+	origNewWebClient := newWebClientFn
+	origList := listWebSandboxAccountsFn
+	origDelete := deleteWebSandboxAccountsFn
+	t.Cleanup(func() {
+		resolveSessionFn = origResolveSession
+		newWebClientFn = origNewWebClient
+		listWebSandboxAccountsFn = origList
+		deleteWebSandboxAccountsFn = origDelete
+	})
+
+	resolveSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{}, "cache", nil
+	}
+	newWebClientFn = func(session *webcore.AuthSession) *webcore.Client { return &webcore.Client{} }
+	family := false
+	listCalls := 0
+	listWebSandboxAccountsFn = func(ctx context.Context, client *webcore.Client) (*webcore.SandboxAccountListResponse, error) {
+		listCalls++
+		return &webcore.SandboxAccountListResponse{
+			TotalAccounts: 1,
+			Accounts:      []webcore.SandboxAccount{{ID: "tester-one", IsInFamily: &family}},
+		}, nil
+	}
+	deleteCalls := 0
+	deleteWebSandboxAccountsFn = func(ctx context.Context, client *webcore.Client, ids []string) error {
+		deleteCalls++
+		return &webcore.APIError{Status: http.StatusRequestTimeout}
+	}
+
+	cmd := WebSandboxDeleteCommand()
+	if err := cmd.FlagSet.Parse([]string{"--id", "tester-one", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := cmd.Exec(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "outcome unknown") {
+		t.Fatalf("expected unknown-outcome error for request timeout, got %v", err)
 	}
 	if deleteCalls != 1 {
 		t.Fatalf("delete calls = %d, want 1", deleteCalls)
