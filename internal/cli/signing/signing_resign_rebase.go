@@ -3,6 +3,7 @@ package signing
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"unicode"
@@ -396,6 +397,14 @@ func signingResignStrictEntitlementValuePermits(profileValue, signedValue any) b
 			return ok && strings.HasPrefix(signedString, prefix) && len(signedString) > len(prefix)
 		}
 		return signedString == profileString
+	}
+	// Non-string scalar claims retain exact authorization semantics. Only
+	// string/list claims use the wildcard grammar below; do not reject valid
+	// boolean or dictionary entitlement values merely because they are not
+	// rebasable strings.
+	if _, profileIsList := signingResignEntitlementList(profileValue); !profileIsList {
+		_, signedIsList := signingResignEntitlementList(signedValue)
+		return !signedIsList && reflect.DeepEqual(profileValue, signedValue)
 	}
 	profileList, profileIsList := signingResignEntitlementList(profileValue)
 	signedList, signedIsList := signingResignEntitlementList(signedValue)

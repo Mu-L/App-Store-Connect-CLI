@@ -234,6 +234,19 @@ func TestSigningResignRebaseRejectsMalformedProfileArrayEntries(t *testing.T) {
 	}
 }
 
+func TestSigningResignStrictAuthorizationPreservesExactNonStringScalars(t *testing.T) {
+	if !signingResignStrictEntitlementValuePermits(true, true) {
+		t.Fatal("exact boolean authorization was rejected")
+	}
+	profile := map[string]any{"mode": "strict"}
+	if !signingResignStrictEntitlementValuePermits(profile, map[string]any{"mode": "strict"}) {
+		t.Fatal("exact dictionary authorization was rejected")
+	}
+	if signingResignStrictEntitlementValuePermits(true, false) {
+		t.Fatal("different boolean authorization was accepted")
+	}
+}
+
 func TestPlanSigningResignEntitlementsRejectsMalformedKeychainProfileArray(t *testing.T) {
 	target := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{
 		signingResignKeychainGroupsEntitlement: []string{"OLDPREFIX.com.example.shared"},
