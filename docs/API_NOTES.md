@@ -2,6 +2,14 @@
 
 Quirks and tips for specific App Store Connect API endpoints.
 
+## Web App Privacy Data Usage Updates
+
+- Live canary on 2026-09-04 using a disposable app and a redacted web session verified the private `PATCH /iris/v1/appDataUsages/{usageID}` contract for a same-category, same-purpose `DATA_LINKED_TO_YOU` to `DATA_NOT_LINKED_TO_YOU` identity flip. The request uses the existing `appDataUsages` JSON:API resource and its `dataProtection` relationship; Apple returned `200`, and a fresh GET showed the same usage ID with the new protection.
+- The reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition was not exercised by this canary and remains unverified; do not infer it from this note.
+- The canary seeded the tuple with `POST` (`201`), confirmed it by GET, then restored the semantic baseline by deleting it (`204`) and creating the `DATA_NOT_COLLECTED` declaration (`201`). Direct restore attempts via `POST` or `PATCH` to `DATA_NOT_COLLECTED` returned `409 STATE_ERROR`.
+- The direct mutations advanced the remote `lastPublished` value while `published` remained `true`, despite no publish endpoint being called. Treat this path as a published-state mutation; do not describe the canary or `asc web privacy apply` as unpublished-only.
+- For the verified transition, the planner must pair only the same-category, same-purpose identity flip into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations; other identity-transition directions are not covered by this live contract.
+
 ## Apple Ads Profile Context Isolation
 
 - Apple Ads named profiles use only the context stored on that profile: they do not inherit `ads.org_id` or `ads.ad_account_id` from root config or another profile. This prevents a selected profile from silently sending a request to the wrong organization or ad account. Profile-less access-token and environment authentication can still use matching root context.
