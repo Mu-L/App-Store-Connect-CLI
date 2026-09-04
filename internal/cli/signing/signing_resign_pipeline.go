@@ -797,7 +797,7 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 	}
 	containers := signingResignFrameworkContainers(treePath, plans)
 	for _, container := range containers {
-		entitlementsPath := signingResignContainerEntitlementsPath(container, plans)
+		entitlementsPath := signingResignContainerEntitlementsPath(treePath, container, plans)
 		if err := signSigningResignObject(ctx, container, identitySHA1, keychainPath, entitlementsPath); err != nil {
 			return fmt.Errorf("sign code container %s: %w", signingResignDisplayPath(treePath, container), err)
 		}
@@ -815,8 +815,12 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 // for a container's main executable. A container is signed after its contents,
 // so passing the same document preserves the claims applied to that
 // executable when the container's resource seal is refreshed.
-func signingResignContainerEntitlementsPath(container string, plans []signingResignCodePlan) string {
-	infoData, err := os.ReadFile(filepath.Join(container, "Info.plist"))
+func signingResignContainerEntitlementsPath(treePath, container string, plans []signingResignCodePlan) string {
+	relativeContainer, err := filepath.Rel(treePath, container)
+	if err != nil || strings.HasPrefix(relativeContainer, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	infoData, err := readRootedSigningResignFile(treePath, filepath.Join(relativeContainer, "Info.plist"), infoplist.MaxBytes)
 	if err != nil {
 		return ""
 	}
@@ -834,7 +838,9 @@ func signingResignContainerEntitlementsPath(container string, plans []signingRes
 		if err != nil || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			continue
 		}
-		if filepath.Dir(relative) == "." || strings.HasPrefix(filepath.ToSlash(relative), "Versions/") {
+		relativeSlash := filepath.ToSlash(relative)
+		parts := strings.Split(relativeSlash, "/")
+		if filepath.Dir(relative) == "." || (len(parts) == 3 && parts[0] == "Versions" && parts[2] == info.Executable) {
 			return plan.EntitlementsPath
 		}
 	}
