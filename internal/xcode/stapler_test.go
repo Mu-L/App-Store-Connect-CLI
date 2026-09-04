@@ -1109,6 +1109,72 @@ func TestStaplePreservesChildExitWhenContextCancelsAfterStartBeforeWait(t *testi
 	}
 }
 
+func TestValidatePreservesChildExitWhenContextCancelSucceedsBeforeWait(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_VALIDATE_EXIT_CODE", "65")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelCalled := make(chan struct{}, 1)
+	previousCancelHook := beforeStaplerCommandCancelFn
+	beforeStaplerCommandCancelFn = func(cmd *exec.Cmd) {
+		if len(cmd.Args) < 4 || cmd.Args[len(cmd.Args)-4] != "xcrun" ||
+			cmd.Args[len(cmd.Args)-3] != "stapler" || cmd.Args[len(cmd.Args)-2] != "validate" ||
+			cmd.Args[len(cmd.Args)-1] != target {
+			return
+		}
+		// Keep the child alive after cancellation so Wait observes its concrete
+		// exit status even though CommandContext's cancellation callback succeeds.
+		cmd.Cancel = func() error {
+			select {
+			case cancelCalled <- struct{}{}:
+			default:
+			}
+			return nil
+		}
+	}
+	t.Cleanup(func() { beforeStaplerCommandCancelFn = previousCancelHook })
+	previousStartHook := afterStaplerCommandStartFn
+	afterStaplerCommandStartFn = func(cmd *exec.Cmd) {
+		if len(cmd.Args) < 4 || cmd.Args[len(cmd.Args)-4] != "xcrun" ||
+			cmd.Args[len(cmd.Args)-3] != "stapler" || cmd.Args[len(cmd.Args)-2] != "validate" ||
+			cmd.Args[len(cmd.Args)-1] != target {
+			return
+		}
+		cancel()
+		select {
+		case <-cancelCalled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("context cancellation callback was not invoked")
+		}
+	}
+	t.Cleanup(func() { afterStaplerCommandStartFn = previousStartHook })
+
+	result, err := ValidateStaple(ctx, target, nil)
+	if result != nil {
+		t.Fatalf("ValidateStaple() result = %#v, want nil after canceled failed child", result)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ValidateStaple() error = %v, want context cancellation", err)
+	}
+	if isStaplerOperationAttemptedCancellation(err) {
+		t.Fatalf("ValidateStaple() error = %T %v, concrete child status must not be classified as cancellation", err, err)
+	}
+	var commandErr *StaplerCommandError
+	if !errors.As(err, &commandErr) || commandErr.Operation != string(StaplerOperationValidate) || commandErr.ExitCode != 65 {
+		t.Fatalf("ValidateStaple() error = %T %v, want validate/65 command error", err, err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 65 {
+		t.Fatalf("ValidateStaple() error = %T %v, want underlying exit 65", err, err)
+	}
+}
+
 func TestStapleReturnsValidationFailureAfterMutation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
@@ -1286,6 +1352,68 @@ func TestStaplerPreservesResolutionExitStatusWhenContextCancelsAfterLookup(t *te
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 64 {
 		t.Fatalf("Staple() error = %T %v, want underlying lookup exit 64", err, err)
+	}
+}
+
+func TestStaplerClassifiesContextKilledResolverAsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("child process cancellation is not implemented on Windows")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	readyPath := filepath.Join(t.TempDir(), "resolver-ready")
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	configureStaplerTestEnvironment(t, logPath)
+	t.Setenv("ASC_STAPLER_FIND_WAIT", "1")
+	t.Setenv("ASC_STAPLER_FIND_READY_PATH", readyPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		result *StaplerResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := Staple(ctx, target, nil)
+		done <- outcome{result: result, err: err}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("resolver helper did not report readiness")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case got := <-done:
+		if got.result != nil {
+			t.Fatalf("Staple() result = %#v, want nil after resolver cancellation", got.result)
+		}
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("Staple() error = %v, want context cancellation", got.err)
+		}
+		if !isStaplerOperationAttemptedCancellation(got.err) {
+			t.Fatalf("Staple() error = %T %v, want attempted-cancellation marker", got.err, got.err)
+		}
+		if isStaplerOperationAttemptedSignal(got.err) {
+			t.Fatalf("Staple() error = %T %v, want cancellation marker instead of signal marker", got.err, got.err)
+		}
+		var commandErr *StaplerCommandError
+		if !errors.As(got.err, &commandErr) || commandErr.Operation != string(StaplerOperationResolve) || commandErr.ExitCode != -1 {
+			t.Fatalf("Staple() error = %T %v, want preserved canceled resolver command cause", got.err, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Staple() did not return after resolver cancellation")
 	}
 }
 
@@ -1474,6 +1602,17 @@ func TestStaplerHelperProcess(t *testing.T) {
 			}
 			time.Sleep(100 * time.Millisecond)
 			os.Exit(125)
+		}
+		if os.Getenv("ASC_STAPLER_FIND_WAIT") == "1" {
+			if readyPath := os.Getenv("ASC_STAPLER_FIND_READY_PATH"); readyPath != "" {
+				if err := os.WriteFile(readyPath, []byte("ready"), 0o600); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+			}
+			for {
+				time.Sleep(time.Second)
+			}
 		}
 		if code := staplerHelperExitCode("ASC_STAPLER_FIND_EXIT_CODE"); code >= 0 {
 			if output := os.Getenv("ASC_STAPLER_FIND_STDERR"); output != "" {

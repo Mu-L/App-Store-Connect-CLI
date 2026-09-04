@@ -828,6 +828,54 @@ func TestStaplerDirectoryInventoryRejectsNestedFileRemovedBeforeOpen(t *testing.
 	}
 }
 
+func TestStaplerDirectoryInventoryRejectsNestedFileReplacedBySymlinkBeforeOpen(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixtures require platform support")
+	}
+	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.Mkdir(targetPath, 0o755); err != nil {
+		t.Fatalf("create bundle: %v", err)
+	}
+	entryPath := filepath.Join(targetPath, "Info.plist")
+	if err := os.WriteFile(entryPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write bundle file: %v", err)
+	}
+	target, err := validateStaplerTargetDetails(targetPath)
+	if err != nil {
+		t.Fatalf("validate target: %v", err)
+	}
+	t.Cleanup(target.close)
+
+	previous := afterStaplerInventoryEntryLstatFn
+	replaced := false
+	afterStaplerInventoryEntryLstatFn = func(relative string) {
+		if replaced || relative != "Info.plist" {
+			return
+		}
+		replaced = true
+		if err := os.Remove(entryPath); err != nil {
+			t.Fatalf("remove enumerated bundle file: %v", err)
+		}
+		if err := os.Symlink("replacement", entryPath); err != nil {
+			t.Fatalf("replace enumerated file with symlink: %v", err)
+		}
+	}
+	t.Cleanup(func() { afterStaplerInventoryEntryLstatFn = previous })
+
+	_, err = target.captureDirectoryInventoryAtStage(context.Background(), "before validation")
+	if err == nil {
+		t.Fatal("captureDirectoryInventoryAtStage() = nil, want regular-file-to-symlink race rejection")
+	}
+	var identityErr *staplerTargetIdentityError
+	if !errors.As(err, &identityErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity error", err, err)
+	}
+	var verifyErr *staplerTargetVerifyError
+	if errors.As(err, &verifyErr) {
+		t.Fatalf("captureDirectoryInventoryAtStage() error = %T %v, want identity rather than verification error", err, err)
+	}
+}
+
 func TestStaplerDirectoryInventoryRejectsBundleRemovedBeforeFinalRebind(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "MyApp.app")
 	if err := os.Mkdir(targetPath, 0o755); err != nil {

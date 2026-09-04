@@ -553,6 +553,25 @@ func staplerInventoryEntryVanished(err error) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
+// staplerInventoryEntryChangedAtOpen reports whether an already-enumerated
+// entry changed before its no-follow open. A direct symlink rejection is an
+// identity change, not an operational scanner failure; the re-probe also
+// covers portable no-follow implementations that return a descriptive error
+// instead of ELOOP.
+func staplerInventoryEntryChangedAtOpen(parent *os.Root, name string, openErr error) bool {
+	if staplerInventoryEntryVanished(openErr) || errors.Is(openErr, syscall.ELOOP) {
+		return true
+	}
+	if parent == nil {
+		return false
+	}
+	current, err := parent.Lstat(name)
+	if err != nil {
+		return staplerInventoryEntryVanished(err)
+	}
+	return current.Mode()&os.ModeSymlink != 0
+}
+
 type staplerInventoryScanner struct {
 	ctx             context.Context
 	treeHash        hash.Hash
@@ -834,7 +853,7 @@ func (scanner *staplerInventoryScanner) recordFile(parent *os.Root, name, relati
 	}
 	file, err := secureopen.OpenExistingNoFollowInRoot(parent, name)
 	if err != nil {
-		if staplerInventoryEntryVanished(err) {
+		if staplerInventoryEntryChangedAtOpen(parent, name, err) {
 			return errStaplerInventoryChanged
 		}
 		return fmt.Errorf("open inventory file %q: %w", relative, err)

@@ -3458,6 +3458,94 @@ func TestNotarizationValidateCommandReportsContextKilledChildAsCanceled(t *testi
 	}
 }
 
+func TestNotarizationValidateCommandReportsContextKilledResolverAsCanceled(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("local stapler is macOS-only")
+	}
+	target := filepath.Join(t.TempDir(), "MyApp.dmg")
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	readyPath := filepath.Join(t.TempDir(), "resolver-ready")
+	fakeBin := t.TempDir()
+	fakeXcrun := filepath.Join(fakeBin, "xcrun")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--find\" ] && [ \"$2\" = \"stapler\" ]; then\n" +
+		"  printf '%s' ready > \"$ASC_STAPLER_FIND_READY_PATH\"\n" +
+		"  exec /usr/bin/tail -f /dev/null\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"stapler\" ] && [ \"$2\" = \"validate\" ]; then\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 2\n"
+	if err := os.WriteFile(fakeXcrun, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake xcrun: %v", err)
+	}
+	oldPath, hadPath := os.LookupEnv("PATH")
+	pathValue := fakeBin
+	if hadPath {
+		pathValue += string(os.PathListSeparator) + oldPath
+	}
+	t.Setenv("PATH", pathValue)
+	t.Setenv("ASC_STAPLER_FIND_READY_PATH", readyPath)
+
+	previous := runStaplerValidate
+	runStaplerValidate = localxcode.ValidateWithVerifier
+	t.Cleanup(func() { runStaplerValidate = previous })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := validateStapleCommand()
+	if err := cmd.FlagSet.Parse([]string{"--file", target, "--output", "json"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var runErr error
+	var stdout, stderr string
+	done := make(chan struct{})
+	go func() {
+		stdout, stderr = captureNotarizationOutput(t, func() { runErr = cmd.Exec(ctx, nil) })
+		close(done)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+			t.Fatal("resolver helper did not report readiness")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("validate command did not return after resolver cancellation")
+	}
+	if runErr == nil || !errors.Is(runErr, context.Canceled) {
+		t.Fatalf("validate command error = %v, want context cancellation", runErr)
+	}
+	if !localxcode.IsStaplerOperationAttemptedCancellation(runErr) {
+		t.Fatalf("validate command error = %T %v, want resolver attempted-cancellation marker", runErr, runErr)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want no success JSON", stdout)
+	}
+	if !strings.Contains(stderr, "notarization validate was canceled") {
+		t.Fatalf("stderr = %q, want canceled validation diagnostic", stderr)
+	}
+	if strings.Contains(stderr, "failed during resolve") || strings.Contains(stderr, "before a usable exit status") {
+		t.Fatalf("stderr = %q, must not route resolver cancellation through generic failure handling", stderr)
+	}
+}
+
 func TestNotarizationValidateStartFailureRedactsUnderlyingDiagnostic(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "MyApp.dmg")
 	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {

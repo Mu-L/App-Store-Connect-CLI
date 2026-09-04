@@ -22,6 +22,11 @@ var afterStaplerCommandWaitFn func()
 // Production leaves it nil.
 var afterStaplerCommandStartFn func(*exec.Cmd)
 
+// beforeStaplerCommandCancelFn is a narrow test seam for controlling the
+// command cancellation callback before the runner wraps it for tracking.
+// Production leaves it nil.
+var beforeStaplerCommandCancelFn func(*exec.Cmd)
+
 // afterStaplerResolutionFn is a narrow test seam for cancellation that lands
 // after the xcrun stapler lookup has returned its process result but before
 // ensureStaplerAvailable observes the caller's context. Production leaves it
@@ -210,8 +215,8 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		return nil, err
 	}
 	stapleErr := runStaplerOperation(ctx, StaplerOperationStaple, path, logWriter)
-	// A child-start failure or a context error without the attempted-cancellation
-	// marker means the staple child never started. Still run the stage verifier
+	// A child-start failure or a context error without an attempted-child marker
+	// means the staple child never started. Still run the stage verifier
 	// so callers can report a concurrent target replacement, but do not claim
 	// that stapling completed or may have modified the artifact.
 	if stapleErr != nil && isStaplerOperationNotStarted(stapleErr) {
@@ -220,7 +225,7 @@ func StapleWithVerifier(ctx context.Context, path string, logWriter io.Writer, v
 		}
 		return nil, stapleErr
 	}
-	if stapleErr != nil && !isStaplerOperationAttemptedCancellation(stapleErr) && !isStaplerOperationAttemptedSignal(stapleErr) &&
+	if stapleErr != nil && !isStaplerOperationAttempted(stapleErr) &&
 		(errors.Is(stapleErr, context.Canceled) || errors.Is(stapleErr, context.DeadlineExceeded)) {
 		if verifyErr := verifyStaplerStage(verifier, StaplerOperationStaple, false); verifyErr != nil {
 			return nil, errors.Join(stapleErr, verifyErr)
@@ -357,6 +362,16 @@ func ensureStaplerAvailable(ctx context.Context) error {
 	}
 
 	cmd := commandContextFn(ctx, "xcrun", "--find", "stapler")
+	var contextCancelSucceeded atomic.Bool
+	if cancel := cmd.Cancel; cancel != nil {
+		cmd.Cancel = func() error {
+			err := cancel()
+			if err == nil {
+				contextCancelSucceeded.Store(true)
+			}
+			return err
+		}
+	}
 	stdout := newTailBuffer(staplerResolutionOutputLimit)
 	// Resolver diagnostics may contain the selected developer directory or
 	// other host paths. Keep them available to the bounded error formatter, but
@@ -375,6 +390,11 @@ func ensureStaplerAvailable(ctx context.Context) error {
 		}
 		commandErr := newStaplerCommandError(StaplerOperationResolve, failure)
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			if contextCancelSucceeded.Load() {
+				return &staplerOperationAttemptedCancellationError{
+					err: errors.Join(commandErr, ctxErr),
+				}
+			}
 			if staplerHasProcessExitStatus(err) || staplerProcessWasSignaled(err) {
 				// Preserve a concrete resolver process result, including a signal
 				// termination with no ordinary exit code, when cancellation becomes
@@ -406,6 +426,25 @@ func ensureStaplerAvailable(ctx context.Context) error {
 // the caller must warn that the artifact may have been modified.
 type staplerOperationAttemptedCancellationError struct {
 	err error
+}
+
+// staplerOperationAttemptedError records that a stapler child ran and
+// returned a concrete process status. It deliberately does not carry the
+// cancellation marker: a real child result must remain an ordinary process
+// failure even when context cancellation raced with command cleanup.
+type staplerOperationAttemptedError struct {
+	err error
+}
+
+func (e *staplerOperationAttemptedError) Error() string {
+	return "stapler operation failed after child invocation"
+}
+
+func (e *staplerOperationAttemptedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
 }
 
 // staplerOperationNotStartedError records that constructing or starting the
@@ -471,6 +510,14 @@ func isStaplerOperationAttemptedCancellation(err error) bool {
 	return errors.As(err, &attempted)
 }
 
+func isStaplerOperationAttempted(err error) bool {
+	var attempted *staplerOperationAttemptedError
+	if errors.As(err, &attempted) {
+		return true
+	}
+	return isStaplerOperationAttemptedCancellation(err) || isStaplerOperationAttemptedSignal(err)
+}
+
 // IsStaplerOperationAttemptedCancellation reports whether a started stapler
 // child was terminated through its context cancellation path. Callers can use
 // this marker before inspecting a nested StaplerCommandError, whose signal
@@ -534,20 +581,20 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 			}
 			return ctxErr
 		}
+		if staplerHasProcessExitStatus(err) {
+			// Wait returned a concrete child result. Keep it as a normal process
+			// failure even when CommandContext's cancellation callback reported
+			// success; only a signal/no-status result is attributable to context
+			// cancellation here.
+			return &staplerOperationAttemptedError{
+				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
+			}
+		}
 		if contextCancelSucceeded {
 			// CommandContext's cancellation callback successfully attempted to
 			// stop the child. Preserve the cancellation classification even when
 			// the resulting process status is a signal, which otherwise could be
 			// indistinguishable from an independent signal observed late.
-			return &staplerOperationAttemptedCancellationError{
-				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
-			}
-		}
-		if staplerHasProcessExitStatus(err) {
-			// The child has already returned a concrete process result. Preserve
-			// that result even when cancellation is observed in the tiny window
-			// after Wait, while retaining cancellation for the caller's partial
-			// mutation classification.
 			return &staplerOperationAttemptedCancellationError{
 				err: errors.Join(newStaplerCommandError(operation, err), ctxErr),
 			}
@@ -583,6 +630,9 @@ func runStaplerOperation(ctx context.Context, operation StaplerOperation, path s
 
 func runStaplerChildCommand(ctx context.Context, operation StaplerOperation, path string, logWriter io.Writer) (bool, bool, error) {
 	cmd := commandContextFn(ctx, "xcrun", "stapler", string(operation), path)
+	if beforeStaplerCommandCancelFn != nil {
+		beforeStaplerCommandCancelFn(cmd)
+	}
 	var contextCancelSucceeded atomic.Bool
 	if cancel := cmd.Cancel; cancel != nil {
 		cmd.Cancel = func() error {
