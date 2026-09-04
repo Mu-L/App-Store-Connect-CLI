@@ -1227,7 +1227,7 @@ func validatePackedSigningResignIPA(ctx context.Context, packedPath string, size
 	if info.Size() != size {
 		return fmt.Errorf("re-signed IPA changed before publication")
 	}
-	if err := preflightSigningResignArchive(context.Background(), file, size); err != nil {
+	if err := preflightSigningResignArchive(ctx, file, size); err != nil {
 		return err
 	}
 	reader, err := zip.NewReader(file, size)
@@ -1254,7 +1254,7 @@ func verifyPackedSigningResignIPA(ctx context.Context, packedPath string, size i
 		)
 	}
 	defer file.Close()
-	if err := preflightSigningResignArchive(context.Background(), file, size); err != nil {
+	if err := preflightSigningResignArchive(ctx, file, size); err != nil {
 		return err
 	}
 	reader, err := zip.NewReader(file, size)

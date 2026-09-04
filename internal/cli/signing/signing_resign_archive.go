@@ -120,6 +120,33 @@ func preflightSigningResignArchive(ctx context.Context, file *os.File, size int6
 		if directoryOffset > uint64(size) || directoryBytes > uint64(size)-directoryOffset {
 			return fmt.Errorf("IPA central directory is out of bounds")
 		}
+		end := directoryOffset + directoryBytes
+		position := directoryOffset
+		actualEntries := uint64(0)
+		for position < end {
+			if err := contextError(ctx); err != nil {
+				return err
+			}
+			if actualEntries >= signingResignMaxArchiveEntries {
+				return fmt.Errorf("IPA contains too many archive entries")
+			}
+			header := make([]byte, 46)
+			if _, err := file.ReadAt(header, int64(position)); err != nil {
+				return fmt.Errorf("read IPA central directory: %w", err)
+			}
+			if binary.LittleEndian.Uint32(header[0:4]) != 0x02014b50 {
+				return fmt.Errorf("IPA central directory record is malformed")
+			}
+			recordSize := uint64(46) + uint64(binary.LittleEndian.Uint16(header[28:30])) + uint64(binary.LittleEndian.Uint16(header[30:32])) + uint64(binary.LittleEndian.Uint16(header[32:34]))
+			if recordSize > end-position {
+				return fmt.Errorf("IPA central directory record is truncated")
+			}
+			position += recordSize
+			actualEntries++
+		}
+		if position != end {
+			return fmt.Errorf("IPA central directory is malformed")
+		}
 		return nil
 	}
 	return fmt.Errorf("IPA archive is missing the end-of-central-directory record")

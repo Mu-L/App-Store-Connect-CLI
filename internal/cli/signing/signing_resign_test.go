@@ -3341,6 +3341,38 @@ func TestPreflightSigningResignArchiveAcceptsBoundedZIP64Directory(t *testing.T)
 	}
 }
 
+func TestPreflightSigningResignArchiveRejectsWrappedClassicEntryCount(t *testing.T) {
+	const count = 65_536
+	data := make([]byte, count*46+22)
+	for offset := 0; offset < count*46; offset += 46 {
+		binary.LittleEndian.PutUint32(data[offset:], 0x02014b50)
+	}
+	eocd := data[count*46:]
+	binary.LittleEndian.PutUint32(eocd, 0x06054b50)
+	binary.LittleEndian.PutUint32(eocd[12:16], uint32(count*46))
+	binary.LittleEndian.PutUint32(eocd[16:20], 0)
+	path := filepath.Join(t.TempDir(), "wrapped-count.ipa")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := preflightSigningResignArchive(context.Background(), file, int64(len(data))); err == nil || !strings.Contains(err.Error(), "too many archive entries") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPreflightSigningResignArchiveHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := preflightSigningResignArchive(ctx, nil, 0); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+}
+
 func TestPreflightSigningResignArchiveRejectsOversizedZIP64Inventory(t *testing.T) {
 	data := make([]byte, 56+20+22)
 	binary.LittleEndian.PutUint32(data[0:4], 0x06064b50)
