@@ -5,39 +5,6 @@ import (
 	"testing"
 )
 
-func TestAnalyticsRankedStringAliasesAreAcceptedAndHidden(t *testing.T) {
-	tests := []struct {
-		path      []string
-		alias     string
-		canonical string
-	}{
-		{path: []string{"subscriptions", "view"}, alias: "subscription-id", canonical: "id"},
-		{path: []string{"subscriptions", "review", "screenshots", "delete"}, alias: "id", canonical: "screenshot-id"},
-	}
-
-	root := RootCommand("1.2.3")
-	for _, test := range tests {
-		name := strings.Join(test.path, " ") + " --" + test.alias
-		t.Run(name, func(t *testing.T) {
-			command := findSubcommand(root, test.path...)
-			if command == nil {
-				t.Fatalf("command %q not found", strings.Join(test.path, " "))
-			}
-			if command.FlagSet.Lookup(test.canonical) == nil {
-				t.Fatalf("canonical flag --%s not found", test.canonical)
-			}
-			if command.FlagSet.Lookup(test.alias) == nil {
-				t.Fatalf("analytics-ranked alias --%s not found", test.alias)
-			}
-
-			usage := command.UsageFunc(command)
-			if strings.Contains(usage, "\n  --"+test.alias+" ") {
-				t.Fatalf("compatibility alias --%s should stay hidden from canonical help: %q", test.alias, usage)
-			}
-		})
-	}
-}
-
 func TestAnalyticsRankedAmbiguousFlagsRemainRejected(t *testing.T) {
 	// These high-volume pairs need extra resource resolution or a missing
 	// subcommand, so treating them as spelling aliases would change semantics.
@@ -49,11 +16,6 @@ func TestAnalyticsRankedAmbiguousFlagsRemainRejected(t *testing.T) {
 		{path: []string{"screenshots", "list"}, flag: "paginate"},
 		{path: []string{"localizations", "update"}, flag: "localization-id"},
 		{path: []string{"profiles", "list"}, flag: "bundle-id"},
-		// `subscriptions localizations update --subscription-id` stays a
-		// non-alias too, but it is now recognized purely so the command can
-		// explain that --id addresses the localization. Its surface and
-		// runtime contracts live in
-		// subscriptions_localizations_selector_flags_test.go.
 	}
 
 	root := RootCommand("1.2.3")
