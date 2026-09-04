@@ -203,7 +203,7 @@ func (target *validatedStaplerTarget) captureRegularFileFingerprint(ctx context.
 		}
 	}
 	if err != nil {
-		if staplerInventoryEntryVanished(err) {
+		if staplerInventoryPathVanished(err) {
 			// The command retained and hashed this file, so a pathname that no
 			// longer resolves proves the artifact changed rather than an
 			// operational filesystem failure.

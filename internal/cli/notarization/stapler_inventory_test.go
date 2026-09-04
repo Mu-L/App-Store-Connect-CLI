@@ -937,3 +937,13 @@ func TestStaplerInventoryPathVanishedCoversMissingAndNonDirectoryComponents(t *t
 		})
 	}
 }
+
+func TestStaplerInventoryEntryVanishedDoesNotClassifyNonDirectoryParents(t *testing.T) {
+	err := &fs.PathError{Op: "lstat", Path: "MyApp.dmg", Err: syscall.ENOTDIR}
+	if staplerInventoryEntryVanished(err) {
+		t.Fatal("staplerInventoryEntryVanished() classified ENOTDIR as a missing entry")
+	}
+	if !staplerInventoryPathVanished(err) {
+		t.Fatal("staplerInventoryPathVanished() did not classify ENOTDIR as a changed path")
+	}
+}
