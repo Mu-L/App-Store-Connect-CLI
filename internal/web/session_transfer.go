@@ -533,24 +533,48 @@ func (b *SessionBundle) normalize(now time.Time) (persistedSession, SessionImpor
 }
 
 // ImportSessionBundle stores a bundle in the same cache `asc web auth login`
-// writes, so later `asc web` commands resume it. The imported session also
-// becomes the last cached session.
+// writes, so later `asc web` commands resume it. Import performs local bundle
+// validation only; use `asc web auth status` when live Apple validation is
+// needed. The imported session also becomes the last cached session.
 func ImportSessionBundle(bundle *SessionBundle) (SessionImportSummary, error) {
-	return ImportSessionBundleWithContext(context.Background(), bundle, false)
+	return importSessionBundleLocally(bundle, false)
 }
 
 // ImportSessionBundleWithOptions imports a bundle and optionally permits
 // replacing an existing cache entry. The overwrite bit is also used to scope
 // recovery from a malformed keychain aggregate to the explicit replacement
-// path; ordinary login and refresh writes must not erase other accounts.
+// path; ordinary login and refresh writes must not erase other accounts. The
+// import itself performs local validation only; it does not contact Apple.
 func ImportSessionBundleWithOptions(bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
-	return ImportSessionBundleWithContext(context.Background(), bundle, overwrite)
+	return importSessionBundleLocally(bundle, overwrite)
 }
 
-// ImportSessionBundleWithContext imports a bundle using ctx for the
-// pre-persistence Apple session validation request.
-func ImportSessionBundleWithContext(ctx context.Context, bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
-	return importSessionBundleWithValidator(ctx, bundle, overwrite, nil)
+// ImportSessionBundleWithContext retains the context-aware API for callers
+// compiled against the original transfer surface. Import is local-only, so
+// ctx is intentionally ignored; callers that need live validation should run
+// the status or resume workflow separately.
+func ImportSessionBundleWithContext(_ context.Context, bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
+	return importSessionBundleLocally(bundle, overwrite)
+}
+
+func importSessionBundleLocally(bundle *SessionBundle, overwrite bool) (SessionImportSummary, error) {
+	if bundle == nil {
+		return SessionImportSummary{}, errors.New("web session bundle is empty")
+	}
+
+	sess, summary, err := bundle.normalize(time.Now().UTC())
+	if err != nil {
+		return SessionImportSummary{}, err
+	}
+
+	selection := resolveBackendSelection()
+	if selection.backend == sessionBackendOff {
+		return SessionImportSummary{}, ErrSessionCacheDisabled
+	}
+	if err := persistImportedSessionBySelection(selection, webSessionCacheKey(summary.AppleID), sess, overwrite); err != nil {
+		return SessionImportSummary{}, err
+	}
+	return summary, nil
 }
 
 func importSessionBundleWithValidator(ctx context.Context, bundle *SessionBundle, overwrite bool, validator sessionInfoValidator) (SessionImportSummary, error) {

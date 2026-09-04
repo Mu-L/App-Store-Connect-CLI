@@ -26,8 +26,8 @@ const (
 )
 
 // sessionTransferWarning writes the reminders that an exported bundle is a
-// credential and that an imported session was validated. os.Stderr is resolved
-// per call so redirected process output is honored.
+// credential and that an imported session still needs live validation.
+// os.Stderr is resolved per call so redirected process output is honored.
 func sessionTransferWarning(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format, args...)
 }
@@ -50,16 +50,18 @@ func formatOptionalSessionBundleTime(value *time.Time) string {
 func WebAuthExportCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web auth export", flag.ExitOnError)
 
-	appleID := fs.String("apple-id", "", "Apple Account email to export (default exports the last cached session)")
-	outputPath := fs.String("output-path", "", "Destination file for the exported session bundle (required)")
-	overwrite := fs.Bool("overwrite", false, "Replace an existing file at --output-path")
+	appleID := fs.String("apple-id", "", "[experimental] Apple Account email to export (default exports the last cached session)")
+	outputPath := fs.String("output-path", "", "[experimental] Destination file for the exported session bundle (required)")
+	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing file at --output-path")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "export",
 		ShortUsage: "asc web auth export --output-path FILE [--apple-id EMAIL] [--overwrite]",
-		ShortHelp:  "Export the cached web session to a file.",
+		ShortHelp:  "[experimental] Export the cached web session to a file.",
 		LongHelp: `WEB SESSION WORKFLOWS
+
+This session-transfer command is [experimental].
 
 Write the cached Apple web session to a JSON bundle so another machine or a CI
 job can reuse it with "asc web auth import" instead of repeating two-factor
@@ -73,9 +75,9 @@ The bundle records the Apple Account email and the session cookies for Apple's
 App Store Connect and developer origins. Apple's login populates a cookie jar
 that keeps only cookie names and values, so an exported bundle usually carries
 no expiry date and reports "expiresAt" only when the cached cookies record one.
-The export itself does not validate the session; import validates it against
-Apple before writing it on the target machine. Run "asc web auth status" on
-the target machine to inspect the resumed session if needed.
+The export itself does not validate the session. Import performs local bundle
+validation only; run "asc web auth status" on the target machine to validate
+the resumed session with Apple when network access is available.
 
 Examples:
   asc web auth export --output-path ./web-session.json
@@ -173,16 +175,18 @@ func writeWebSessionBundle(path string, payload []byte, overwrite bool) (bool, e
 func WebAuthImportCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web auth import", flag.ExitOnError)
 
-	filePath := fs.String("file", "", "Path to a session bundle produced by \"asc web auth export\" (required)")
-	appleID := fs.String("apple-id", "", "Require the bundle to belong to this Apple Account email")
-	overwrite := fs.Bool("overwrite", false, "Replace an existing cached session for the bundle Apple Account")
+	filePath := fs.String("file", "", "[experimental] Path to a session bundle produced by \"asc web auth export\" (required)")
+	appleID := fs.String("apple-id", "", "[experimental] Require the bundle to belong to this Apple Account email")
+	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing cached session for the bundle Apple Account")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "import",
 		ShortUsage: "asc web auth import --file FILE [--apple-id EMAIL] [--overwrite]",
-		ShortHelp:  "Import a web session bundle into the session cache.",
+		ShortHelp:  "[experimental] Import a web session bundle into the session cache.",
 		LongHelp: `WEB SESSION WORKFLOWS
+
+This session-transfer command is [experimental].
 
 Load a session bundle written by "asc web auth export" into the same cache
 "asc web auth login" writes, so CI can reuse an existing Apple web session
@@ -197,10 +201,11 @@ bundle with no usable cookie is refused without writing to the cache. Pass
 The imported session also becomes the last cached session, so "asc web"
 commands resume it without --apple-id.
 
-Import validates the session against Apple's session endpoint before writing
-anything to the cache. Invalid, expired, malformed, unreachable, or
-identity-mismatched sessions are rejected without changing the cache. Run
-"asc web auth status" afterwards if you need to inspect the resumed session.
+Import performs local bundle validation only before writing anything to the
+cache. Invalid, expired, malformed, unsupported-origin, and unstorable-cookie
+bundles are rejected without changing the cache; import does not contact
+Apple. Run "asc web auth status" afterwards to validate the resumed session
+with Apple when network access is available.
 
 Examples:
   asc web auth import --file ./web-session.json
@@ -238,15 +243,13 @@ Examples:
 			} else if ok && existing != nil && !*overwrite {
 				return fmt.Errorf("web auth import failed: a cached web session for %s already exists; pass --overwrite to replace it", bundle.AppleID)
 			}
-			requestCtx, cancel := shared.ContextWithTimeout(ctx)
-			defer cancel()
-			summary, err := webcore.ImportSessionBundleWithContext(requestCtx, bundle, *overwrite)
+			summary, err := webcore.ImportSessionBundleWithOptions(bundle, *overwrite)
 			if err != nil {
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
 
 			sessionTransferWarning(
-				"Imported web session for %s after validating it with Apple. Run \"asc web auth status\" to inspect it if needed.\n",
+				"Imported web session for %s after local bundle validation. Run \"asc web auth status\" to validate it with Apple.\n",
 				summary.AppleID,
 			)
 

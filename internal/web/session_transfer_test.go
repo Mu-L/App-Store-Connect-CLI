@@ -174,6 +174,28 @@ func validTestBundle(expires time.Time) *SessionBundle {
 	}
 }
 
+func TestImportSessionBundleIsLocalOnly(t *testing.T) {
+	withFileSessionCache(t)
+	var calls int
+	previousFetcher := sessionInfoFetcher
+	sessionInfoFetcher = func(context.Context, *http.Client) (*sessionInfo, error) {
+		calls++
+		return nil, errors.New("live session validation must not run during import")
+	}
+	t.Cleanup(func() { sessionInfoFetcher = previousFetcher })
+
+	summary, err := ImportSessionBundleWithContext(context.Background(), validTestBundle(time.Now().Add(time.Hour)), false)
+	if err != nil {
+		t.Fatalf("ImportSessionBundleWithContext() error = %v", err)
+	}
+	if summary.AppleID != "user@example.com" || summary.CookieCount != 1 {
+		t.Fatalf("unexpected import summary: %+v", summary)
+	}
+	if calls != 0 {
+		t.Fatalf("live session validation calls = %d, want 0", calls)
+	}
+}
+
 func fakeSessionInfoValidator(t *testing.T, status int, body string) (sessionInfoValidator, *int) {
 	t.Helper()
 	var calls int
