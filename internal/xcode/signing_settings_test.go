@@ -3959,6 +3959,32 @@ func TestSigningPlanReclassifiesNoOpAfterDependentRemoval(t *testing.T) {
 	}
 }
 
+func TestSigningPlanBlocksRemovalWhenSiblingWriteChangesSharedFallback(t *testing.T) {
+	project := writeStructuredVersionProject(t, true)
+	sharedPath := filepath.Join(filepath.Dir(project), "Configs", "Shared.xcconfig")
+	if err := os.WriteFile(sharedPath, []byte("PROVISIONING_PROFILE_SPECIFIER = base-profile\r\n"), 0o640); err != nil {
+		t.Fatalf("write shared xcconfig: %v", err)
+	}
+	injectSigningDirectBuildSetting(t, filepath.Join(project, "project.pbxproj"),
+		`PROVISIONING_PROFILE_SPECIFIER = debug-profile;`)
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[
+			{"name":"Debug","settings":{"PROVISIONING_PROFILE_SPECIFIER":null}},
+			{"name":"Release","settings":{"PROVISIONING_PROFILE_SPECIFIER":"release-profile"}}
+		]}]
+	}`)
+	plan, err := BuildSigningPlan(SigningPlanOptions{ProjectPath: project, SettingsFilePath: settingsPath, StateDir: filepath.Join(root, "state")})
+	if err != nil {
+		t.Fatalf("BuildSigningPlan() error = %v", err)
+	}
+	if plan.Ready || !strings.Contains(strings.Join(plan.Blockers, "\n"), "differs from value after removal alone") {
+		t.Fatalf("plan = ready=%t blockers=%#v, want shared fallback collision blocker", plan.Ready, plan.Blockers)
+	}
+}
+
 func TestSigningPlanReclassifiesNoOpAfterProjectFallbackDependentChange(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	pbxprojPath := filepath.Join(project, "project.pbxproj")

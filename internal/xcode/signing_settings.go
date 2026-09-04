@@ -584,6 +584,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 
 	var operations []signingPlanOperation
 	var operationBlockers []string
+	baselineResolver := newSigningSettingResolver(project, configFiles, opts.AllowExternalXCConfig, lexicalConfigPaths)
 	converged := false
 	maxIterations := len(candidates) + 1
 	for iteration := 0; iteration < maxIterations; iteration++ {
@@ -610,7 +611,7 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 			operationBlockers = append(operationBlockers, fmt.Sprintf("stage signing plan: %v", stageErr))
 			break
 		}
-		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, stagedProject, stagedResolver)
+		reclassified, resolutionBlockers := reclassifySigningNoOps(candidates, stagedProject, stagedResolver, baselineResolver)
 		if len(resolutionBlockers) > 0 {
 			operationBlockers = append(operationBlockers, resolutionBlockers...)
 			break
@@ -1878,6 +1879,7 @@ func reclassifySigningNoOps(
 	candidates []signingCandidate,
 	stagedProject *structuredVersionProject,
 	resolver *signingSettingResolver,
+	baselineResolver *signingSettingResolver,
 ) (int, []string) {
 	configurations := make(map[string]*versionConfiguration, len(stagedProject.configurations))
 	for _, configuration := range stagedProject.configurations {
@@ -1903,8 +1905,15 @@ func reclassifySigningNoOps(
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, errors.New("staged project still has a direct assignment")))
 				continue
 			}
-			if _, _, err := resolver.resolveSetting(configuration, candidate.setting); err != nil && !errors.Is(err, errVersionSettingNotFound) {
+			resolved, _, err := resolver.resolveSetting(configuration, candidate.setting)
+			if err != nil && !errors.Is(err, errVersionSettingNotFound) {
 				blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, err))
+			} else if err == nil && baselineResolver != nil {
+				baselineConfiguration := candidate.configuration
+				baseline, _, baselineErr := baselineResolver.resolveSetting(baselineConfiguration, candidate.setting)
+				if baselineErr == nil && resolved != baseline {
+					blockers = append(blockers, signingSettingBlocker(candidate.configuration, candidate.setting, fmt.Errorf("staged value %q differs from value after removal alone %q; another operation in this plan would change the fallback", resolved, baseline)))
+				}
 			}
 			continue
 		}
