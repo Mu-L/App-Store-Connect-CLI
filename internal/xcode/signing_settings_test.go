@@ -169,6 +169,114 @@ func TestBuildSigningPlanRejectsOversizedXCConfig(t *testing.T) {
 	}
 }
 
+func TestBuildSigningPlanRejectsOversizedUnselectedXCConfigBeforeArtifactPublication(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	configDir := filepath.Join(projectRoot, "Configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(config) error = %v", err)
+	}
+	const graphRoot = "Graph-0000.xcconfig"
+	for index := 0; index < signingPlanMaxFiles; index++ {
+		name := fmt.Sprintf("Graph-%04d.xcconfig", index)
+		contents := "CODE_SIGN_STYLE = Manual\n"
+		if index+1 < signingPlanMaxFiles {
+			contents = fmt.Sprintf("#include \"Graph-%04d.xcconfig\"\n", index+1)
+		}
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte(contents), 0o640); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	attachSigningWidgetXCConfig(t, project, fmt.Sprintf("#include \"%s\"\n", graphRoot))
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(state) error = %v", err)
+	}
+	planPath := filepath.Join(stateDir, "plan.json")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(existing plan) error = %v", err)
+	}
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: stateDir,
+	})
+	if err == nil || !isXCConfigSourceGraphLimitError(err) || !strings.Contains(err.Error(), "more than 4096 files") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want unselected source-graph limit", plan, err)
+	}
+	if plan != nil {
+		t.Fatalf("BuildSigningPlan() returned a plan after unselected graph overflow: %#v", plan)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("existing plan changed after unselected graph overflow: %q", got)
+	}
+}
+
+func TestBuildSigningPlanSharesXCConfigBudgetAcrossConfigurationRoots(t *testing.T) {
+	project := writeStructuredVersionProject(t, false)
+	projectRoot := filepath.Dir(project)
+	configDir := filepath.Join(projectRoot, "Configs")
+	const graphSize = signingPlanMaxFiles / 2
+	writeGraph := func(name string) {
+		dir := filepath.Join(configDir, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", name, err)
+		}
+		for index := 0; index < graphSize; index++ {
+			fileName := fmt.Sprintf("Graph-%04d.xcconfig", index)
+			contents := "CODE_SIGN_STYLE = Manual\n"
+			if index+1 < graphSize {
+				contents = fmt.Sprintf("#include \"Graph-%04d.xcconfig\"\n", index+1)
+			}
+			if err := os.WriteFile(filepath.Join(dir, fileName), []byte(contents), 0o640); err != nil {
+				t.Fatalf("WriteFile(%s/%s) error = %v", name, fileName, err)
+			}
+		}
+	}
+	writeGraph("AppGraph")
+	writeGraph("WidgetGraph")
+	attachSigningAppXCConfig(t, project, "#include \"AppGraph/Graph-0000.xcconfig\"\n")
+	attachSigningWidgetXCConfig(t, project, "#include \"WidgetGraph/Graph-0000.xcconfig\"\n")
+
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	writeSigningSettingsTestFile(t, settingsPath, `{
+		"schemaVersion": 1,
+		"targets": [{"name":"App","configurations":[{"name":"Debug","settings":{"CODE_SIGN_STYLE":"manual"}}]}]
+	}`)
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(state) error = %v", err)
+	}
+	planPath := filepath.Join(stateDir, "plan.json")
+	const existingPlan = "existing plan bytes\n"
+	if err := os.WriteFile(planPath, []byte(existingPlan), 0o600); err != nil {
+		t.Fatalf("WriteFile(existing plan) error = %v", err)
+	}
+
+	plan, err := BuildSigningPlan(SigningPlanOptions{
+		ProjectPath: project, SettingsFilePath: settingsPath,
+		PlanPath: planPath, StateDir: stateDir,
+	})
+	if err == nil || !isXCConfigSourceGraphLimitError(err) || !strings.Contains(err.Error(), "more than 4096 files") {
+		t.Fatalf("BuildSigningPlan() = plan=%#v, error=%v; want shared multi-root source-graph limit", plan, err)
+	}
+	if plan != nil {
+		t.Fatalf("BuildSigningPlan() returned a plan after shared graph overflow: %#v", plan)
+	}
+	if got := mustReadVersionTestFile(t, planPath); got != existingPlan {
+		t.Fatalf("existing plan changed after shared graph overflow: %q", got)
+	}
+}
+
 func TestSigningApplyDoesNotUseStablePortableWriteFallback(t *testing.T) {
 	project := writeStructuredVersionProject(t, false)
 	root := t.TempDir()
@@ -5202,6 +5310,25 @@ func TestReadSigningPlanRejectsUnboundedMissingOptionalIncludes(t *testing.T) {
 	}
 }
 
+func TestReadSigningPlanRejectsUnboundedSigningSources(t *testing.T) {
+	planPath := filepath.Join(t.TempDir(), "plan.json")
+	files := make([]SigningPlanFile, signingPlanMaxFiles+1)
+	for index := range files {
+		files[index] = SigningPlanFile{Path: fmt.Sprintf("source-%d.xcconfig", index), SHA256: strings.Repeat("0", 64), Source: "xcconfig"}
+	}
+	plan := &SigningPlan{SchemaVersion: signingPlanSchemaVersion, Command: signingPlanCommand, Files: files}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("json.Marshal(plan) error = %v", err)
+	}
+	if err := os.WriteFile(planPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(plan) error = %v", err)
+	}
+	if _, err := readSigningPlanArtifact(planPath); err == nil || !IsSigningInputError(err) || !strings.Contains(err.Error(), "signing source files") {
+		t.Fatalf("readSigningPlanArtifact() error = %v, want bounded source error", err)
+	}
+}
+
 func TestSigningSettingResolverDoesNotShareOptionalIncludeAuthorizationBetweenConfigurations(t *testing.T) {
 	projectPath := writeStructuredVersionProject(t, true)
 	project, err := openStructuredVersionProject(projectPath)
@@ -6220,6 +6347,44 @@ func attachSigningWidgetXCConfig(t *testing.T, project, contents string) string 
 		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
 	}
 	return configPath
+}
+
+func attachSigningAppXCConfig(t *testing.T, project, contents string) {
+	t.Helper()
+	projectRoot := filepath.Dir(project)
+	configDir := filepath.Join(projectRoot, "Configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(config) error = %v", err)
+	}
+	configPath := filepath.Join(configDir, "App.xcconfig")
+	if err := os.WriteFile(configPath, []byte(contents), 0o640); err != nil {
+		t.Fatalf("WriteFile(app xcconfig) error = %v", err)
+	}
+
+	pbxprojPath := filepath.Join(project, "project.pbxproj")
+	projectContents := mustReadVersionTestFile(t, pbxprojPath)
+	const appReference = "DDDDDDDDDDDDDDDDDDDDDDDD"
+	fileReference := "\t\t" + appReference + " /* App.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configs/App.xcconfig; sourceTree = SOURCE_ROOT; };\n"
+	marker := "\t\t111111111111111111111111 /* Project object */ = {"
+	if !strings.Contains(projectContents, marker) {
+		t.Fatalf("project fixture is missing project object marker")
+	}
+	projectContents = strings.Replace(projectContents, marker, fileReference+marker, 1)
+	appDebugConfiguration := "999999999999999999999993 /* App Debug */ = {isa = XCBuildConfiguration;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	updatedAppDebugConfiguration := "999999999999999999999993 /* App Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = " + appReference + ";  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Debug; };"
+	if !strings.Contains(projectContents, appDebugConfiguration) {
+		t.Fatalf("project fixture is missing App Debug configuration")
+	}
+	projectContents = strings.Replace(projectContents, appDebugConfiguration, updatedAppDebugConfiguration, 1)
+	appReleaseConfiguration := "999999999999999999999994 /* App Release */ = {isa = XCBuildConfiguration;  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Release; };"
+	updatedAppReleaseConfiguration := "999999999999999999999994 /* App Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = " + appReference + ";  buildSettings = { MARKETING_VERSION = 1.2.3; CURRENT_PROJECT_VERSION = 42; }; name = Release; };"
+	if !strings.Contains(projectContents, appReleaseConfiguration) {
+		t.Fatalf("project fixture is missing App Release configuration")
+	}
+	projectContents = strings.Replace(projectContents, appReleaseConfiguration, updatedAppReleaseConfiguration, 1)
+	if err := os.WriteFile(pbxprojPath, []byte(projectContents), 0o644); err != nil {
+		t.Fatalf("WriteFile(project.pbxproj) error = %v", err)
+	}
 }
 
 func TestSigningPlanProtectsResolvedEntitlementsReference(t *testing.T) {

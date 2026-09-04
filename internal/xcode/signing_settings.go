@@ -26,6 +26,7 @@ const (
 	signingPlanSchemaVersion                      = 1
 	signingSettingsMaxBytes                       = 1 << 20
 	signingPlanMaxBytes                           = 8 << 20
+	signingPlanMaxFiles                           = 4096
 	signingPlanMaxMissingOptionalIncludePathBytes = 4096
 
 	signingPlanCommand = "asc xcode signing plan"
@@ -110,7 +111,10 @@ type signingIncompleteInternalXCConfigError struct {
 }
 
 func (e signingIncompleteInternalXCConfigError) Error() string {
-	return signingIncompleteInternalXCConfigMessage
+	if e.err == nil {
+		return signingIncompleteInternalXCConfigMessage
+	}
+	return fmt.Sprintf("%s: %v", signingIncompleteInternalXCConfigMessage, e.err)
 }
 
 func (e signingIncompleteInternalXCConfigError) Unwrap() error {
@@ -666,6 +670,9 @@ func buildSigningPlan(opts SigningPlanOptions) (*signingPlanBuild, error) {
 		plan.Files = append(plan.Files, file)
 	}
 	sort.Slice(plan.Files, func(left, right int) bool { return plan.Files[left].Path < plan.Files[right].Path })
+	if len(plan.Files) > signingPlanMaxFiles {
+		plan.Blockers = append(plan.Blockers, fmt.Sprintf("signing plan source graph contains %d files, exceeding the limit of %d", len(plan.Files), signingPlanMaxFiles))
+	}
 	sort.Strings(plan.Blockers)
 	sort.Strings(plan.Warnings)
 	plan.Ready = len(plan.Blockers) == 0
@@ -3742,6 +3749,9 @@ func readSigningPlanArtifact(path string) (*SigningPlan, error) {
 	}
 	if plan.Command != signingPlanCommand {
 		return nil, newSigningInputError(fmt.Errorf("plan command is not %q", signingPlanCommand))
+	}
+	if len(plan.Files) > signingPlanMaxFiles {
+		return nil, newSigningInputError(fmt.Errorf("plan contains %d signing source files, exceeding the limit of %d", len(plan.Files), signingPlanMaxFiles))
 	}
 	if len(plan.MissingOptionalIncludes) > signingPlanMaxMissingOptionalIncludes {
 		return nil, newSigningInputError(fmt.Errorf("plan contains too many missing optional xcconfig includes"))
