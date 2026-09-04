@@ -792,9 +792,14 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				}
 				resolved.conditionals = filtered
 			}
+			conditionalValue := assignment.value
+			if resolved.found && (strings.Contains(conditionalValue, "$(inherited)") || strings.Contains(conditionalValue, "${inherited}")) {
+				conditionalValue = strings.ReplaceAll(conditionalValue, "$(inherited)", resolved.value)
+				conditionalValue = strings.ReplaceAll(conditionalValue, "${inherited}", resolved.value)
+			}
 			resolved.conditionals = append(resolved.conditionals, xcconfigConditionalValue{
 				key:      assignment.key,
-				value:    assignment.value,
+				value:    conditionalValue,
 				operator: assignment.operator,
 				path:     path,
 			})
