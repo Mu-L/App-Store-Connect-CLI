@@ -153,7 +153,10 @@ Examples:
 			}
 
 			result := &asc.WebSandboxDeleteResult{IDs: requestedIDs, Deleted: true}
-			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+			if err := shared.PrintOutput(result, *output.Output, *output.Pretty); err != nil {
+				return sandboxDeleteVerifiedOutputError(requestedIDs, err)
+			}
+			return nil
 		},
 	}
 }
@@ -206,7 +209,7 @@ func validateSandboxDeletePostcondition(snapshot *webcore.SandboxAccountListResp
 	for _, account := range snapshot.Accounts {
 		id := strings.TrimSpace(account.ID)
 		if _, ok := requested[id]; ok {
-			return fmt.Errorf("web sandbox delete failed: Apple still returned sandbox account %q after deletion", id)
+			return sandboxDeleteUnknownOutcome("verification", fmt.Errorf("server still returned sandbox account %q after deletion", id))
 		}
 	}
 	return nil
@@ -247,6 +250,13 @@ func sandboxDeleteUnknownOutcome(stage string, err error) error {
 		return fmt.Errorf("web sandbox delete failed: outcome unknown after %s", stage)
 	}
 	return fmt.Errorf("web sandbox delete failed: outcome unknown after %s; Apple may have processed the request, so do not retry until a fresh sandbox account list confirms state: %w", stage, err)
+}
+
+func sandboxDeleteVerifiedOutputError(ids []string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("web sandbox delete completed and verified for sandbox account IDs %q, but output failed; do not retry the deletion: %w", strings.Join(ids, ", "), err)
 }
 
 // WebSandboxCreateCommand creates a sandbox tester via App Store Connect's

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -551,5 +552,120 @@ func TestWebSandboxDeleteTreatsRequestTimeoutAsUnknownOutcome(t *testing.T) {
 	}
 	if listCalls != 1 {
 		t.Fatalf("list calls = %d, want 1; command must not retry or verify after ambiguous delete", listCalls)
+	}
+}
+
+func TestWebSandboxDeleteTreatsVisibleAccountAfterDeleteAsUnknownOutcome(t *testing.T) {
+	origResolveSession := resolveSessionFn
+	origNewWebClient := newWebClientFn
+	origList := listWebSandboxAccountsFn
+	origDelete := deleteWebSandboxAccountsFn
+	t.Cleanup(func() {
+		resolveSessionFn = origResolveSession
+		newWebClientFn = origNewWebClient
+		listWebSandboxAccountsFn = origList
+		deleteWebSandboxAccountsFn = origDelete
+	})
+
+	resolveSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{}, "cache", nil
+	}
+	newWebClientFn = func(session *webcore.AuthSession) *webcore.Client { return &webcore.Client{} }
+	family := false
+	listCalls := 0
+	listWebSandboxAccountsFn = func(ctx context.Context, client *webcore.Client) (*webcore.SandboxAccountListResponse, error) {
+		listCalls++
+		return &webcore.SandboxAccountListResponse{
+			TotalAccounts: 1,
+			Accounts:      []webcore.SandboxAccount{{ID: "tester-one", IsInFamily: &family}},
+		}, nil
+	}
+	deleteCalls := 0
+	deleteWebSandboxAccountsFn = func(ctx context.Context, client *webcore.Client, ids []string) error {
+		deleteCalls++
+		return nil
+	}
+
+	cmd := WebSandboxDeleteCommand()
+	if err := cmd.FlagSet.Parse([]string{"--id", "tester-one", "--confirm"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := cmd.Exec(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "outcome unknown") {
+		t.Fatalf("expected unknown-outcome error for still-visible account, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "tester-one") {
+		t.Fatalf("expected still-visible account ID in error, got %v", err)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls = %d, want 1", deleteCalls)
+	}
+	if listCalls != 2 {
+		t.Fatalf("list calls = %d, want 2 for postcondition verification", listCalls)
+	}
+}
+
+func TestWebSandboxDeleteReportsVerifiedStatusWhenOutputFails(t *testing.T) {
+	origResolveSession := resolveSessionFn
+	origNewWebClient := newWebClientFn
+	origList := listWebSandboxAccountsFn
+	origDelete := deleteWebSandboxAccountsFn
+	t.Cleanup(func() {
+		resolveSessionFn = origResolveSession
+		newWebClientFn = origNewWebClient
+		listWebSandboxAccountsFn = origList
+		deleteWebSandboxAccountsFn = origDelete
+	})
+
+	resolveSessionFn = func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{}, "cache", nil
+	}
+	newWebClientFn = func(session *webcore.AuthSession) *webcore.Client { return &webcore.Client{} }
+	family := false
+	listCalls := 0
+	listWebSandboxAccountsFn = func(ctx context.Context, client *webcore.Client) (*webcore.SandboxAccountListResponse, error) {
+		listCalls++
+		if listCalls == 1 {
+			return &webcore.SandboxAccountListResponse{
+				TotalAccounts: 1,
+				Accounts:      []webcore.SandboxAccount{{ID: "tester-one", IsInFamily: &family}},
+			}, nil
+		}
+		return &webcore.SandboxAccountListResponse{TotalAccounts: 0, Accounts: []webcore.SandboxAccount{}}, nil
+	}
+	deleteCalls := 0
+	deleteWebSandboxAccountsFn = func(ctx context.Context, client *webcore.Client, ids []string) error {
+		deleteCalls++
+		return nil
+	}
+
+	cmd := WebSandboxDeleteCommand()
+	if err := cmd.FlagSet.Parse([]string{"--id", "tester-one", "--confirm", "--output", "json"}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	oldStdout := os.Stdout
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := wOut.Close(); err != nil {
+		t.Fatalf("close stdout pipe: %v", err)
+	}
+	os.Stdout = wOut
+	gotErr := cmd.Exec(context.Background(), nil)
+	os.Stdout = oldStdout
+	_ = rOut.Close()
+
+	if gotErr == nil || !strings.Contains(gotErr.Error(), "completed and verified") {
+		t.Fatalf("expected verified-status output error, got %v", gotErr)
+	}
+	if !strings.Contains(gotErr.Error(), "tester-one") || !strings.Contains(gotErr.Error(), "do not retry") {
+		t.Fatalf("expected ID and no-retry guidance, got %v", gotErr)
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls = %d, want 1", deleteCalls)
+	}
+	if listCalls != 2 {
+		t.Fatalf("list calls = %d, want 2 for postcondition verification", listCalls)
 	}
 }
