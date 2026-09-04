@@ -1979,34 +1979,36 @@ func keychainSessionCarriesStamp(key string, stamp time.Time) bool {
 
 // DeleteAllSessions removes all cached web sessions.
 func DeleteAllSessions() error {
-	selection := resolveBackendSelection()
-	var err error
-	switch selection.backend {
-	case sessionBackendOff:
-		err = nil
-	case sessionBackendKeychain:
-		if deleteErr := deleteAllFromKeychain(); deleteErr != nil {
-			if selection.fallbackFile && isKeyringUnavailable(deleteErr) {
+	return withSessionGlobalLock(func() error {
+		selection := resolveBackendSelection()
+		var err error
+		switch selection.backend {
+		case sessionBackendOff:
+			err = nil
+		case sessionBackendKeychain:
+			if deleteErr := deleteAllFromKeychain(); deleteErr != nil {
+				if selection.fallbackFile && isKeyringUnavailable(deleteErr) {
+					err = deleteAllFromFile()
+				} else {
+					err = deleteErr
+				}
+			} else if selection.fallbackFile {
 				err = deleteAllFromFile()
-			} else {
-				err = deleteErr
 			}
-		} else if selection.fallbackFile {
-			err = deleteAllFromFile()
+		case sessionBackendFile:
+			if deleteErr := deleteAllFromFile(); deleteErr != nil {
+				err = deleteErr
+			} else {
+				err = clearLastSessionMarker()
+			}
+			if selection.fallbackKeychain {
+				err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteAllFromKeychain()))
+			}
+		default:
+			err = nil
 		}
-	case sessionBackendFile:
-		if deleteErr := deleteAllFromFile(); deleteErr != nil {
-			err = deleteErr
-		} else {
-			err = clearLastSessionMarker()
-		}
-		if selection.fallbackKeychain {
-			err = joinDeleteErrors(err, ignoreUnavailableKeyringError(deleteAllFromKeychain()))
-		}
-	default:
-		err = nil
-	}
-	return joinDeleteErrors(err, deleteAllLegacyIrisFromFile())
+		return joinDeleteErrors(err, deleteAllLegacyIrisFromFile())
+	})
 }
 
 func joinDeleteErrors(primaryErr, legacyErr error) error {
