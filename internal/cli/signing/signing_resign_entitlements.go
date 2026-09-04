@@ -606,6 +606,12 @@ func signingResignIdentityValueIsConcrete(value any) bool {
 }
 
 func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {
+	// A profile authorization is valid only when every entry is well-formed.
+	// In particular, a bare wildcard must not turn into an authorization for
+	// arbitrary values, and malformed list entries must not be skipped.
+	if !signingResignProfileAuthorizationValueValid(profileValue) {
+		return false
+	}
 	profileString, profileIsString := profileValue.(string)
 	signedString, signedIsString := signedValue.(string)
 	if profileIsString && signedIsString {
@@ -633,6 +639,39 @@ func signingResignEntitlementValuePermits(profileValue, signedValue any) bool {
 		return true
 	}
 	return reflect.DeepEqual(profileValue, signedValue)
+}
+
+func signingResignProfileAuthorizationValueValid(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		if !strings.ContainsRune(typed, '*') {
+			return true
+		}
+		prefix, ok := strings.CutSuffix(typed, "*")
+		return ok && prefix != "" && strings.HasSuffix(prefix, ".") && !strings.ContainsRune(prefix, '*')
+	case []any:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			if !signingResignProfileAuthorizationValueValid(item) {
+				return false
+			}
+		}
+		return true
+	case []string:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			if !signingResignProfileAuthorizationValueValid(item) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
 }
 
 func signingResignEntitlementList(value any) ([]any, bool) {

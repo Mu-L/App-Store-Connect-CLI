@@ -36,6 +36,32 @@ func TestSigningCommandExposesResign(t *testing.T) {
 	t.Fatal("signing command does not expose resign")
 }
 
+func TestSigningResignEntitlementValuePermitsRejectsMalformedProfilePatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile any
+		signed  string
+	}{
+		{name: "bare wildcard", profile: "*", signed: "OLD.value"},
+		{name: "wildcard without dotted prefix", profile: "TEAM*", signed: "TEAM.value"},
+		{name: "malformed array entry", profile: []any{"TEAM.*", 42}, signed: "TEAM.value"},
+		{name: "mixed types", profile: []any{"TEAM.*"}, signed: "TEAM.value"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if signingResignEntitlementValuePermits(test.profile, test.signed) {
+				t.Fatal("malformed profile authorization was accepted")
+			}
+		})
+	}
+}
+
+func TestSigningResignEntitlementValuePermitsAcceptsBoundedWildcard(t *testing.T) {
+	if !signingResignEntitlementValuePermits("TEAM.*", "TEAM.value") {
+		t.Fatal("bounded dotted wildcard was rejected")
+	}
+}
+
 func TestSigningResignHelpMarksCommandSpecificFlagsExperimental(t *testing.T) {
 	command := SigningResignCommand()
 	for _, name := range []string{"ipa", "output", "identity", "identity-password-file", "profiles-manifest"} {
