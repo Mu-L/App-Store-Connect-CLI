@@ -558,6 +558,25 @@ func TestPlanSigningResignEntitlementsRebasesPairedAppClipClaimsTogether(t *test
 	}
 }
 
+func TestPlanSigningResignEntitlementsPreservesDuplicatePairedAppClipArrayEntries(t *testing.T) {
+	main := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com.example.app.Clip", "OLDPREFIX.com.example.app.Clip"}})
+	clip := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/Clip.app", "com.example.app.Clip", map[string]any{signingResignParentEntitlement: []string{"OLDPREFIX.com.example.app", "OLDPREFIX.com.example.app"}})
+	profiles := map[string]signingResignProfile{main.BundleID: rebaseTestProfile(main.BundleID, "NEWMAIN", map[string]any{signingResignAssociatedAppClipEntitlement: []any{"NEWCLIP.com.example.app.Clip"}}), clip.BundleID: rebaseTestProfile(clip.BundleID, "NEWCLIP", map[string]any{signingResignParentEntitlement: []any{"NEWMAIN.com.example.app"}})}
+	plans, err := planSigningResignEntitlements(signingResignArchive{MainPath: main.RelativePath, Targets: []signingResignTarget{main, clip}}, profiles, true)
+	if err != nil {
+		t.Fatalf("plan duplicate paired claims: %v", err)
+	}
+	if got := plans[0].Entitlements[signingResignAssociatedAppClipEntitlement]; !signingResignEntitlementValuesEqual(got, []string{"NEWCLIP.com.example.app.Clip", "NEWCLIP.com.example.app.Clip"}) {
+		t.Fatalf("associated claim = %#v", got)
+	}
+	if got := plans[1].Entitlements[signingResignParentEntitlement]; !signingResignEntitlementValuesEqual(got, []string{"NEWMAIN.com.example.app", "NEWMAIN.com.example.app"}) {
+		t.Fatalf("parent claim = %#v", got)
+	}
+	if len(plans[0].Rewrites) != 2 || len(plans[1].Rewrites) != 2 {
+		t.Fatalf("rewrites = %#v %#v, want two per side", plans[0].Rewrites, plans[1].Rewrites)
+	}
+}
+
 func TestPlanSigningResignEntitlementsPreservesPairedClaimsOnMismatchedPrefix(t *testing.T) {
 	main := rebaseTestTarget("application", "Payload/App.app", "com.example.app", map[string]any{signingResignAssociatedAppClipEntitlement: []string{"OLDPREFIX.com.example.app.Clip"}})
 	clip := rebaseTestTarget("app-clip", "Payload/App.app/AppClips/Clip.app", "com.example.app.Clip", map[string]any{signingResignParentEntitlement: []string{"WRONGPREFIX.com.example.app"}})

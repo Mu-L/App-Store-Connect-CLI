@@ -561,6 +561,8 @@ func buildSigningResignRebaseGraph(archive signingResignArchive, profiles map[st
 func buildSigningResignAppClipMapping(graph *signingResignRebaseGraph) error {
 	var associatedCount, parentCount int
 	invalid := false
+	associatedEdges := make(map[string]struct{})
+	parentEdges := make(map[string]struct{})
 	for bundleID, target := range graph.TargetByBundle {
 		for _, key := range []string{signingResignParentEntitlement, signingResignAssociatedAppClipEntitlement} {
 			value, ok := target.ExistingEntitlements[key]
@@ -630,13 +632,21 @@ func buildSigningResignAppClipMapping(graph *signingResignRebaseGraph) error {
 					continue
 				}
 				if key == signingResignAssociatedAppClipEntitlement {
-					associatedCount++
+					edge := target.BundleID + "\x00" + referenced.BundleID
+					if _, seen := associatedEdges[edge]; !seen {
+						associatedEdges[edge] = struct{}{}
+						associatedCount++
+					}
 					if associatedCount > 1 {
 						invalid = true
 						continue
 					}
 				} else {
-					parentCount++
+					edge := target.BundleID + "\x00" + referenced.BundleID
+					if _, seen := parentEdges[edge]; !seen {
+						parentEdges[edge] = struct{}{}
+						parentCount++
+					}
 					if parentCount > 1 {
 						invalid = true
 						continue
