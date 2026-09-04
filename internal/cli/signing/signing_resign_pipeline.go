@@ -547,9 +547,32 @@ func verifySigningResignPreservedExternalCodeOpen(ctx context.Context, source *o
 		temp.Close()
 		return err
 	}
-	if _, err := io.Copy(temp, source); err != nil {
-		temp.Close()
-		return err
+	var copied int64
+	buf := make([]byte, 128*1024)
+	for {
+		if err := contextError(ctx); err != nil {
+			temp.Close()
+			return err
+		}
+		n, readErr := source.Read(buf)
+		if n > 0 {
+			copied += int64(n)
+			if copied > signingResignSwiftSupportMaxBytes {
+				temp.Close()
+				return fmt.Errorf("preserved code exceeds %d bytes", signingResignSwiftSupportMaxBytes)
+			}
+			if _, err := temp.Write(buf[:n]); err != nil {
+				temp.Close()
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			temp.Close()
+			return readErr
+		}
 	}
 	if err := temp.Close(); err != nil {
 		return err
@@ -587,12 +610,21 @@ func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string,
 	if err := contextError(ctx); err != nil {
 		return err
 	}
+	if info, statErr := root.Lstat("SwiftSupport"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("SwiftSupport directory is a symbolic link")
+	}
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport directory: %w", err)
+	}
+	if info, statErr := root.Lstat("SwiftSupport"); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+		if statErr != nil {
+			return fmt.Errorf("inspect SwiftSupport directory: %w", statErr)
+		}
+		return fmt.Errorf("SwiftSupport directory is a symbolic link")
 	}
 	defer swift.Close()
 	swiftDir, err := swift.Open(".")
@@ -607,9 +639,18 @@ func validateSigningResignSwiftSupportRoot(ctx context.Context, treeRoot string,
 	if len(entries) != 1 || entries[0].Name() != "iphoneos" {
 		return fmt.Errorf("SwiftSupport must contain only the iphoneos directory")
 	}
+	if info, statErr := swift.Lstat("iphoneos"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("SwiftSupport/iphoneos directory is a symbolic link")
+	}
 	platform, err := swift.OpenRoot("iphoneos")
 	if err != nil {
 		return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)
+	}
+	if info, statErr := swift.Lstat("iphoneos"); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+		if statErr != nil {
+			return fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", statErr)
+		}
+		return fmt.Errorf("SwiftSupport/iphoneos directory is a symbolic link")
 	}
 	defer platform.Close()
 	platformDir, err := platform.Open(".")
@@ -670,12 +711,21 @@ func validateSigningResignWatchKitSupportRoot(ctx context.Context, treeRoot stri
 	if err := contextError(ctx); err != nil {
 		return err
 	}
+	if info, statErr := root.Lstat("WatchKitSupport2"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WatchKitSupport2 directory is a symbolic link")
+	}
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("inspect WatchKitSupport2 directory: %w", err)
+	}
+	if info, statErr := root.Lstat("WatchKitSupport2"); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+		if statErr != nil {
+			return fmt.Errorf("inspect WatchKitSupport2 directory: %w", statErr)
+		}
+		return fmt.Errorf("WatchKitSupport2 directory is a symbolic link")
 	}
 	defer watch.Close()
 	watchDir, err := watch.Open(".")
@@ -716,6 +766,9 @@ func validateSigningResignWatchKitSupportRoot(ctx context.Context, treeRoot stri
 func captureSigningResignWatchKitSupportInventoryRoot(ctx context.Context, root *os.Root) ([]signingResignSwiftSupportEntry, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
+	}
+	if info, statErr := root.Lstat("WatchKitSupport2"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("WatchKitSupport2 directory is a symbolic link")
 	}
 	watch, err := root.OpenRoot("WatchKitSupport2")
 	if errors.Is(err, os.ErrNotExist) {
@@ -815,6 +868,9 @@ func captureSigningResignSwiftSupportInventoryRoot(ctx context.Context, root *os
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
+	if info, statErr := root.Lstat("SwiftSupport"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("SwiftSupport directory is a symbolic link")
+	}
 	swift, err := root.OpenRoot("SwiftSupport")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -823,6 +879,9 @@ func captureSigningResignSwiftSupportInventoryRoot(ctx context.Context, root *os
 		return nil, fmt.Errorf("inspect SwiftSupport directory: %w", err)
 	}
 	defer swift.Close()
+	if info, statErr := swift.Lstat("iphoneos"); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("SwiftSupport/iphoneos directory is a symbolic link")
+	}
 	platform, err := swift.OpenRoot("iphoneos")
 	if err != nil {
 		return nil, fmt.Errorf("inspect SwiftSupport/iphoneos directory: %w", err)

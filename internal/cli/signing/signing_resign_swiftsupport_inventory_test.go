@@ -362,3 +362,16 @@ func TestSigningResignCombinedPreservedOperationsShareOneStagingRoot(t *testing.
 		t.Fatalf("inventory = %+v, want both preserved trees in sorted order", inventory)
 	}
 }
+
+func TestSigningResignPreservedDirectoriesRejectSymlinks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "SwiftSupport")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSigningResignPreservedExternalDirectories(context.Background(), root); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("validate error = %v", err)
+	}
+	if _, err := captureSigningResignPreservedInventory(context.Background(), root); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("capture error = %v", err)
+	}
+}
