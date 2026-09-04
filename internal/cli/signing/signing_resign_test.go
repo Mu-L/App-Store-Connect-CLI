@@ -3122,6 +3122,21 @@ func TestSigningResignCodeContainersIncludeBundleAndXPC(t *testing.T) {
 	}
 }
 
+func TestSigningResignContainerEntitlementsFollowMainExecutable(t *testing.T) {
+	treePath := filepath.Join(string(filepath.Separator), "stage", "tree")
+	container := filepath.Join(treePath, "Payload", "App.app", "Frameworks", "Feature.framework")
+	plans := []signingResignCodePlan{
+		{Path: filepath.Join(container, "Feature"), EntitlementsPath: "/stage/entitlements/feature.plist"},
+		{Path: filepath.Join(container, "Versions", "A", "Feature"), EntitlementsPath: "/stage/entitlements/version.plist"},
+	}
+	if got := signingResignContainerEntitlementsPath(container, plans); got != "/stage/entitlements/feature.plist" {
+		t.Fatalf("container entitlements path = %q, want main executable document", got)
+	}
+	if got := signingResignContainerEntitlementsPath(filepath.Join(treePath, "Payload", "App.app", "PlugIns", "Empty.bundle"), plans); got != "" {
+		t.Fatalf("unplanned container entitlements path = %q, want empty", got)
+	}
+}
+
 func TestDiscoverSigningResignArchiveIgnoresRegularFilesNamedLikeBundles(t *testing.T) {
 	info, err := plist.Marshal(map[string]any{
 		"CFBundleIdentifier":         "com.example.app",

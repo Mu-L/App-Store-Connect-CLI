@@ -797,7 +797,8 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 	}
 	containers := signingResignFrameworkContainers(treePath, plans)
 	for _, container := range containers {
-		if err := signSigningResignObject(ctx, container, identitySHA1, keychainPath, ""); err != nil {
+		entitlementsPath := signingResignContainerEntitlementsPath(container, plans)
+		if err := signSigningResignObject(ctx, container, identitySHA1, keychainPath, entitlementsPath); err != nil {
 			return fmt.Errorf("sign code container %s: %w", signingResignDisplayPath(treePath, container), err)
 		}
 	}
@@ -808,6 +809,19 @@ func signSigningResignTree(ctx context.Context, treePath string, prepared signin
 		}
 	}
 	return nil
+}
+
+// signingResignContainerEntitlementsPath returns the prepared entitlements
+// for a container's main executable. A container is signed after its contents,
+// so passing the same document preserves the claims applied to that
+// executable when the container's resource seal is refreshed.
+func signingResignContainerEntitlementsPath(container string, plans []signingResignCodePlan) string {
+	for _, plan := range plans {
+		if filepath.Dir(plan.Path) == container {
+			return plan.EntitlementsPath
+		}
+	}
+	return ""
 }
 
 // isSigningResignCodeContainerName reports whether a directory name is a
