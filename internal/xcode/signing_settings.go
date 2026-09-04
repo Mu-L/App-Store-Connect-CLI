@@ -1604,7 +1604,7 @@ func (resolver *signingSettingResolver) resolveXCConfigSettingStateWithContext(
 			return resolver.identifyXCConfigFor(configuration, includePath)
 		}
 	}
-	return resolveXCConfigSettingStateWithReaderAndIdentity(path, setting, base, read, stat, identify, observe)
+	return resolveXCConfigSettingStateWithReaderAndIdentity(path, setting, base, read, stat, identify, observe, nil)
 }
 
 func (resolver *signingSettingResolver) resolveConfigurationXCConfigWithContext(
@@ -1627,13 +1627,16 @@ func (resolver *signingSettingResolver) resolveConfigurationXCConfigWithContext(
 			return resolver.identifyXCConfigFor(configuration, includePath)
 		}
 	}
-	return resolveXCConfigSettingWithBaseReaderAndIdentity(
+	return resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
 		path,
 		setting,
 		base,
 		read,
 		stat,
 		identify,
+		func(name string) (string, bool) {
+			return signingImplicitSettingValue(resolver.project, expansionConfiguration, name)
+		},
 	)
 }
 

@@ -589,8 +589,19 @@ func resolveXCConfigSettingWithBaseReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 ) (xcconfigResolvedValue, error) {
+	return resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(root, setting, base, read, stat, identify, nil)
+}
+
+func resolveXCConfigSettingWithBaseReaderAndIdentityAndLookup(
+	root, setting string,
+	base xcconfigResolvedValue,
+	read func(string) ([]byte, error),
+	stat func(string) (os.FileInfo, error),
+	identify func(string) (os.FileInfo, error),
+	lookup func(string) (string, bool),
+) (xcconfigResolvedValue, error) {
 	resolved, conditional, err := resolveXCConfigSettingStateWithReaderAndIdentity(
-		root, setting, base, read, stat, identify, nil,
+		root, setting, base, read, stat, identify, nil, lookup,
 	)
 	if err != nil {
 		return xcconfigResolvedValue{}, err
@@ -640,9 +651,10 @@ func resolveXCConfigSettingStateWithReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 	observe xcconfigAssignmentObserver,
+	lookup func(string) (string, bool),
 ) (xcconfigResolvedValue, bool, error) {
 	return resolveXCConfigSettingRecursiveWithReaderAndIdentity(
-		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify, observe,
+		filepath.Clean(root), setting, make(map[string]bool), nil, base, read, stat, identify, observe, lookup,
 	)
 }
 
@@ -661,6 +673,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 	stat func(string) (os.FileInfo, error),
 	identify func(string) (os.FileInfo, error),
 	observe xcconfigAssignmentObserver,
+	lookup func(string) (string, bool),
 ) (xcconfigResolvedValue, bool, error) {
 	path = filepath.Clean(path)
 	pathKey := signingLexicalPathKey(path)
@@ -726,7 +739,7 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 				}
 				return xcconfigResolvedValue{}, false, fmt.Errorf("read xcconfig include %s: %w", includePath, err)
 			}
-			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify, observe)
+			included, _, err := resolveXCConfigSettingRecursiveWithReaderAndIdentity(includePath, setting, nextStack, nextStackPaths, resolved, read, stat, identify, observe, lookup)
 			if err != nil {
 				return xcconfigResolvedValue{}, false, err
 			}
@@ -771,6 +784,11 @@ func resolveXCConfigSettingRecursiveWithReaderAndIdentity(
 		value = strings.ReplaceAll(value, "${inherited}", resolved.value)
 		switch assignment.operator {
 		case "?=":
+			if !resolved.found && lookup != nil {
+				if implicit, ok := lookup(setting); ok {
+					resolved = xcconfigResolvedValue{value: implicit, path: "<implicit>", found: true, exact: true}
+				}
+			}
 			if resolved.found {
 				continue
 			}
