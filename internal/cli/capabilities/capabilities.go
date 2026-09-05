@@ -292,9 +292,9 @@ func capabilityRows() []Capability {
 			Area:       "app-management",
 			Capability: "Regulated medical device declaration",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web apps medical-device"},
-			Notes:      []string{"App Store Regulations and Permits medical-device declarations are not present in the embedded public OpenAPI snapshot. The web command supports the captured app-level No path and affirmative EEA/GBR/USA selection; detailed registration, support, and contact fields remain website-only. The captured No path preserves existing regional rows."},
-			NextAction: "Use asc web apps medical-device set --declared false, or set --declared true --confirm for the captured app-level path; complete detailed fields in App Store Connect.",
+			Commands:   []string{"asc web apps medical-device", "asc web apps medical-device region set"},
+			Notes:      []string{"App Store Regulations and Permits medical-device declarations are not present in the embedded public OpenAPI snapshot. The web command supports the captured app-level No path, affirmative EEA/GBR/USA selection, and a detailed regional setter that preserves contacts and verifies exact readback; personal-service and any unsupported medical fields remain website-only. The captured No paths preserve existing regional rows."},
+			NextAction: "Use asc web apps medical-device set --declared false, set --declared true --confirm, or medical-device region set --region REGION --input PATH --confirm; complete unsupported detailed fields in App Store Connect.",
 		},
 		{
 			Area:       "app-management",
@@ -399,7 +399,7 @@ func capabilityRows() []Capability {
 			Status:     statusWebSession,
 			Commands:   []string{"asc web apps declarations list"},
 			Notes: []string{
-				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; the web command supports captured medical-device app-level declarations, while personal-service and detailed medical fields remain website-only. EU DSA trader status is account-level and is not part of this listing.",
+				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; the web command supports captured medical-device app-level declarations and the detailed regional setter, while personal-service and unsupported detailed medical fields remain website-only. EU DSA trader status is account-level and is not part of this listing.",
 			},
 			NextAction: "Use App Store Connect web UI, or asc web apps declarations list.",
 		},
