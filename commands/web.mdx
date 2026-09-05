@@ -108,6 +108,7 @@ reuse a session created elsewhere.
 asc web auth export --output-path ./web-session.json --apple-id "user@example.com"
 asc web auth import --file ./web-session.json
 asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
+asc web auth import --file ./web-session.json --validate
 asc web auth status
 ```
 
@@ -124,7 +125,11 @@ Pass `--apple-id` to refuse a bundle that belongs to a different Apple Account.
 Pass `--overwrite` to replace a cached session that already exists for that
 account. The imported session becomes the last cached session.
 
-Import does not contact Apple. Run `asc web auth status` afterwards, when
+Import does not contact Apple unless `--validate` is provided. With
+`--validate`, `asc` sends a temporary cookie jar to Apple's existing session
+endpoint before reading or writing the cache and requires the returned Apple
+Account to match the bundle. A failed live validation leaves the cache
+unchanged. Without `--validate`, run `asc web auth status` afterwards, when
 network access is available, to validate that the resumed credentials are still
 live. A successful local import is therefore not proof that the copied session
 belongs to the named account or remains accepted by Apple.

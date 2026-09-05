@@ -76,8 +76,10 @@ App Store Connect and developer origins. Apple's login populates a cookie jar
 that keeps only cookie names and values, so an exported bundle usually carries
 no expiry date and reports "expiresAt" only when the cached cookies record one.
 The export itself does not validate the session. Import performs local bundle
-validation only; run "asc web auth status" on the target machine to validate
-the resumed session with Apple when network access is available.
+validation by default; pass --validate on the target machine to check the
+temporary bundle session with Apple before reading or writing the cache. If
+--validate is omitted, run "asc web auth status" afterwards to validate the
+resumed session when network access is available.
 
 Examples:
   asc web auth export --output-path ./web-session.json
@@ -180,11 +182,12 @@ func WebAuthImportCommand() *ffcli.Command {
 	filePath := fs.String("file", "", "[experimental] Path to a session bundle produced by \"asc web auth export\" (required)")
 	appleID := fs.String("apple-id", "", "[experimental] Require the bundle to belong to this Apple Account email")
 	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing cached session for the bundle Apple Account")
+	validate := fs.Bool("validate", false, "[experimental] Validate the bundle with Apple before importing it")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
 		Name:       "import",
-		ShortUsage: "asc web auth import --file FILE [--apple-id EMAIL] [--overwrite]",
+		ShortUsage: "asc web auth import --file FILE [--apple-id EMAIL] [--overwrite] [--validate]",
 		ShortHelp:  "[experimental] Import a web session bundle into the session cache.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
@@ -203,15 +206,20 @@ bundle with no usable cookie is refused without writing to the cache. Pass
 The imported session also becomes the last cached session, so "asc web"
 commands resume it without --apple-id.
 
-Import performs local bundle validation only before writing anything to the
-cache. Invalid, expired, malformed, unsupported-origin, and unstorable-cookie
-bundles are rejected without changing the cache; import does not contact
-Apple. Run "asc web auth status" afterwards to validate the resumed session
-with Apple when network access is available.
+Import performs local bundle validation before writing anything to the cache.
+Invalid, expired, malformed, unsupported-origin, and unstorable-cookie bundles
+are rejected without changing the cache. Import does not contact Apple unless
+--validate is provided. With --validate, asc sends the bundle's temporary
+cookie jar to Apple's session endpoint before reading or writing the cache and
+requires the returned Apple Account to match the bundle. A failed live
+validation leaves the cache unchanged. Without --validate, run "asc web auth
+status" afterwards to validate the resumed session with Apple when network
+access is available.
 
 Examples:
   asc web auth import --file ./web-session.json
   asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
+  asc web auth import --file ./web-session.json --validate
   asc web auth import --file ./web-session.json --output json`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
@@ -237,6 +245,13 @@ Examples:
 			if trimmedAppleID != "" && !strings.EqualFold(trimmedAppleID, bundle.AppleID) {
 				return fmt.Errorf("web auth import failed: bundle appleId %s does not match --apple-id %s", bundle.AppleID, trimmedAppleID)
 			}
+			if *validate {
+				requestCtx, cancel := newWebRequestContext(ctx)
+				defer cancel()
+				if err := webcore.ValidateSessionBundle(requestCtx, bundle); err != nil {
+					return fmt.Errorf("web auth import failed: live session validation: %w", err)
+				}
+			}
 			existing, ok, err := webcore.LoadCachedSession(bundle.AppleID)
 			if err != nil {
 				if !*overwrite {
@@ -250,10 +265,14 @@ Examples:
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
 
-			sessionTransferWarning(
-				"Imported web session for %s after local bundle validation. Run \"asc web auth status\" to validate it with Apple.\n",
-				summary.AppleID,
-			)
+			if *validate {
+				sessionTransferWarning("Imported web session for %s after Apple validation.\n", summary.AppleID)
+			} else {
+				sessionTransferWarning(
+					"Imported web session for %s after local bundle validation. Run \"asc web auth status\" to validate it with Apple.\n",
+					summary.AppleID,
+				)
+			}
 
 			return shared.PrintOutput(&asc.WebSessionImportResult{
 				Path:                  filePathValue,

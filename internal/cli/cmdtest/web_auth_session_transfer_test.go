@@ -34,7 +34,7 @@ func TestWebAuthImportSubcommandIsRegistered(t *testing.T) {
 	if sub == nil {
 		t.Fatalf("expected web auth import to be registered")
 	}
-	for _, flagName := range []string{"file", "apple-id", "overwrite", "output"} {
+	for _, flagName := range []string{"file", "apple-id", "overwrite", "validate", "output"} {
 		if sub.FlagSet.Lookup(flagName) == nil {
 			t.Fatalf("expected --%s flag", flagName)
 		}
@@ -48,7 +48,7 @@ func TestWebAuthSessionTransferSurfacesAreExperimental(t *testing.T) {
 		flags []string
 	}{
 		{path: []string{"web", "auth", "export"}, flags: []string{"apple-id", "output-path", "overwrite"}},
-		{path: []string{"web", "auth", "import"}, flags: []string{"file", "apple-id", "overwrite"}},
+		{path: []string{"web", "auth", "import"}, flags: []string{"file", "apple-id", "overwrite", "validate"}},
 	}
 
 	for _, tc := range cases {
@@ -93,16 +93,34 @@ func isolateWebSessionCache(t *testing.T) string {
 }
 
 type webSessionInfoTransport struct {
-	base http.RoundTripper
+	base      http.RoundTripper
+	calls     *int
+	sawCookie *bool
+	status    int
+	email     string
 }
 
 func (t webSessionInfoTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Method == http.MethodGet && req.URL.Scheme == "https" && req.URL.Host == "appstoreconnect.apple.com" && req.URL.Path == "/olympus/v1/session" {
+		if t.calls != nil {
+			*t.calls = *t.calls + 1
+		}
+		if t.sawCookie != nil && strings.Contains(req.Header.Get("Cookie"), "myacinfo=") {
+			*t.sawCookie = true
+		}
+		status := t.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		email := t.email
+		if email == "" {
+			email = "user@example.com"
+		}
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
+			StatusCode: status,
+			Status:     http.StatusText(status),
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"provider":{"providerId":42},"user":{"emailAddress":"user@example.com"}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"provider":{"providerId":42},"user":{"emailAddress":"` + email + `"}}`)),
 			Request:    req,
 		}, nil
 	}
@@ -226,6 +244,135 @@ func TestWebAuthImportThenExportRoundTripsSession(t *testing.T) {
 	}
 	if values["myacinfo"] != "super-secret-token" || values["dslang"] != "US-EN" {
 		t.Fatalf("exported cookies = %#v, want the imported values", values)
+	}
+}
+
+func TestWebAuthImportValidatePersistsAfterAppleCheck(t *testing.T) {
+	cacheDir := isolateWebSessionCache(t)
+	calls := 0
+	sawCookie := false
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = webSessionInfoTransport{base: previousTransport, calls: &calls, sawCookie: &sawCookie}
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+	bundlePath := writeWebSessionBundleFixture(t, t.TempDir(), "session.json", webSessionBundleFixture)
+
+	var code int
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "auth", "import",
+			"--file", bundlePath,
+			"--validate",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("validated import exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitSuccess, stdout, stderr)
+	}
+	if calls != 1 || !sawCookie {
+		t.Fatalf("session validation requests = %d, sawCookie = %t; want one request carrying the imported cookie", calls, sawCookie)
+	}
+	if !strings.Contains(strings.ToLower(stderr), "validation") {
+		t.Fatalf("expected validated import diagnostic, got stderr=%q", stderr)
+	}
+
+	var imported struct {
+		AppleID     string `json:"appleId"`
+		CookieCount int    `json:"cookieCount"`
+		Imported    bool   `json:"imported"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &imported); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; stdout=%q", err, stdout)
+	}
+	if imported.AppleID != "user@example.com" || imported.CookieCount != 2 || !imported.Imported {
+		t.Fatalf("unexpected validated import receipt: %+v", imported)
+	}
+	if strings.Contains(stdout, "super-secret-token") || strings.Contains(stderr, "super-secret-token") {
+		t.Fatalf("validated import leaked a cookie value: stdout=%q stderr=%q", stdout, stderr)
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", cacheDir, err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("validated import did not persist a session in %q", cacheDir)
+	}
+}
+
+func snapshotWebSessionCache(t *testing.T, cacheDir string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}
+		}
+		t.Fatalf("ReadDir(%q) error = %v", cacheDir, err)
+	}
+	snapshot := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			t.Fatalf("unexpected directory %q in web session cache", entry.Name())
+		}
+		contents, err := os.ReadFile(filepath.Join(cacheDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile(%q) error = %v", entry.Name(), err)
+		}
+		snapshot[entry.Name()] = string(contents)
+	}
+	return snapshot
+}
+
+func TestWebAuthImportValidateRejectsAccountMismatchWithoutChangingCache(t *testing.T) {
+	cacheDir := isolateWebSessionCache(t)
+	workDir := t.TempDir()
+	bundlePath := writeWebSessionBundleFixture(t, workDir, "session.json", webSessionBundleFixture)
+
+	var code int
+	_, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{"web", "auth", "import", "--file", bundlePath, "--output", "json"}, "1.0.0")
+	})
+	if code != cmd.ExitSuccess {
+		t.Fatalf("seed import exit code = %d, want %d; stderr=%q", code, cmd.ExitSuccess, stderr)
+	}
+	before := snapshotWebSessionCache(t, cacheDir)
+
+	calls := 0
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = webSessionInfoTransport{
+		base:  previousTransport,
+		calls: &calls,
+		email: "other@example.com",
+	}
+	t.Cleanup(func() { http.DefaultTransport = previousTransport })
+
+	stdout, stderr := captureOutput(t, func() {
+		code = cmd.Run([]string{
+			"web", "auth", "import",
+			"--file", bundlePath,
+			"--validate",
+			"--overwrite",
+			"--output", "json",
+		}, "1.0.0")
+	})
+	if code != cmd.ExitError {
+		t.Fatalf("mismatched validated import exit code = %d, want %d; stdout=%q stderr=%q", code, cmd.ExitError, stdout, stderr)
+	}
+	if calls != 1 {
+		t.Fatalf("session validation requests = %d, want one request", calls)
+	}
+	if !strings.Contains(stderr, "live session validation") || !strings.Contains(stderr, "does not match") {
+		t.Fatalf("expected a safe account mismatch diagnostic, got stderr=%q", stderr)
+	}
+	if strings.Contains(stdout, "super-secret-token") || strings.Contains(stderr, "super-secret-token") {
+		t.Fatalf("mismatched validation leaked a cookie value: stdout=%q stderr=%q", stdout, stderr)
+	}
+	after := snapshotWebSessionCache(t, cacheDir)
+	if len(after) != len(before) {
+		t.Fatalf("validation failure changed cache entry count: before=%v after=%v", before, after)
+	}
+	for name, contents := range before {
+		if got, ok := after[name]; !ok || got != contents {
+			t.Fatalf("validation failure changed cache entry %q: before=%q after=%q", name, contents, got)
+		}
 	}
 }
 
