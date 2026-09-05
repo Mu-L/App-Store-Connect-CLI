@@ -670,11 +670,11 @@ func isCIVersionAliasNotFound(err error) bool {
 }
 
 // isAmbiguousCIWriteFailure reports failures where the request reached the
-// transport but no response established whether Apple applied the write.
+// transport but no definitive response established whether Apple applied the write.
 func isAmbiguousCIWriteFailure(err error) bool {
 	var apiErr *webcore.APIError
 	if errors.As(err, &apiErr) {
-		return false
+		return apiErr.Status == http.StatusRequestTimeout || apiErr.Status >= http.StatusInternalServerError
 	}
 	var urlErr *url.Error
 	return errors.As(err, &urlErr) ||

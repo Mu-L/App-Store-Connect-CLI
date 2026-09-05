@@ -694,3 +694,79 @@ func TestWebVersionAliasCreateReconcilesAmbiguousWrite(t *testing.T) {
 func versionAliasJSON(id, name string, locked bool, build, buildName string) string {
 	return `{"id":"` + id + `","name":"` + name + `","type":"xcode_version","locked":` + map[bool]string{true: "true", false: "false"}[locked] + `,"build":"` + build + `","build_name":"` + buildName + `","related_workflow_summaries":[],"build_supported":true}`
 }
+
+func TestWebVersionAliasCreateReconcilesServerFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		writeStatus int
+		readStatus  int
+		wantError   string
+		wantCalls   string
+	}{
+		{"applied", http.StatusServiceUnavailable, http.StatusOK, "", "PUT,GET"},
+		{"timeout applied", http.StatusRequestTimeout, http.StatusOK, "", "PUT,GET"},
+		{"readback failed", http.StatusServiceUnavailable, http.StatusServiceUnavailable, "may have succeeded but reconciliation failed", "PUT,GET"},
+		{"definitive rejection", http.StatusBadRequest, http.StatusOK, "400", "PUT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalIDFn := newVersionAliasIDFn
+			newVersionAliasIDFn = func() string { return "alias-new" }
+			t.Cleanup(func() { newVersionAliasIDFn = originalIDFn })
+			var calls []string
+			stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+				calls = append(calls, req.Method)
+				if req.Method == http.MethodPut {
+					return nextBuildNumberResponse(req, tc.writeStatus, `{}`), nil
+				}
+				if req.Method == http.MethodGet {
+					return nextBuildNumberResponse(req, tc.readStatus, versionAliasJSON("alias-new", "Stable", false, "latest:stable", "")), nil
+				}
+				t.Fatalf("unexpected method %s", req.Method)
+				return nil, nil
+			})
+			command := webVersionAliasCreate()
+			if err := command.FlagSet.Parse([]string{"--product-id", "product", "--name", "Stable", "--type", "xcode_version", "--build", "latest:stable", "--confirm", "--output", "json"}); err != nil {
+				t.Fatal(err)
+			}
+			var runErr error
+			stdout, _ := captureOutput(t, func() { runErr = command.Exec(context.Background(), nil) })
+			if tc.wantError == "" {
+				if runErr != nil || !strings.Contains(stdout, `"action":"created"`) {
+					t.Fatalf("error=%v output=%q", runErr, stdout)
+				}
+			} else if runErr == nil || !strings.Contains(runErr.Error(), tc.wantError) || stdout != "" {
+				t.Fatalf("error=%v output=%q, want %q", runErr, stdout, tc.wantError)
+			}
+			if got := strings.Join(calls, ","); got != tc.wantCalls {
+				t.Fatalf("calls=%s, want %s", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestWebVersionAliasDeleteReconcilesServerFailure(t *testing.T) {
+	var calls []string
+	stubNextBuildNumberSession(t, func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.Method)
+		if req.Method == http.MethodDelete {
+			return nextBuildNumberResponse(req, http.StatusServiceUnavailable, `{}`), nil
+		}
+		if req.Method == http.MethodGet {
+			return nextBuildNumberResponse(req, http.StatusNotFound, `{}`), nil
+		}
+		t.Fatalf("unexpected method %s", req.Method)
+		return nil, nil
+	})
+	command := webVersionAliasDelete()
+	if err := command.FlagSet.Parse([]string{"--product-id", "product", "--id", "alias-1", "--confirm", "--output", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	var runErr error
+	stdout, _ := captureOutput(t, func() { runErr = command.Exec(context.Background(), nil) })
+	if runErr != nil || !strings.Contains(stdout, `"deleted":true`) {
+		t.Fatalf("error=%v output=%q", runErr, stdout)
+	}
+	if got := strings.Join(calls, ","); got != "DELETE,GET" {
+		t.Fatalf("calls=%s, want DELETE,GET", got)
+	}
+}
