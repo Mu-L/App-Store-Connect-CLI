@@ -170,6 +170,19 @@ type CIVersionAliasListResponse struct {
 	Items []CIVersionAlias `json:"items"`
 }
 
+// CIVersionAliasRequest is the exact four-field payload accepted by the
+// Xcode Cloud version-alias save endpoint.
+type CIVersionAliasRequest struct {
+	Name   string          `json:"name"`
+	Type   string          `json:"type"`
+	Build  json.RawMessage `json:"build"`
+	Locked bool            `json:"locked"`
+}
+
+func ciVersionAliasPath(teamID, productID, aliasID string) string {
+	return "/teams/" + url.PathEscape(teamID) + "/products/" + url.PathEscape(productID) + "/configuration-options/version-aliases-v3/" + url.PathEscape(aliasID)
+}
+
 // GetCIVersionAliases returns up to 100 custom aliases for an Xcode Cloud product.
 func (c *Client) GetCIVersionAliases(ctx context.Context, teamID, productID string) (*CIVersionAliasListResponse, error) {
 	teamID = strings.TrimSpace(teamID)
@@ -187,6 +200,60 @@ func (c *Client) GetCIVersionAliases(ctx context.Context, teamID, productID stri
 		return nil, fmt.Errorf("failed to decode ci version aliases: %w", err)
 	}
 	return &result, nil
+}
+
+// GetCIVersionAlias returns one custom alias for an Xcode Cloud product.
+func (c *Client) GetCIVersionAlias(ctx context.Context, teamID, productID, aliasID string) (*CIVersionAlias, error) {
+	_, result, err := c.GetCIVersionAliasRaw(ctx, teamID, productID, aliasID)
+	return result, err
+}
+
+// GetCIVersionAliasRaw returns one custom alias and the unmodified JSON body
+// returned by the Xcode Cloud web API. The raw body is useful for read
+// commands because this private response can gain fields before the typed
+// client model does.
+func (c *Client) GetCIVersionAliasRaw(ctx context.Context, teamID, productID, aliasID string) (json.RawMessage, *CIVersionAlias, error) {
+	teamID = strings.TrimSpace(teamID)
+	productID = strings.TrimSpace(productID)
+	aliasID = strings.TrimSpace(aliasID)
+	if teamID == "" || productID == "" || aliasID == "" {
+		return nil, nil, fmt.Errorf("team id, product id, and version alias id are required")
+	}
+	body, err := c.doRequest(ctx, "GET", ciVersionAliasPath(teamID, productID, aliasID), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	var result CIVersionAlias
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, nil, fmt.Errorf("failed to decode ci version alias: %w", err)
+	}
+	return append(json.RawMessage(nil), body...), &result, nil
+}
+
+// PutCIVersionAlias creates or updates one custom alias. The response body is
+// intentionally ignored because callers must re-read after the PUT; it is not
+// the verification boundary for a mutation.
+func (c *Client) PutCIVersionAlias(ctx context.Context, teamID, productID, aliasID string, request CIVersionAliasRequest) error {
+	teamID = strings.TrimSpace(teamID)
+	productID = strings.TrimSpace(productID)
+	aliasID = strings.TrimSpace(aliasID)
+	if teamID == "" || productID == "" || aliasID == "" {
+		return fmt.Errorf("team id, product id, and version alias id are required")
+	}
+	_, err := c.doRequest(ctx, "PUT", ciVersionAliasPath(teamID, productID, aliasID), request)
+	return err
+}
+
+// DeleteCIVersionAlias deletes one custom alias for an Xcode Cloud product.
+func (c *Client) DeleteCIVersionAlias(ctx context.Context, teamID, productID, aliasID string) error {
+	teamID = strings.TrimSpace(teamID)
+	productID = strings.TrimSpace(productID)
+	aliasID = strings.TrimSpace(aliasID)
+	if teamID == "" || productID == "" || aliasID == "" {
+		return fmt.Errorf("team id, product id, and version alias id are required")
+	}
+	_, err := c.doRequest(ctx, "DELETE", ciVersionAliasPath(teamID, productID, aliasID), nil)
+	return err
 }
 
 // CINextBuildNumber is the next build number configured for an Xcode Cloud product.

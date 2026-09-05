@@ -61,6 +61,7 @@ func TestRun_CapabilitiesJSONReportsKnownGaps(t *testing.T) {
 	assertCapability(t, resp, "Initial app availability bootstrap", "partial", "asc pricing availability create")
 	assertCapability(t, resp, "Initial app availability bootstrap", "partial", "asc web apps availability create")
 	assertCapability(t, resp, "App distribution method inspection", "web-session", "asc web apps distribution view")
+	assertCapability(t, resp, "App distribution method inspection", "web-session", "asc web apps distribution set")
 	assertCapability(t, resp, "Last-compatible version settings", "cli-supported", "asc versions list --paginate --output json")
 	assertCapability(t, resp, "Last-compatible version settings", "cli-supported", "asc versions update --downloadable")
 	assertCapability(t, resp, "App Store version status history", "web-session", "asc web apps history")
