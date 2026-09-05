@@ -5,7 +5,7 @@ description: Recheck an in-progress App-Store-Connect-CLI pull request for new r
 
 # Watch an ASC CLI pull request
 
-Preserve the PR context and authority under `AGENTS.md`: status reads once; watch repeats until a terminal state; fix-and-watch also applies authorized fixes. Watching alone grants no edit, commit, push, or reply authority.
+Preserve the PR context and authority under `AGENTS.md`: status reads once; watch repeats until a terminal state; fix-and-watch also applies authorized fixes. Watching alone grants no edit, commit, push, or reply authority. A one-time check ends after reporting its snapshot; do not start a full readiness audit or heartbeat unless requested or already authorized.
 
 ## Recheck current state
 
@@ -28,6 +28,7 @@ Apply fixes and external writes only when authorized. Otherwise report the verif
 
 ## Return one state
 
+- `observed`: a one-time check completed; report the requested facts and mark readiness unverified unless separately established. An actionable finding does not make a completed read-only check blocked.
 - `changed`: pushed a fix; include commit and validation.
 - `pending`: required checks, required reviews, or actionable reviews are still running; identify exactly what remains. This is an intermediate state during a user-requested loop, not the final handoff.
 - `clean`: the final full-branch local review in `AGENTS.md` is clear for the current head and base, required checks pass, required reviews are satisfied, the latest head is mergeable, and no actionable unresolved thread remains. Report advisory jobs without treating them as blockers.
