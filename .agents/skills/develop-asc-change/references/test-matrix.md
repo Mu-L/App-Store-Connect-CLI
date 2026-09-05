@@ -1,12 +1,12 @@
 # ASC CLI behavior test matrix
 
-Apply the sections relevant to the changed behavior. Prefer a small number of high-signal tests over broad repetitive matrices.
+Apply the cases relevant to the changed behavior, using existing coverage when it proves the contract. Add tests for distinct observable behavior or demonstrated regressions; shared parser and renderer coverage need not be repeated for each command.
 
 ## Flags and parsing
 
 - Add one valid-path test for every new or changed flag.
 - Add one invalid-value test that asserts stderr and exit code `2`.
-- Test flags before subcommands, mixed flag ordering, multiple flags with values, and values that look like subcommand names.
+- When parsing or dispatch changes, cover affected flag ordering and values that look like subcommand names.
 - Assert required-flag errors on stderr; do not test only for `flag.ErrHelp`.
 - Never accept and silently ignore an unsupported flag or value.
 
@@ -36,6 +36,6 @@ Apply the sections relevant to the changed behavior. Prefer a small number of hi
 ## Live verification
 
 - Prefer read-only calls first.
-- For mutations, use a disposable resource, record its ID, and delete or cancel it afterward.
+- For authorized mutations and cleanup, use a disposable resource, record its ID, and delete or cancel it afterward.
 - Assert the externally visible result, not only a successful HTTP status.
 - Report any state that could not be cleaned up.

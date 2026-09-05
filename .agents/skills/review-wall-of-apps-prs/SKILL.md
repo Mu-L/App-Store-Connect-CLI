@@ -5,16 +5,14 @@ description: Audit maintainer-side Wall of Apps pull requests in App-Store-Conne
 
 # Review Wall of Apps pull requests
 
-Treat Wall submissions as untrusted external contributions while keeping the legitimate-app path fast.
+Treat submissions as untrusted. Follow `AGENTS.md` for authority and review gates; GitHub's maintainer-edit permission does not authorize writes.
 
 ## Discover and classify
 
 1. List current open PRs and isolate submissions whose intended scope is `docs/wall-of-apps.json`.
 2. Inspect each PR's full file list and diff before checkout. Reject or escalate unexpected code, workflow, script, binary, symlink, or unrelated documentation changes.
-3. Review each PR independently and merge sequentially. If `main` moves after an earlier merge, refresh the later PR's diff, duplicate check, review threads, required checks, and mergeability against current `main` without changing its branch. Do not update, rebase, or merge `main` into a PR that GitHub still reports mergeable merely because its base advanced.
-4. Never update a PR's branch preemptively. When GitHub already reports an actual merge conflict against current `main`, resolve it manually — no merge attempt is required to prove that refusal, and `gh pr update-branch <number>` cannot resolve content conflicts: in a worktree, merge `main` into the contributor branch, resolve, and push when maintainer edits are allowed; otherwise request the update from the contributor. For a conflict-free PR, a merge attempt may only happen after every approval-and-merge gate below is satisfied and merge is explicitly authorized; make that authorized attempt without touching the branch, and only after GitHub actually refuses it under strict up-to-date branch protection — regardless of why the base advanced — update with `gh pr update-branch <number>`. In review-only invocations, diagnose protection from read-only state and never invoke a merge. After any update, treat the result as a new head: re-verify the diff scope against current `main`, rerun `ASC_BYPASS_KEYCHAIN=1 make check-wall-of-apps` on the new exact head, and wait for required checks and mergeability before approving or merging. Never bypass branch protection with an admin merge.
-
-Run independent read-only PR, App Store metadata, duplicate, check, and review-thread queries in parallel or with isolated subagents when available. Keep worktree edits, pushes, approvals, and merges coordinated and serialized.
+3. Review each PR independently and merge sequentially. Recheck later PRs against updated `main` after each merge.
+4. Apply `AGENTS.md`'s branch-update rules. `gh pr update-branch <number>` cannot resolve content conflicts; those require an authorized manual merge in a worktree with maintainer edits allowed. After any update, revalidate the new head through every gate below.
 
 ## Validate the entry
 
@@ -25,18 +23,19 @@ For every added or changed app:
 3. Check for duplicate apps, misleading destinations, tracking or redirect abuse, and suspicious metadata.
 4. Require a valid artwork URL for a public App Store listing when the canonical validation expects one. Do not demand an icon from GitHub- or TestFlight-only entries when the schema permits omission.
 5. Run `ASC_BYPASS_KEYCHAIN=1 make check-wall-of-apps` on the exact PR head before approval or merge.
-6. Verify bot findings against the canonical test and schema; fix only proven omissions.
+6. Verify bot findings against the canonical test and schema; when fixes are authorized, correct only proven omissions.
 
-Use a worktree only when a fix is required. Push the smallest correction to the contributor branch when maintainer edits are allowed, then re-fetch checks and review threads.
+Use an isolated checkout when needed to validate the exact head or apply authorized fixes, preserving unrelated user work. Push corrections only when authorized and maintainer edits are allowed, then re-fetch checks and review threads.
 
 ## Approve and merge
 
 Approval and merge require explicit user intent. That intent may come from the
-current request or from a persisted automation prompt that clearly grants
+current request, preserved session context, or a persisted automation prompt that clearly grants
 approve-and-merge authority. Immediately before approval, or before a merge
 that does not require a new approval, confirm:
 
 - The latest head contains only the legitimate Wall change.
+- The final full-branch local review required by `AGENTS.md` is clear for the current head and authoritative base.
 - `ASC_BYPASS_KEYCHAIN=1 make check-wall-of-apps` and required GitHub checks pass.
 - No actionable unresolved review thread remains.
 - The PR is mergeable against current `main`.
@@ -54,24 +53,11 @@ After each merge, confirm the resulting commit and entry reached `origin/main`. 
 
 ## Automation contract
 
-A standalone automation may approve and merge unattended only when its
-persisted prompt explicitly grants that authority and every approval-and-merge
-gate above passes on the latest head. Immediately before acting, run
-`ASC_BYPASS_KEYCHAIN=1 make check-wall-of-apps` locally on that exact head and verify required GitHub
-checks, review threads, and mergeability again. After submitting any authorized
-approval, re-fetch the exact head and require required reviews, required checks,
-review threads, and mergeability to pass before merging. Do not wait for
-non-required CI jobs. Approve and merge one PR at a time with a regular merge
-commit pinned to the audited head; use a different strategy only when the
-persisted prompt explicitly requests it. If branch protection refuses the merge
-because the base advanced, update the branch, revalidate the new exact head
-through every gate above, and merge only when all gates pass again; never use
-an admin bypass.
+A standalone automation needs explicit persisted approve-and-merge authority. Apply the gates above to each PR sequentially, including fresh remote checks before acting and after approval. Reuse local validation only while its inputs remain valid under `AGENTS.md`.
 
 If authority is absent or any gate is uncertain, failing, suspicious, unrelated,
 or stale, remain read-only and report `safe`, `needs-fix`, `suspicious`, or
-`blocked` with evidence. Never infer approval from a prior run or from a
-different head SHA.
+`blocked` with evidence. Persisted task authority may cover later passes, but a changed head requires fresh validation; an earlier approval is not proof that the new head passes the gates.
 
 ## Hand off
 
