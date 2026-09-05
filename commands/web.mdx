@@ -445,13 +445,20 @@ Use `--service-id SERVICE_RESOURCE_ID` for `view`, `rename`, and `delete`. Creat
 
 ### `asc web website-push-ids`
 
-Read Website Push IDs through the Developer Portal web session. The current
-slice is experimental and exposes the captured legacy list operation only.
+Read and manage Website Push IDs through the Developer Portal web session. The
+current slice is experimental and uses the captured legacy list plus the
+modern JSON:API view/create/delete operations.
 
 Available commands:
 
 * `asc web website-push-ids list` - [experimental] list the first captured
   Website Push ID page for the selected Developer team
+* `asc web website-push-ids view` - [experimental] inspect one modern Website
+  Push ID resource and its capability relationship
+* `asc web website-push-ids create` - [experimental] register a Website Push
+  ID with an explicitly empty capability relationship; requires `--confirm`
+* `asc web website-push-ids delete` - [experimental] delete one resource after
+  empty-capability and postcondition checks; requires `--confirm`
 
 `list` posts to Apple's legacy
 `/services-account/QH65B2/account/ios/identifiers/listWebsitePushIds.action`
@@ -462,9 +469,19 @@ Apple envelope, while table and Markdown output show a small scalar projection.
 No continuation contract was captured, so the command does not accept
 `--paginate` and reads only the first fixed page.
 
-Website Push ID view, create, rename, and delete are not available. Their
-modern JSON:API and capability graph contracts need row-level response and
-write captures before they can be implemented safely.
+`view` uses a physical POST with `X-HTTP-Method-Override: GET` and a JSON body
+containing only `teamId`. `create` uses the modern `websitepushIds` JSON:API
+POST and sends `name`, `identifier`, `teamId`, and an explicitly empty
+`websitepushIdCapabilities` relationship. It requires an empty legacy-list
+collision preflight and an empty capability catalog, expects HTTP 201, and
+re-reads the created resource. `delete` uses a physical POST with
+`X-HTTP-Method-Override: DELETE`, a team-only JSON body, expects HTTP 204, and
+verifies both canonical detail absence and legacy-list absence. Write outcomes
+that cannot be verified are reported without an automatic retry.
+
+Rename is unavailable because the captured Website Push UI has no rename or
+Save control. Capability configuration and non-empty capability graphs are
+fail-closed until Apple exposes a writable contract for them.
 
 Example:
 

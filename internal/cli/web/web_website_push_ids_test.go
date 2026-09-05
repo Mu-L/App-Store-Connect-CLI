@@ -26,8 +26,14 @@ func TestWebWebsitePushIDsCommandHierarchy(t *testing.T) {
 	if command.Name != "website-push-ids" || command.UsageFunc == nil {
 		t.Fatalf("unexpected command: %+v", command)
 	}
-	if len(command.Subcommands) != 1 || command.Subcommands[0].Name != "list" {
-		t.Fatalf("subcommands = %+v, want list only", command.Subcommands)
+	want := []string{"list", "view", "create", "delete"}
+	if len(command.Subcommands) != len(want) {
+		t.Fatalf("subcommands = %+v, want %v", command.Subcommands, want)
+	}
+	for index, name := range want {
+		if command.Subcommands[index].Name != name {
+			t.Fatalf("subcommand %d = %q, want %q", index, command.Subcommands[index].Name, name)
+		}
 	}
 }
 

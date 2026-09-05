@@ -57,6 +57,10 @@ func TestRun_CapabilitiesJSONReportsKnownGaps(t *testing.T) {
 	}
 
 	assertCapability(t, resp, "App Store release submission", "cli-supported", "asc publish appstore --submit")
+	assertCapability(t, resp, "Developer Portal Website Push ID reads", "web-session", "asc web website-push-ids list")
+	assertCapability(t, resp, "Developer Portal Website Push ID reads", "web-session", "asc web website-push-ids view")
+	assertCapability(t, resp, "Developer Portal Website Push ID lifecycle", "web-session", "asc web website-push-ids create")
+	assertCapability(t, resp, "Developer Portal Website Push ID lifecycle", "web-session", "asc web website-push-ids delete")
 	assertCapability(t, resp, "App creation", "web-session", "asc web apps create")
 	assertCapability(t, resp, "Initial app availability bootstrap", "partial", "asc pricing availability create")
 	assertCapability(t, resp, "Initial app availability bootstrap", "partial", "asc web apps availability create")
