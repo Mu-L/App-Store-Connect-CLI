@@ -35,11 +35,13 @@ Manage the regulated medical device declaration exposed in App Store Connect
 under App Information -> App Store Regulations & Permits.
 
 Use ` + "`view`" + ` to read the stored declaration and ` + "`set`" + ` to answer it.
+Use ` + "`region set`" + ` to update one detailed regional answer after the
+app-level declaration is already "yes".
 
 Writing supports the app-level "Yes" or "No" answer and the captured region
-selection for the medical-device form. Region-specific registration,
-support-information, and contact-information fields remain managed in the
-App Store Connect web UI.
+selection for the medical-device form. The regional command accepts only the
+captured registration and localized support fields; contact information is
+read from the existing form, preserved, and never supplied by the CLI.
 
 `,
 		FlagSet:   fs,
@@ -47,6 +49,7 @@ App Store Connect web UI.
 		Subcommands: []*ffcli.Command{
 			WebAppsMedicalDeviceViewCommand(),
 			WebAppsMedicalDeviceSetCommand(),
+			WebAppsMedicalDeviceRegionCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp

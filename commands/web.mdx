@@ -53,6 +53,8 @@ asc web apps medical-device view --app "123456789"
 asc web apps medical-device set --app "123456789" --declared false
 # Declare the selected regions for a regulated medical device
 asc web apps medical-device set --app "123456789" --declared true --countries-or-regions "EEA,GBR" --confirm
+# Set one detailed regional answer from a rootfs-anchored JSON file
+asc web apps medical-device region set --app "123456789" --region "USA" --input "./medical-usa.json" --confirm
 
 # Plan and apply privacy declaration changes
 asc web privacy plan --app "123456789" --file ./privacy.json
@@ -295,6 +297,7 @@ Available commands:
 * `asc web apps declarations list` - list the App Store Regulations & Permits declarations tracked for an app
 * `asc web apps medical-device view` - read the stored regulated medical device declaration
 * `asc web apps medical-device set` - manage the regulated medical device declaration
+* `asc web apps medical-device region set` - manage one detailed regulated medical device region answer
 
 * `asc web apps tax-category list` - list application tax categories and compatible conditions
 * `asc web apps tax-category view` - view an app's explicit and effective tax category
@@ -306,7 +309,8 @@ Notes:
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps declarations list` is read-only and reports each app-scoped requirement with its status; a required requirement still at `PENDING_COLLECTION` blocks App Store submission
-* `asc web apps medical-device set` supports `--declared true|false`. Affirmative writes require `--confirm` and accept `EEA`, `GBR`, and `USA`; omitting `--countries-or-regions` selects all three. Detailed regional registration, support, and contact fields remain in the web UI. The command re-reads the declaration and reports `changed: false` when it already matches.
+* `asc web apps medical-device set` supports `--declared true|false`. Affirmative writes require `--confirm` and accept `EEA`, `GBR`, and `USA`; omitting `--countries-or-regions` selects all three. The command re-reads the declaration and reports `changed: false` when it already matches.
+* `asc web apps medical-device region set` requires `--app`, `--region`, `--input`, and `--confirm`. The rootfs-anchored JSON input contains `declaration`; an affirmative input also contains explicit `supportInfo` locale rows and a `registrationNumber` for USA or EEA. The app-level declaration must already be `yes`. The command reads and preserves contacts and opaque form fields, validates source-backed contact coverage, and fails closed when a selected-region contact candidate is materialized by form constraints but is absent from the stored contacts; configure that contact in App Store Connect before retrying. It sends one full-form web-session PUT and verifies the exact regional readback. It never accepts or prints contact values. `declaration: false` preserves existing regional details while changing only that region's declaration.
 * Other app-regulation declaration forms remain managed in the App Store Connect website. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
 * `asc web apps distribution set --app APP_ID --method public|private --confirm` updates the app-level method through the web session; public may also take `--education-discount discounted|not-discounted`, while private always uses `NOT_APPLICABLE`. The setter preserves existing custom organization and user rows, verifies the result with a follow-up read, and reports an uncertain receipt when Apple's write outcome is ambiguous.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability

@@ -536,6 +536,12 @@ func medicalDeviceDeclarationRequestBody(form *medicalDeviceFormResponse, accoun
 		}
 	}
 
+	fillMedicalDeviceFormIdentity(body, accountID, appID, requirement)
+	body["medicalDeviceData"] = medicalData
+	return body, existingDeclaration, nil
+}
+
+func fillMedicalDeviceFormIdentity(body map[string]any, accountID, appID string, requirement *complianceRequirement) {
 	// Older form responses omitted these identity fields, while the captured
 	// UI payload includes them when present. Add them only as a compatibility
 	// fallback so opaque fields from form.data remain unchanged.
@@ -551,8 +557,6 @@ func medicalDeviceDeclarationRequestBody(form *medicalDeviceFormResponse, accoun
 	if _, ok := body["requirementName"]; !ok {
 		body["requirementName"] = requirement.Name
 	}
-	body["medicalDeviceData"] = medicalData
-	return body, existingDeclaration, nil
 }
 
 // SetMedicalDeviceDeclaration sets the regulated medical device declaration.
