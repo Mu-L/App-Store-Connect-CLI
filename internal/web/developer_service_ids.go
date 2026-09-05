@@ -722,7 +722,7 @@ func developerServiceIDWriteError(operation string, err error) error {
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		if apiErr.Status >= http.StatusInternalServerError {
+		if apiErr.Status == http.StatusRequestTimeout || apiErr.Status >= http.StatusInternalServerError {
 			return &DeveloperServiceIDUnverifiedError{Err: fmt.Errorf("developer portal Services ID %s outcome is unknown after status %d; inspect the resource before retrying: %w", operation, apiErr.Status, err)}
 		}
 		return err

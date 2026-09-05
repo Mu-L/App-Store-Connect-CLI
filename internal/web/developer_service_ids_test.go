@@ -500,30 +500,38 @@ func TestDeleteDeveloperServiceIDUsesLogicalDeleteAndVerifies404(t *testing.T) {
 	}
 }
 
-func TestRenameDeveloperServiceIDMarks5xxAsUnknownWithoutRetry(t *testing.T) {
-	var requests int
-	client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
-		requests++
-		switch requests {
-		case 1:
-			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), http.Header{"csrf": {"csrf"}, "csrf_ts": {"csrf-ts"}}), nil
-		case 2:
-			return developerPortalTestResponse(http.StatusOK, serviceIDDetailFixture("Old Name", "SERVICES"), nil), nil
-		case 3:
-			return developerPortalTestResponse(http.StatusInternalServerError, `{}`, nil), nil
-		default:
-			t.Fatalf("unexpected retry/request %d: %s %s", requests, r.Method, r.URL.String())
-			return nil, nil
-		}
-	})
+func TestRenameDeveloperServiceIDMarksAmbiguousHTTPAsUnknownWithoutRetry(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusRequestTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var requests int
+			client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
+				requests++
+				switch requests {
+				case 1:
+					return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), http.Header{"csrf": {"csrf"}, "csrf_ts": {"csrf-ts"}}), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, serviceIDDetailFixture("Old Name", "SERVICES"), nil), nil
+				case 3:
+					return developerPortalTestResponse(status, `{}`, nil), nil
+				default:
+					t.Fatalf("unexpected retry/request %d: %s %s", requests, r.Method, r.URL.String())
+					return nil, nil
+				}
+			})
 
-	_, err := client.RenameDeveloperServiceID(context.Background(), DeveloperServiceIDRenameRequest{ServiceID: "service-1", Name: "New Name"})
-	var unverified *DeveloperServiceIDUnverifiedError
-	if !errors.As(err, &unverified) || !strings.Contains(err.Error(), "unknown") {
-		t.Fatalf("RenameDeveloperServiceID() error = %v, want unknown write error", err)
-	}
-	if requests != 3 {
-		t.Fatalf("requests = %d, want no automatic retry or post-read after 5xx", requests)
+			_, err := client.RenameDeveloperServiceID(context.Background(), DeveloperServiceIDRenameRequest{ServiceID: "service-1", Name: "New Name"})
+			var unverified *DeveloperServiceIDUnverifiedError
+			if !errors.As(err, &unverified) || !strings.Contains(err.Error(), "unknown") {
+				t.Fatalf("RenameDeveloperServiceID() error = %v, want unknown write error", err)
+			}
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != status {
+				t.Fatalf("error = %v, want wrapped HTTP %d", err, status)
+			}
+			if requests != 3 {
+				t.Fatalf("requests = %d, want no automatic retry or post-read after an ambiguous HTTP response", requests)
+			}
+		})
 	}
 }
 
