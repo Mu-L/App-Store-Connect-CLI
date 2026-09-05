@@ -102,15 +102,16 @@ func (c *Client) getAppDistribution(ctx context.Context, appID string, includeFi
 		return nil, fmt.Errorf("failed to parse app distribution response: %w", err)
 	}
 
+	if strings.TrimSpace(payload.Data.Type) != "apps" || strings.TrimSpace(payload.Data.ID) != appID {
+		return nil, fmt.Errorf("app distribution response identified resource %q of type %q, want app %q", payload.Data.ID, payload.Data.Type, appID)
+	}
+
 	result := &AppDistribution{
 		AppID:                 strings.TrimSpace(payload.Data.ID),
 		Name:                  stringAttr(payload.Data.Attributes, "name"),
 		BundleID:              stringAttr(payload.Data.Attributes, "bundleId"),
 		DistributionType:      stringAttr(payload.Data.Attributes, "distributionType"),
 		EducationDiscountType: stringAttr(payload.Data.Attributes, "educationDiscountType"),
-	}
-	if result.AppID == "" {
-		result.AppID = appID
 	}
 	return result, nil
 }
@@ -321,7 +322,7 @@ func appDistributionMatches(observed *AppDistribution, distributionType, educati
 func isAmbiguousAppDistributionWriteFailure(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Status >= http.StatusInternalServerError
+		return apiErr.Status == http.StatusRequestTimeout || apiErr.Status >= http.StatusInternalServerError
 	}
 	var urlErr *url.Error
 	return errors.As(err, &urlErr) ||
