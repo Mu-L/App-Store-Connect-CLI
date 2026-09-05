@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -100,6 +101,7 @@ Examples:
 			}
 			persistDeveloperPortalSession(session)
 
+			warnICloudContainerPagingTotal(result)
 			return shared.PrintOutputWithRenderers(
 				result,
 				*output.Output,
@@ -149,4 +151,14 @@ func renderDeveloperICloudContainersMarkdown(result *webcore.DeveloperICloudCont
 	}
 	asc.RenderMarkdown(developerICloudContainersHeaders(), developerICloudContainersRows(result.Data))
 	return nil
+}
+
+// Shared output warns for links.next; this covers totals without a next link.
+func warnICloudContainerPagingTotal(result *webcore.DeveloperICloudContainersListResult) {
+	if result.GetLinks().Next != "" {
+		return
+	}
+	if total, ok := asc.ParsePagingTotalOK(result.GetMeta()); ok && total > len(result.Data) {
+		fmt.Fprintf(os.Stderr, "Warning: showing %d of %d results; this command reads only the first page\n", len(result.Data), total)
+	}
 }

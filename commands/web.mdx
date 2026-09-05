@@ -262,11 +262,31 @@ Notes:
 
 ### `asc web sandbox`
 
-Sandbox tester creation via the App Store Connect web UI contract.
+Sandbox tester creation and deletion via the App Store Connect web UI contract.
 
 Available commands:
 
 * `asc web sandbox create` - create a sandbox tester
+* `asc web sandbox delete` - delete sandbox testers after a private list preflight and fresh-list verification
+
+`delete` requires `--id ID[,ID...]` and `--confirm`. It refuses requested IDs
+that are missing or duplicated in the account list, family members, rows with
+an omitted `isInFamily` flag, or account-list snapshots whose reported total is
+larger than the returned rows. The captured list request asks for 50 accounts;
+no continuation contract was captured, so an incomplete response is refused.
+
+After the delete request, the command reports success only when a fresh list
+omits every requested ID. The delete response body and status contract remain
+unverified; a transport or server error during deletion or verification is
+reported as an unknown outcome, so do not retry until a fresh list confirms the
+state.
+
+Example:
+
+```bash
+asc web sandbox delete --id "SANDBOX_ACCOUNT_ID" --confirm
+asc web sandbox delete --id "ACCOUNT_ID_1,ACCOUNT_ID_2" --confirm --output json
+```
 
 ### `asc web removed-apps`
 
@@ -350,6 +370,20 @@ asc web bundle-ids capabilities sync-app-clip \
   --capability "PUSH_NOTIFICATIONS" \
   --confirm
 ```
+
+### `asc web service-ids`
+
+[experimental] Manage Services IDs through a Developer Portal web session. These resources use `platform=SERVICES` and are distinct from public App Store Connect Bundle IDs.
+
+Available commands:
+
+* `asc web service-ids list` - list Services IDs
+* `asc web service-ids view` - inspect one Services ID and its capability graph
+* `asc web service-ids create` - register a minimal Services ID
+* `asc web service-ids rename` - rename a Services ID while preserving capabilities
+* `asc web service-ids delete` - delete a Services ID with preflight and follow-up verification
+
+Use `--service-id SERVICE_RESOURCE_ID` for `view`, `rename`, and `delete`. Creation requires `--identifier`, `--name`, and `--confirm`; rename requires `--name` and `--confirm`, and deletion requires `--confirm`. Rename refuses incomplete capability linkage. Capability configuration and Sign in with Apple settings remain separate Developer Portal workflows.
 
 ### `asc web website-push-ids`
 
@@ -698,6 +732,7 @@ asc web api-keys --help
 asc web apps --help
 asc web removed-apps --help
 asc web bundle-ids --help
+asc web service-ids --help
 asc web website-push-ids --help
 asc web privacy --help
 asc web review --help

@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 const developerICloudContainersListQuery = "limit=1000&offset=0&sort=name"
@@ -44,6 +46,36 @@ type DeveloperICloudContainersListResult struct {
 	Links map[string]any             `json:"links,omitempty"`
 	Meta  map[string]any             `json:"meta,omitempty"`
 	Raw   json.RawMessage            `json:"-"`
+}
+
+var _ asc.PaginatedResponse = (*DeveloperICloudContainersListResult)(nil)
+
+// GetLinks exposes actual continuation links for formatted-output diagnostics.
+func (r *DeveloperICloudContainersListResult) GetLinks() *asc.Links {
+	if r == nil {
+		return nil
+	}
+	return &asc.Links{Self: developerBundleIDLinkString(r.Links, "self"), Next: developerBundleIDLinkString(r.Links, "next"), First: developerBundleIDLinkString(r.Links, "first"), Prev: developerBundleIDLinkString(r.Links, "prev")}
+}
+
+// GetData exposes the bounded collection to shared pagination diagnostics.
+func (r *DeveloperICloudContainersListResult) GetData() any {
+	if r == nil {
+		return nil
+	}
+	return r.Data
+}
+
+// GetMeta exposes paging totals without changing the original JSON envelope.
+func (r *DeveloperICloudContainersListResult) GetMeta() json.RawMessage {
+	if r == nil || r.Meta == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(r.Meta)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 // MarshalJSON preserves Apple's full collection envelope for JSON output.

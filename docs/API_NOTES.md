@@ -88,8 +88,9 @@ the App Store Connect web-client source captured for issue #2299:
 - Sandbox territory inputs accept alpha-2, alpha-3, and exact English country names, but the CLI sends canonical 3-letter App Store territory codes (for example, `US`, `USA`, and `United States` all resolve to `USA`)
 - This normalization is limited to verified ASC alpha-3 territory surfaces, including customer-review filters; public storefront and finance region flags keep their existing namespaces
 - List, view, update, and clear-history use the v2 API through `asc sandbox`
-- `asc web sandbox create` currently sends three private web-session requests: `POST /sandbox/v2/account/validateFields` with `firstName`, `lastName`, and `acAccountName`; the same path with `acAccountPassword` added; then `POST /sandbox/v2/account/create` with `firstName`, `lastName`, `acAccountName`, `acAccountPassword`, and `storeFront`. This is the source-backed client request shape; Apple acceptance of extra portal fields has not been live-captured. See issue #2294.
-- Public `asc sandbox` does not expose create or delete, and the current web-session CLI has no delete path. Do not infer a private delete endpoint from the removed v1 surface without a fresh capture.
+- The current App Store Connect web bundle's New Tester form exposes first name, last name, email, password, confirm password, and country. Its two `POST /sandbox/v2/account/validateFields` requests project the first three fields, then add `acAccountPassword`; `POST /sandbox/v2/account/create` sends exactly `firstName`, `lastName`, `acAccountName`, `acAccountPassword`, and `storeFront`. `confirmPassword` is UI-only, and the bundle contains no `secretQuestion`, `secretAnswer`, or `birthDate` fields. This is a source-backed request shape; it does not prove a successful live create or acceptance of extra portal fields. See issue #2294.
+- The same bundle lists testers with `GET /sandbox/v2/provider/account/list?limit=50`; the only live list response captured was the empty `{"totalAccounts":0,"totalInactiveAccounts":0,"accounts":[]}` response. No continuation or pagination contract was captured. Account rows include `id` and `isInFamily`; the UI excludes family members from deletion.
+- The captured delete request is `POST /sandbox/v2/account/delete` with a JSON body of `{"ids":[...]}`. `asc web sandbox delete` therefore requires `--confirm`, refuses family members and incomplete list snapshots, sends one delete request, and verifies a fresh list. Delete status/body, post-delete disappearance, and account-wide mutation acceptance remain unverified because no sandbox tester rows were available; do not infer them from the legacy public v1 surface.
 
 ## App Store Regulations & Permits declarations
 
@@ -125,7 +126,7 @@ the App Store Connect web-client source captured for issue #2299:
 ## Developer Portal iCloud containers
 
 - `asc web icloud-containers list` reads the modern Developer Portal collection through the cookie-authenticated web session. The logical request is `GET /services-account/v1/cloudContainers?filter[AND][hidden]=false` (or `true` with `--hidden`); Apple's browser transport sends it as `POST` with `X-HTTP-Method-Override: GET`.
-- The request body carries the selected `teamId` and `urlEncodedQueryParams=limit=1000&offset=0&sort=name`. The command uses this bounded first collection and has no `--paginate` flag. Apple response envelopes are preserved for JSON output, including `links` and `meta.paging` when present.
+- The request body carries the selected `teamId` and `urlEncodedQueryParams=limit=1000&offset=0&sort=name`. The command uses this bounded first collection and has no `--paginate` flag. Apple response envelopes are preserved for JSON output, including `links` and `meta.paging` when present. A warning on stderr identifies an incomplete collection when Apple supplies a continuation link or a paging total larger than the returned rows; the CLI does not invent or follow a next-page contract.
 - Resource rows expose Apple's observed `identifier`, `hidden`, `prefix`, `canEdit`, `name`, `canDelete`, and `responseId` attributes along with the opaque resource `id` and `type`. No detail or create/rename/delete contract is assumed from this list response.
 
 ## Web-session Resolution Center
@@ -280,8 +281,8 @@ the App Store Connect web-client source captured for issue #2299:
 
 ## Developer Portal session (web session)
 
-- Bundle IDs, Website Push IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
-- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, `web website-push-ids list`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
+- Bundle IDs, Services IDs, Website Push IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then later portal requests carry the selected `teamId` through each endpoint's captured body or session context. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
+- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, `web website-push-ids list`, every `web service-ids` and `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
 
@@ -318,6 +319,57 @@ the App Store Connect web-client source captured for issue #2299:
   follow `links.next` or claim pagination; a returned continuation remains
   available in JSON for a later resource-family slice, and table/Markdown
   output emits the standard more-pages warning when it is present.
+
+## [experimental] Developer Portal Services IDs (web session)
+
+- `[experimental] asc web service-ids list` uses the private logical `GET
+  /services-account/v1/bundleIds` contract with `limit=1000`, `sort=name`, and
+  `filter[platform]=SERVICES`. As with the captured native Bundle ID
+  collection, the cookie-authenticated transport sends an actual `POST` to
+  `/services-account/v1/bundleIds` with
+  `X-HTTP-Method-Override: GET` and a JSON body containing
+  `urlEncodedQueryParams` and `teamId`; a live list capture returned HTTP 200.
+  The command validates that every returned resource is a `bundleIds` resource
+  whose platform is exactly `SERVICES` and preserves the original JSON:API
+  envelope for JSON output.
+- `[experimental] asc web service-ids view --service-id ID` uses the private
+  logical `GET /services-account/v1/bundleIds/{id}` detail contract with
+  `include=bundleIdCapabilities,bundleIdCapabilities.capability,bundleIdCapabilities.appConsentBundleId`.
+  The actual transport is `POST` plus `X-HTTP-Method-Override: GET`, with a
+  JSON body containing only the selected `teamId`. The returned resource ID and
+  `attributes.platform=SERVICES` are checked before a mutation can use it.
+- `[experimental] asc web service-ids create --identifier IDENTIFIER --name
+  NAME --confirm` uses logical `POST /services-account/v1/bundleIds` with a
+  JSON:API `data.type=bundleIds` resource whose attributes are
+  `identifier`, `name`, `platform=SERVICES`, `seedId`, and `teamId`, plus an
+  empty `bundleIdCapabilities.data` array. The create request must omit a
+  root-level `teamId`: the captured frontend helper removes its injected team
+  field when no method override is used, and Apple's live endpoint rejects that
+  root member as an invalid JSON:API document. The selected team remains in
+  `data.attributes.teamId`. The CLI does not invent capability, Sign in with
+  Apple domain, or app-consent settings; it reads the created resource back
+  before returning a receipt.
+- `[experimental] asc web service-ids rename --service-id ID --name NAME
+  --confirm` reads and validates the current Services ID, then sends logical
+  `PATCH /services-account/v1/bundleIds/{id}`. The PATCH preserves the complete
+  current relationship map, including `bundleIdCapabilities`, and changes only
+  the name plus the private team attribute required by the endpoint. A
+  post-write detail read must match the requested name and identifier.
+- `[experimental] asc web service-ids delete --service-id ID --confirm` sends
+  logical `DELETE /services-account/v1/bundleIds/{id}` as the captured actual
+  `POST` plus `X-HTTP-Method-Override: DELETE` and a JSON body containing the
+  selected root-level `teamId`. The captured frontend helper retains its
+  injected team field for method-override requests; Apple's live endpoint
+  returns HTTP 204 when it is present and HTTP 403 (`Please select a team.`)
+  when it is omitted. The preflight rejects native iOS/Mac or otherwise
+  non-`SERVICES` resources. The command reports success only after the detail
+  read returns HTTP 404. A 5xx, transport failure, malformed success body, or
+  failed post-read is an unverified outcome; no Services ID mutation is
+  retried automatically.
+- Services ID lifecycle support is private-only because the public OpenAPI
+  `BundleIdPlatform` enum does not include `SERVICES`. Capability graph
+  mutation, Sign in with Apple domain configuration, Website Push IDs, and
+  iCloud containers remain separate, uncaptured workflows.
 
 ## [experimental] Developer Portal Website Push IDs (web session)
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -162,5 +163,38 @@ func stubWebICloudContainerReadDependencies(t *testing.T) func() {
 		newWebClientFn = origNewWebClient
 		listDeveloperICloudContainersFn = origList
 		persistWebSessionFn = origPersist
+	}
+}
+
+func TestWebICloudContainersListWarnsAboutIncompletePages(t *testing.T) {
+	for _, format := range []string{"table", "markdown", "json"} {
+		for _, next := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/next=%t", format, next), func(t *testing.T) {
+				restore := stubWebICloudContainerReadDependencies(t)
+				defer restore()
+				listDeveloperICloudContainersFn = func(context.Context, *webcore.Client, bool) (*webcore.DeveloperICloudContainersListResult, error) {
+					links := map[string]any{}
+					if next {
+						links["next"] = map[string]any{"href": "https://developer.apple.com/next"}
+					}
+					return &webcore.DeveloperICloudContainersListResult{
+						Data:  []webcore.DeveloperICloudContainer{{ID: "cloud-1", Type: "cloudContainers"}},
+						Links: links, Meta: map[string]any{"paging": map[string]any{"total": 1001, "limit": 1000}},
+					}, nil
+				}
+				command := WebICloudContainersListCommand()
+				if err := command.FlagSet.Parse([]string{"--output", format}); err != nil {
+					t.Fatal(err)
+				}
+				_, stderr := captureWebCommandOutput(t, func() {
+					if err := command.Exec(context.Background(), nil); err != nil {
+						t.Fatal(err)
+					}
+				})
+				if strings.Count(stderr, "Warning:") != 1 || !strings.Contains(stderr, "showing 1 of 1001 results") {
+					t.Fatalf("stderr = %q, want one incomplete-page warning", stderr)
+				}
+			})
+		}
 	}
 }

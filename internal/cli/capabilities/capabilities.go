@@ -478,12 +478,15 @@ func capabilityRows() []Capability {
 			Area:       "testflight",
 			Capability: "Sandbox tester lifecycle",
 			Status:     statusPartial,
-			Commands:   []string{"asc sandbox", "asc web sandbox create"},
+			Commands:   []string{"asc sandbox", "asc web sandbox create", "asc web sandbox delete"},
 			APIResources: []string{
 				"sandboxTesters",
 				"sandboxTestersClearPurchaseHistoryRequest",
 			},
-			Notes: []string{"Public API support varies by operation and account; web-session creation exists as a fallback."},
+			Notes: []string{
+				"Public API support varies by operation and account; web-session creation exists as a fallback.",
+				"Web-session deletion uses a private endpoint, requires --confirm, refuses family members or incomplete account-list snapshots, and verifies absence after the request; Apple's delete response contract remains unverified.",
+			},
 		},
 		{
 			Area:       "analytics",
@@ -545,6 +548,15 @@ func capabilityRows() []Capability {
 			},
 			Notes:      []string{"Read-only iOS and Mac Bundle ID collection/detail reads use captured Developer Portal web-session JSON:API endpoints; pagination is intentionally not exposed in this slice."},
 			NextAction: "Use asc web bundle-ids list, then asc web bundle-ids view --bundle-id BUNDLE_RESOURCE_ID.",
+		},
+		{
+			Area:         "signing",
+			Capability:   "Developer Portal Services ID lifecycle",
+			Status:       statusWebSession,
+			Commands:     []string{"asc web service-ids"},
+			APIResources: []string{"bundleIds"},
+			Notes:        []string{"Services ID list, view, create, rename, and delete use the captured private Developer Portal web-session bundleIds contract filtered to platform=SERVICES. This entry does not cover public Bundle ID lifecycle or Service ID capability and Sign in with Apple configuration workflows."},
+			NextAction:   "Use asc web service-ids list, view, create, rename, or delete; configure Service ID capabilities and Sign in with Apple settings separately in the Developer Portal.",
 		},
 		{
 			Area:       "signing",
