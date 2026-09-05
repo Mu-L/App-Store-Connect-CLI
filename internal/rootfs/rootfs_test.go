@@ -1469,6 +1469,9 @@ func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t 
 }
 
 func TestLegacyConditionalMutationsRejectQuarantineModeDrift(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits beyond owner-writable are unsupported on Windows; 0600 and 0640 both report as writable")
+	}
 	for _, testCase := range []struct {
 		name       string
 		invoke     func(Root, os.FileInfo) error
