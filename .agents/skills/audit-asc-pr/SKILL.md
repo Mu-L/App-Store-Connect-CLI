@@ -1,11 +1,11 @@
 ---
 name: audit-asc-pr
-description: Audit App-Store-Connect-CLI pull requests end to end and fix concrete defects. Use when the user asks to audit or review a PR, decide whether a PR is valuable or slop, verify that a PR truly solves its issue, assess blast radius, or make a PR code-ready before merge.
+description: Audit App-Store-Connect-CLI pull requests end to end and fix concrete defects when authorized. Use for PR review, value and blast-radius assessment, issue verification, or requested fixes before merge.
 ---
 
 # Audit an ASC CLI pull request
 
-Perform an evidence-first review of the entire pull request. Default to fix-forward work unless the user explicitly requests review-only.
+Perform an evidence-first review of the entire pull request. An audit is read-only unless the user also authorizes fixes; follow the authority and review requirements in `AGENTS.md`.
 
 ## Establish the contract
 
@@ -13,7 +13,7 @@ Perform an evidence-first review of the entire pull request. Default to fix-forw
 2. Read the PR body, every commit, linked issues, current checks, reviews, and comments.
 3. Fetch thread-aware review state with GitHub GraphQL. Do not treat a flat comment list as proof that all review threads are resolved.
 4. State the behavior the PR claims to change and the evidence needed to prove it.
-5. Confirm whether the user authorized fixes, pushes, approval, or merge. An audit authorizes fix-forward changes in this repository, but approval and merge still require explicit user intent.
+5. Resolve authorization for fixes, commits, pushes, review communication, approval, and merge from the request and session context. Do not ask again for authority already granted or infer it from skill selection.
 
 Fetch independent read-only metadata, diff, check, schema, and review-thread evidence in parallel or with isolated subagents when available. Keep one coordinated owner for edits, pushes, review replies and resolutions, approvals, and merges.
 
@@ -31,16 +31,18 @@ Fetch independent read-only metadata, diff, check, schema, and review-thread evi
 2. Build a binary when CLI behavior, flags, output, or exit codes changed. Exercise realistic invocations against the built binary.
 3. For API-facing changes, verify the exact endpoint and method in `docs/openapi/latest.json`, including create-versus-update attributes and endpoint-specific query parameters.
 4. Run focused tests first, then checks required by repository policy or proportional to the diff. Pending or unrelated advisory CI does not block the audit once required checks pass; report relevant advisory failures.
-5. Prefer read-only live App Store Connect verification. When mutation is necessary, use the disposable app `6759231657`, clean up temporary resources, and record anything that could not be removed. Never mutate another app without explicit approval.
+5. Prefer read-only live App Store Connect verification. If live mutations and their cleanup are authorized, use the disposable app `6759231657` and record anything that could not be removed. Never mutate another app without explicit approval.
 6. Preserve uncertainty when live state cannot reproduce an edge case; use deterministic fixtures or tests instead of claiming success.
 
 ## Fix forward
+
+Use this section only for authorized fixes. Commit, push, and communicate review results only within the established authority; otherwise report findings and the proposed correction.
 
 1. Reproduce each defect before changing code.
 2. Add or adjust a failing regression test, confirm the failure, implement the smallest coherent fix, and rerun the focused test.
 3. Keep commits logical and traceable to findings or review threads. Add fixes as new commits; do not squash, rebase, force-push, or otherwise rewrite the PR history unless the user explicitly requests it.
 4. Push to the PR head when permitted. If the contributor branch cannot accept maintainer pushes, report the exact limitation and prepare a separate fix PR only when authorized.
-5. Reply to and resolve only threads fully addressed by the pushed change.
+5. When review communication is authorized, reply to and resolve only threads fully addressed by the pushed change.
 6. Re-fetch the head SHA, checks, reviews, and GraphQL threads after every push.
 
 Do not post a generic top-level audit summary unless the user asks. Put actionable findings in review threads when review communication is authorized.
@@ -50,6 +52,7 @@ Do not post a generic top-level audit summary unless the user asks. Put actionab
 Do not call the PR ready until all of the following are true:
 
 - The latest head was audited and compared read-only with current `main`; GitHub reports no merge conflict. Do not update, rebase, or merge `main` into a clean PR merely because `main` advanced.
+- The final committed head passed the full-branch local review loop required by `AGENTS.md` against the current authoritative base, with no subsequent diff change.
 - Relevant focused and GitHub-required checks pass. Non-required checks may still be pending.
 - No actionable unresolved review thread remains.
 - Required reviews are satisfied.
@@ -62,4 +65,4 @@ Approve or merge only when the user asked for that action. When merge is authori
 
 ## Hand off
 
-Report findings, fixes, commits, pushes, commands and tests run, live ASC mutations and cleanup, unresolved risks, check state, thread state, and the final merge recommendation.
+Lead with findings and the merge recommendation, then decisive evidence and remaining gates. Include fixes, commits, pushes, live mutations, and cleanup when performed. An audit may finish with unresolved findings without calling the PR ready.

@@ -9,7 +9,7 @@ Skills for using `asc` in app workflows live at https://github.com/rorkai/app-st
 Repository-maintainer workflows live under `.agents/skills/`:
 
 - `$develop-asc-change`: design, implement, and verify commands, flags, endpoints, bug fixes, and behavior-changing refactors.
-- `$audit-asc-pr`: audit a complete PR and fix proven defects.
+- `$audit-asc-pr`: audit a complete PR and, when authorized, fix proven defects.
 - `$watch-asc-pr`: recheck PR comments, checks, head changes, and merge readiness.
 - `$triage-asc-issue`: reproduce, classify, label, and scope an issue.
 - `$review-wall-of-apps-prs`: validate, approve, and merge Wall of Apps submissions safely.
@@ -17,6 +17,13 @@ Repository-maintainer workflows live under `.agents/skills/`:
 - `$sync-asc-skills`: check the external ASC workflow skills for CLI-surface drift.
 
 Use these skills for their matching workflows instead of expanding this always-loaded file with task-specific procedures.
+
+## Authority and follow-through
+
+- Treat audits, reviews, research, triage, status checks, and drafts as read-only. Edits, commits, pushes, PR creation or comments, labels, approval, merge, publication, external sends, and deletion require authority from the user's request or established session context. A clear request can authorize several actions at once; do not ask again for authority already granted.
+- Skill selection does not grant additional authority. Explicit user instructions take precedence over skill guidelines within system and developer constraints. Complete authorized work, make routine choices from repository conventions, and ask only when missing information materially changes scope, public compatibility, or authorization. Continue independent work while awaiting an answer.
+- If a skill causes a pause or departure from the requested scope, link the exact `SKILL.md`, quote the relevant instruction, and explain the unresolved decision. Prepare the authorized work needed for a concrete, reviewable result before asking for any remaining approval.
+- After an interruption or uncertain write, inspect current state before retrying. Keep the original objective and authorization when responding to follow-up questions or corrections unless the user changes the scope.
 
 ## Core CLI contract
 
@@ -57,13 +64,14 @@ Validate attributes against the exact create or update request schema. Validate 
 - Run the review directly from the local Git worktree, with user configuration ignored and app connectors and plugins disabled as shown. Force the built-in `openai` provider and ChatGPT-supported model so custom provider, endpoint, or review-model settings cannot supply another API key, route code to another service, or select an incompatible model. Immediately before every review, confirm `codex login status` shows ChatGPT authentication and verify both `CODEX_API_KEY` and `OPENAI_API_KEY` are unset or empty because either can supply usage-billed API-key authentication to non-interactive reviews. Treat any API-key login or override as a separate authorization gate and stop unless it was explicitly approved.
 - Before calling a PR ready, refresh its authoritative base with `git fetch origin +refs/heads/<base-branch>:refs/remotes/origin/<base-branch>` and run `codex exec --ignore-user-config review --disable apps --disable plugins --disable remote_plugin -c 'model_provider="openai"' -c 'model="gpt-5.6-sol"' -c 'review_model="gpt-5.6-sol"' --base origin/<base-branch>` on the final committed head so the complete branch or PR diff is reviewed against the current base. If the applicable review mechanism is unavailable, report the review gate as blocked and do not call the PR ready. Fix and verify every valid finding, and explicitly verify and disposition any false positive or non-actionable finding. After any change, rerun the applicable review command and repeat until it reports no actionable findings.
 - Do not call a PR clean, ready, complete, or express satisfaction with it until the final full-branch `/review` loop is clear. Any subsequent change invalidates the clear result and requires another full-branch `/review`.
+- An investigation can finish with findings or a blocked gate; report that outcome without implying the PR is ready. Skills must use this full-branch review requirement together with the GitHub readiness gates below.
 - Keep one logical change per commit. Do not mix unrelated refactors, fixes, and test rewrites.
 - Preserve additive PR history. Do not squash, rebase, force-push, or otherwise rewrite commits unless the user explicitly requests that strategy.
 - Re-run the focused failing test after each fix before broad validation.
 - Preserve and report pre-existing failures honestly.
-- Parallelize independent read-only investigation and lightweight focused validation, using isolated subagents when available. Do not let agents concurrently edit the same branch, files, or command group. Keep edits, pushes, review replies and resolutions, approvals, merges, releases, and cleanup coordinated and serialized.
+- Delegate substantive, independent read-only investigations or lightweight focused validation when parallel work can improve time or coverage. Give each subagent distinct ownership and an evidence-based output; verify its conclusions centrally. Handle small or dependent tasks locally. Do not let agents concurrently edit the same branch, files, or command group. Keep edits, pushes, review replies and resolutions, approvals, merges, releases, and cleanup coordinated and serialized.
 - Treat repository-wide commands that compile, lint, or test broad package sets—including `make build`, `make lint`, `make test`, `go test ./...`, race tests over `./...`, and `golangci-lint run ./...`—as host-intensive gates. Coordinate them through one agent and run only one host-intensive gate at a time on the same host. Before starting one, check whether another task is already running a host-intensive gate; if so, wait instead of competing for the same CPUs. Never terminate another task's process without explicit authorization.
-- Within a worktree, wait for each focused test to finish before starting a broad gate. Do not overlap focused and broad tests against the same worktree or have multiple agents repeat a successful full gate for the same commit and unchanged worktree. A tracked or untracked worktree change, gate command or input change, relevant environment or toolchain change, or newly requested verification invalidates the affected results; rerun the relevant focused checks and full gate before claiming readiness.
+- Within a worktree, wait for each focused test to finish before starting a broad gate. Record the checked commit, relevant working-tree state, command, and environment. Reuse passing checks while their inputs remain unchanged, including during status-only follow-ups. Rerun affected checks when source, test inputs, commands, environment, toolchain, or requested verification changes; unrelated temporary files do not invalidate results. Complete every required gate for the final change, and preserve the separate full-branch review requirement after any diff change.
 - Run host-intensive gates concurrently only when explicitly required. Assign each gate a CPU budget and keep the sum of concurrent gate budgets within the host's logical CPU count; tool flags are limits within a gate, not values to add together. Avoid multiplying Go package and in-binary concurrency: for a budget of `B`, use `GOMAXPROCS=1 go test -p=B -parallel=1 ./...` for package fan-out or `GOMAXPROCS=B go test -p=1 -parallel=B ./...` for one package at a time. Use `golangci-lint run --concurrency=B ./...` for a linter gate.
 
 User-facing commands and flags follow `experimental` -> `stable` -> `deprecated` -> `removed`. Do not delete stable behavior directly. Deprecations require warning text, transition tests, migration guidance, and a release-note entry.
@@ -102,20 +110,20 @@ Do not weaken CI: formatting, documentation, lint, and tests must run on PR and 
 - Inspect thread-aware GitHub review state before declaring a PR clean; flat comments do not prove every thread is resolved.
 - A PR is ready only when the latest head was reviewed, required checks pass, required reviews are satisfied, actionable threads are resolved, and GitHub reports it mergeable.
 - If `main` advances, recheck the exact PR head, merge-base diff, duplicate or overlap risk, review threads, required checks, and mergeability against current `main` without changing the branch. Do not update, rebase, or merge `main` into a clean PR merely to refresh its base. Update a branch only when GitHub already reports an actual merge conflict, or when an explicitly authorized merge attempt made with every readiness gate passing is refused under strict up-to-date branch protection. Never bypass branch protection with an admin merge.
-- When the user says to loop, babysit, or continue until green, keep re-fetching the exact head's required checks, required reviews, thread-aware review state, and mergeability. Fix valuable new feedback in additive commits, push, and repeat until the PR is clean or a material blocker requires user input; pending required CI or reviews are intermediate states. Advisory CI may remain pending only after every other clean-state gate passes.
+- When the user says to loop, babysit, or continue until green, preserve the authorized mode: watch state, and fix, commit, push, or reply only when those actions are authorized. Recheck the exact head's required checks, required reviews, thread-aware review state, and mergeability until the PR is clean or materially blocked. Pending required CI or reviews are intermediate states; use the checkpoint and heartbeat procedure in `$watch-asc-pr` when only waiting remains. Advisory CI may remain pending only after every other clean-state gate passes.
 - When merge is explicitly authorized, preserve the PR commits with a regular merge commit, for example `gh pr merge <number> --merge --match-head-commit <sha>`. Do not squash unless the user explicitly requests squash for that PR.
-- Fix-forward is the default for `$audit-asc-pr`; approval and merge still require explicit user intent.
-- Every newly created or triaged issue must end with exactly one type (`bug`, `enhancement`, `question`), one priority (`p0`-`p3`), and one difficulty (`easy`, `medium`, `hard`) label.
+- An audit reports findings; implement fixes when requested. Approval and merge require explicit user intent.
+- For read-only triage, recommend exactly one type (`bug`, `enhancement`, `question`), one priority (`p0`-`p3`), and one difficulty (`easy`, `medium`, `hard`). When issue creation or label changes are authorized, apply exactly one label from each bucket and remove conflicting labels.
 
 ## Authentication and live testing
 
 App Store Connect API keys come from https://appstoreconnect.apple.com/access/integrations/api and must never be committed.
 
-Tests touching auth must isolate relevant environment and config state. For live verification, prefer read-only calls. When mutation is necessary during PR audits, prefer disposable app `6759231657`, clean up temporary resources, and record anything left behind. Never mutate a non-disposable app without explicit approval.
+Tests touching auth must isolate relevant environment and config state. For live verification, prefer read-only calls. Live mutations require authorization, including on disposable app `6759231657`; a disposable target does not itself grant permission. Include temporary-resource cleanup in the authorized verification plan and record anything left behind. Never mutate a non-disposable app without explicit approval.
 
 ## Handoff contract
 
-For substantial changes, explain the chosen approach, alternatives and trade-offs, expected invocations and outputs, compatibility impact, edge cases, failure modes, commands run, tests, live verification, commits or pushes, and unresolved risks.
+Lead with the outcome, decisive validation evidence, material risks or unknowns, and next action. Use concise prose or a short list; include design alternatives, invocation examples, compatibility details, and individual commands when they help assess the change. Separate source review, tests, remote checks, merge, release artifacts, and provider state; one does not prove the next. Report pre-existing failures and unverified acceptance criteria explicitly.
 
 ## References
 

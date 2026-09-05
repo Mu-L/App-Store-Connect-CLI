@@ -9,7 +9,7 @@ Deliver one complete, reviewable behavior change through architecture, RED-GREEN
 
 ## Write the design note
 
-Before implementation, record:
+Before implementation, record the relevant contract below. For a small fix, a brief note with the reproduced failure, intended behavior, and focused check is enough; expand the design for new public behavior or compatibility decisions.
 
 1. Placement in the existing command taxonomy and registry.
 2. Current `--help` behavior and expected invocation shape.
@@ -17,20 +17,20 @@ Before implementation, record:
 4. Flags, output formats, stdout/stderr behavior, and exit codes.
 5. Compatibility, lifecycle, migration, and deprecation impact.
 6. RED-GREEN tests, black-box checks, live verification, edge cases, and failure modes.
-7. One or two credible alternatives and why this shape is preferable.
+7. Credible alternatives when a material design trade-off exists.
 
-Stop and align before coding if the public command shape or compatibility decision remains materially ambiguous.
+Use established conventions for routine choices. Ask only when unresolved public command shape or compatibility decisions materially change the result, and continue independent authorized work while awaiting an answer.
 
 Parallelize independent read-only help, schema, architecture, and test discovery with isolated subagents when available. Keep implementation, shared-file edits, commits, and pushes under one coordinated owner.
 
 ## Establish RED
 
 - For a bug, reproduce it first and add the smallest regression test that fails for the expected reason.
-- For a feature, start with CLI-level tests for flags, output, errors, and exit behavior, then add unit or HTTP tests for core logic.
-- For a behavior-changing refactor, add characterization coverage before moving code.
+- For a feature, start with CLI-level coverage of the changed observable contract; add unit or HTTP tests for distinct behavior that those tests do not cover.
+- For a behavior-changing refactor, use existing characterization coverage where sufficient and add coverage for missing behavior before moving code.
 - Run the focused test and record the expected failure before implementation.
 
-Read [references/test-matrix.md](references/test-matrix.md) for mandatory CLI, output, artifact, and auth cases.
+Read [references/test-matrix.md](references/test-matrix.md) for applicable CLI, output, artifact, and auth cases. Reuse sufficient existing coverage; do not duplicate shared parser or renderer tests for every command.
 
 ## Validate API support
 
@@ -56,8 +56,8 @@ Read [references/test-matrix.md](references/test-matrix.md) for mandatory CLI, o
 
 1. Rerun the focused failing test after each small fix.
 2. Run adjacent package and command tests.
-3. Build `/tmp/asc` and verify realistic invocations, output streams, and exit codes against the built binary.
-4. Run a minimal live smoke test when behavior depends on App Store Connect quirks. Prefer read-only calls; use disposable resources and clean them up for mutations.
+3. Build a binary at a worktree-specific path and verify realistic invocations, output streams, and exit codes. Do not share a fixed `/tmp/asc` path with concurrent tasks.
+4. Run a minimal live smoke test when behavior depends on App Store Connect quirks. Prefer read-only calls; live mutations and cleanup require authority under `AGENTS.md`.
 5. Run focused and affected checks before opening or updating a PR. Run the full repository gate for public CLI behavior, shared code, release surfaces, meaningful defect or security fixes, or when repository policy or the user requires it:
 
 ```bash
@@ -70,8 +70,8 @@ ASC_BYPASS_KEYCHAIN=1 make test
 
 If command help changed, run `make generate-command-docs` and commit the resulting `docs/COMMANDS.md` update before the gate.
 
-Before handoff, compare the exact branch head with current `main` read-only. Do not update, rebase, or merge `main` into a clean branch merely because `main` advanced; update only when an actual merge conflict prevents the merge.
+Before handoff, compare the exact branch head with current `main` read-only. Follow the branch-update rules in `AGENTS.md`; a newer base alone does not justify changing the branch.
 
 ## Hand off
 
-Explain the chosen approach, alternatives, expected invocations and outputs, compatibility impact, tests and live checks, commands run, and remaining limitations. Be explicit about pre-existing failures and anything not reproduced.
+Use the review gates and concise handoff contract in `AGENTS.md`. Include expected invocations and compatibility trade-offs when the public contract changed; report pre-existing failures and anything not reproduced.
