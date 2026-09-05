@@ -39,6 +39,9 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "auth", "import"}},
 		{[]string{"web", "bundle-ids", "list"}},
 		{[]string{"web", "bundle-ids", "view"}},
+		{[]string{"web", "review", "reply"}},
+		{[]string{"web", "website-push-ids"}},
+		{[]string{"web", "website-push-ids", "list"}},
 		{[]string{"web", "icloud-containers"}},
 		{[]string{"web", "icloud-containers", "list"}},
 	}
@@ -72,10 +75,14 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 	}
 	assertCommandDoesNotMentionExperimental(t, webCmd, []string{"web"})
 	allowed := map[string]struct{}{
-		"web auth export":            {},
-		"web auth import":            {},
-		"web bundle-ids list":        {},
-		"web bundle-ids view":        {},
+		"web auth export":           {},
+		"web auth import":           {},
+		"web bundle-ids list":       {},
+		"web bundle-ids view":       {},
+		"web review reply":          {},
+		"web website-push-ids":      {},
+		"web website-push-ids list": {},
+
 		"web icloud-containers":      {},
 		"web icloud-containers list": {},
 	}
