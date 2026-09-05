@@ -39,6 +39,7 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "auth", "import"}},
 		{[]string{"web", "bundle-ids", "list"}},
 		{[]string{"web", "bundle-ids", "view"}},
+		{[]string{"web", "review", "reply"}},
 		{[]string{"web", "website-push-ids"}},
 		{[]string{"web", "website-push-ids", "list"}},
 	}
@@ -76,6 +77,7 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 		"web auth import":           {},
 		"web bundle-ids list":       {},
 		"web bundle-ids view":       {},
+		"web review reply":          {},
 		"web website-push-ids":      {},
 		"web website-push-ids list": {},
 	}

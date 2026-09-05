@@ -11,10 +11,12 @@ The `asc web` command family automates App Store Connect workflows through Apple
 asc web auth login --apple-id "user@example.com"
 asc web auth status
 
-# List and inspect API keys, then create a team key and save its one-time P8
+# List and inspect API keys, then create a team or individual key
 asc web api-keys list --output json
 asc web api-keys view --key-id KEY_ID
 asc web api-keys create --name "Release automation" --output-dir ~/.asc/keys
+asc web api-keys create-individual --user-id USER_UUID --output-dir ~/.asc/keys --confirm
+asc web api-keys revoke --key-id KEY_ID --type team --confirm
 
 # Create an app through the web flow
 asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
@@ -46,6 +48,8 @@ asc web apps declarations list --app "123456789" --output table
 asc web apps medical-device view --app "123456789"
 # Declare that an app is not a regulated medical device
 asc web apps medical-device set --app "123456789" --declared false
+# Declare the selected regions for a regulated medical device
+asc web apps medical-device set --app "123456789" --declared true --countries-or-regions "EEA,GBR" --confirm
 
 # Plan and apply privacy declaration changes
 asc web privacy plan --app "123456789" --file ./privacy.json
@@ -183,13 +187,15 @@ receipt reflects that re-read state and includes `verified: true`.
 
 ### `asc web api-keys`
 
-Team and individual API key listing, team-key inspection, and team API key creation through an Apple Account web session.
+List team and individual API keys, inspect team keys, create either key type, and revoke either key type through an Apple Account web session.
 
 Available commands:
 
 * `asc web api-keys list` - list team and individual keys visible to the cached web session
 * `asc web api-keys view` - inspect one team API key by `--key-id`
 * `asc web api-keys create` - create an all-apps team key and save its one-time P8 as `AuthKey_<KEY_ID>.p8`
+* `asc web api-keys create-individual` - create an individual key for `--user-id`, save its generated P8 under required `--output-dir`, and require `--confirm`
+* `asc web api-keys revoke` - revoke one team or individual key after a type-specific preflight
 
 Example:
 
@@ -201,6 +207,14 @@ asc web api-keys create \
   --role APP_MANAGER \
   --output-dir ~/.asc/keys \
   --output json
+
+asc web api-keys create-individual \
+  --user-id USER_UUID \
+  --output-dir ~/.asc/keys \
+  --confirm \
+  --output json
+
+asc web api-keys revoke --key-id KEY_ID --type team --confirm --output json
 ```
 
 `list` and `view` print key ID, name, roles, and active state. They omit creation date because the existing web-session key readers do not expose it. Key material is never printed. `list` follows every page internally, so it does not accept `--paginate`. `view` uses the iris v1 team-key resource; individual keys appear in `list` but are not loaded by `view`.
@@ -208,6 +222,9 @@ asc web api-keys create \
 The create role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
 
 Role requirement: creating a team API key requires an Account Holder or Admin web session. The `--role` value must be one of Apple's selectable team-key roles. Matching is case-insensitive, so `--role app_manager` is sent as `APP_MANAGER`.
+
+Individual-key creation verifies that `--user-id` belongs to the authenticated session, refuses to create when an active individual key is already present, generates the P-256 private key locally, and registers only its public key with Apple. Apple’s empty create response is followed by an actor-filtered list; the command requires exactly one newly active key absent from the preflight snapshot and refuses ambiguous results or a key that already has a public key. The private P8 is written with mode `0600`; `--output-dir` is required so the operator chooses its destination. Existing files are preserved, and uncertain remote results retain the local artifact for recovery.
+`asc web api-keys revoke --key-id KEY_ID --type team --confirm` revokes a team key; use `--type individual` for an individual key. The command verifies exactly one matching key, treats an inactive key as a no-op, and re-reads inactive state after revocation. Unknown outcomes are not retried automatically.
 
 ### `asc web apps`
 
@@ -225,16 +242,22 @@ Available commands:
 * `asc web apps medical-device view` - read the stored regulated medical device declaration
 * `asc web apps medical-device set` - manage the regulated medical device declaration
 
+* `asc web apps tax-category list` - list application tax categories and compatible conditions
+* `asc web apps tax-category view` - view an app's explicit and effective tax category
+* `asc web apps tax-category set` - set an app's tax category and complete condition set
+
 Notes:
 
 * `asc web apps create` is the canonical app-creation path in the `web` family
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps declarations list` is read-only and reports each app-scoped requirement with its status; a required requirement still at `PENDING_COLLECTION` blocks App Store submission
-* `asc web apps medical-device set` currently supports only `--declared false`, reads the stored declaration first, and reports `changed: false` when no write was needed
-* Writes other than `medical-device set --declared false` remain website-only. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
+* `asc web apps medical-device set` supports `--declared true|false`. Affirmative writes require `--confirm` and accept `EEA`, `GBR`, and `USA`; omitting `--countries-or-regions` selects all three. Detailed regional registration, support, and contact fields remain in the web UI. The command re-reads the declaration and reports `changed: false` when it already matches.
+* Other app-regulation declaration forms remain managed in the App Store Connect website. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
 * `asc web apps distribution view` is read-only. Apple prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. Changing the distribution method and requesting unlisted distribution have Apple-side eligibility restrictions whose write contracts are not captured, so both stay in the App Store Connect web UI
+
+`asc web apps tax-category set` requires `--app`, `--category`, and `--confirm`. Repeat `--condition` for compatible conditions or omit it to clear them. The command validates the catalog before writing and re-reads the result. Transaction Tax reports remain outside this workflow.
 
 ### `asc web sandbox`
 
@@ -444,7 +467,7 @@ Available commands:
 * `asc web privacy catalog` - list valid privacy declaration tokens
 * `asc web privacy pull` - fetch the current declaration state
 * `asc web privacy plan` - diff a local declaration file against remote state
-* `asc web privacy apply` - apply declaration changes without publishing
+* `asc web privacy apply` - apply declaration changes without calling Apple's publish endpoint; usage mutations may update published-state metadata
 * `asc web privacy publish` - explicitly publish the declaration
 
 Recommended flow:
@@ -458,7 +481,7 @@ asc web privacy publish --app "123456789" --confirm
 
 ### `asc web review`
 
-App-centric review, rejection, and subscription-selection inspection.
+Inspect app review and rejection information, send Resolution Center text replies, and manage subscription review selection.
 
 Available commands:
 
@@ -467,6 +490,7 @@ Available commands:
 * `asc web review threads` - list every Resolution Center thread on an app, including binary, metadata, and informational threads; `--drafts` reads each unsent draft (`--plain-text` projects HTML to plain text)
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
+* [experimental] `asc web review reply` - send one confirmed Resolution Center text reply
 
 Subscription JSON includes both `submitWithNextAppStoreVersion` and
 `submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
@@ -478,6 +502,8 @@ omitted the attachment attribute and the boolean value is not authoritative.
 ```bash  theme={null}
 asc web review iaps attach --app "123456789" --iap-id "PRODUCT_ID" --confirm
 ```
+
+`asc web review reply --thread-id THREAD_ID --message MESSAGE --confirm` creates a draft, sends it, and re-reads the thread to verify the resulting message. Attachments are unsupported, and an uncertain send is never retried automatically.
 
 ### `asc web subscriptions`
 
@@ -588,7 +614,7 @@ Available command groups:
 * `asc web xcode-cloud products` - list Xcode Cloud products
 * `asc web xcode-cloud workflows` - list, describe, create, edit, enable, and disable workflows
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
-* `asc web xcode-cloud settings` - inspect product settings and change the next build number
+* `asc web xcode-cloud settings` - inspect product settings, change the next build number, and manage custom version aliases
 
 TestFlight post-actions in a web workflow use beta-group or tester IDs. Resolve the
 Xcode Cloud product to its App Store Connect app, then use the public TestFlight
@@ -617,11 +643,15 @@ asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json 
 asc web xcode-cloud settings next-build-number show --product-id "UUID" --apple-id "user@example.com"
 asc web xcode-cloud settings next-build-number set --product-id "UUID" --value 102 --confirm --apple-id "user@example.com"
 asc web xcode-cloud settings version-aliases list --product-id "UUID" --apple-id "user@example.com"
+asc web xcode-cloud settings version-aliases view --product-id "UUID" --id "ALIAS_UUID"
+asc web xcode-cloud settings version-aliases create --product-id "UUID" --type xcode_version --name "Stable" --build "APPLE_BUILD_ID" --confirm
+asc web xcode-cloud settings version-aliases update --product-id "UUID" --id "ALIAS_UUID" --name "Stable" --confirm
+asc web xcode-cloud settings version-aliases delete --product-id "UUID" --id "ALIAS_UUID" --confirm
 ```
 
 Changing the persistent next build number requires the App Store Connect Admin or App Manager role. The set command reads the value before and after the update, and reports an unverified outcome instead of inviting an unsafe retry when a transport failure leaves Apple's result unclear.
 
-The version-alias list command uses Apple's live-captured list response, returns at most 100 aliases, and omits nested build and workflow payloads that may contain sensitive data. Single-alias lookup and alias mutations remain unavailable until those private contracts are captured.
+`version-aliases list` returns at most 100 aliases without continuation metadata. `view` preserves Apple's raw detail response in JSON. `create` requires `--product-id`, `--name`, `--type macos_version|xcode_version`, `--build`, and `--confirm`; use a supported Apple build value. `update` requires `--product-id`, `--id`, at least one of `--name`, `--type`, `--build`, or `--locked`, and `--confirm`, preserving omitted fields. `delete` requires `--product-id`, `--id`, and `--confirm` and verifies absence afterward. Apple may restrict locked aliases or aliases used by workflows; ambiguous writes are not retried automatically.
 
 ## Session upkeep
 

@@ -66,7 +66,7 @@ asc bundle-ids create --identifier "com.example.app" \
 Bundle IDs must follow these rules:
 
 * Use reverse DNS notation: `com.company.app`
-* Contain only alphanumeric characters (A-Z, a-z, 0-9), hyphens (-), and periods (.)
+* Contain only alphanumeric characters (A-Z, a-z, 0-9), hyphens (-), periods (.), and an optional terminal asterisk (*) for wildcard identifiers
 * Cannot start or end with a period
 * Cannot contain consecutive periods
 
@@ -97,6 +97,8 @@ asc bundle-ids create --identifier "com.example.*" \
 * Can only use `*` as the last component
 * Cannot use certain capabilities (Push Notifications, In-App Purchase, etc.)
 * Useful for app extensions and development
+
+Apple may normalize a wildcard created with `--platform IOS` to `UNIVERSAL` in the response; use the returned platform as authoritative.
 
 ## Update Bundle ID
 
@@ -405,7 +407,7 @@ Error: Bundle identifier is invalid
 Ensure identifier:
 
 * Uses reverse DNS notation
-* Contains only alphanumeric, hyphens, periods
+* Contains only alphanumeric, hyphens, periods, and an optional terminal `*` for wildcard identifiers
 * Doesn't start/end with periods
 * No consecutive periods
 

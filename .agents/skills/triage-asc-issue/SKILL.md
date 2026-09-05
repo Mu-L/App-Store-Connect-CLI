@@ -5,7 +5,7 @@ description: Triage App-Store-Connect-CLI GitHub issues against current code, CL
 
 # Triage an ASC CLI issue
 
-Produce a current, evidence-backed verdict and leave the issue with complete repository labels.
+Produce a current, evidence-backed verdict and proposed repository labels. Apply label changes only when authorized under `AGENTS.md`; a read-only triage ends with recommendations.
 
 ## Read current evidence
 
@@ -15,7 +15,7 @@ Produce a current, evidence-backed verdict and leave the issue with complete rep
 4. For API claims, verify the exact method and endpoint in `docs/openapi/latest.json`; use the `sosumi.ai` documentation mirror for explanatory context.
 5. Check whether the report is already fixed on current `origin/main`, duplicated, unsupported by the public API, or blocked by Apple/platform behavior.
 
-Run independent read-only or dry-run issue, source, help, API, duplicate, and linked-PR checks in parallel or with isolated subagents when available. Serialize mutation-capable reproductions, use disposable resources with cleanup, and keep labels, issue comments, and implementation handoffs coordinated and serialized.
+Follow `AGENTS.md` for parallel reads and serialized writes. Live reproductions require authority for mutations and cleanup, even on disposable resources; confirm dry runs are side-effect-free.
 
 ## Classify the outcome
 
@@ -28,15 +28,11 @@ Choose one primary verdict:
 
 Separate urgency from implementation size. Explain user impact, blast radius, workaround, compatibility risk, and the smallest proof needed for completion.
 
-## Apply labels
+## Recommend or apply labels
 
-Follow `CONTRIBUTING.md` and leave exactly one label from each bucket:
+Recommend one type, priority, and difficulty from `AGENTS.md`'s buckets using the meanings in `CONTRIBUTING.md`. Apply them only when authorized.
 
-- Type: `bug`, `enhancement`, or `question`.
-- Priority: `p0`, `p1`, `p2`, or `p3`.
-- Difficulty: `easy`, `medium`, or `hard`.
-
-Remove conflicting labels before adding replacements. If evidence is ambiguous, choose the lower priority or difficulty and state the assumption.
+For authorized label updates, remove conflicting labels and add the selected replacements, then verify the resulting buckets. If evidence is incomplete, mark the recommendation provisional and identify the missing evidence; uncertainty alone does not establish low urgency or easy implementation.
 
 ## Define implementation readiness
 
@@ -49,8 +45,8 @@ When the issue is actionable, provide:
 5. Safe live verification and cleanup plan.
 6. Compatibility or deprecation requirements.
 
-If the user asks to implement the issue, hand the validated contract to `$develop-asc-change` in an isolated branch or worktree. Do not close the issue or claim completion before the implementation is merged and verified.
+If implementation is requested, continue with `$develop-asc-change` in an isolated branch or worktree. Report the requested implementation and validation as complete when finished, with PR and merge gates separately. Do not close the issue or claim it resolved until merged and verified; closure still requires authority.
 
 ## Automation contract
 
-A recurring issue-triage automation may classify new or incompletely labeled issues and report actionable findings. It must not implement code, close issues, or make speculative high-priority labels without explicit authorization.
+A recurring issue-triage automation may classify new or incompletely labeled issues and report actionable findings. Apply labels or post comments only within its persisted write authority. It must not implement code or close issues without explicit authorization, and labels must follow evidence.

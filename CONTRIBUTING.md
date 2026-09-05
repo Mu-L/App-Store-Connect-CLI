@@ -122,9 +122,10 @@ Label meanings:
 - `medium`: moderate cross-file change or some product/UX/design work
 - `hard`: large, high-risk, or architecture-heavy change
 
-External contributors may not have permission to label issues directly. Maintainers and
-agents should add any missing labels during first triage, and new issues should not be left
-without a type, priority, and difficulty label set.
+External contributors may not have permission to label issues directly. During read-only
+agent triage, recommend one label from each bucket. When issue creation or label updates
+are authorized, apply missing labels and remove conflicting labels so the issue has
+exactly one type, priority, and difficulty. Follow the authority rules in `AGENTS.md`.
 
 ## Security
 
