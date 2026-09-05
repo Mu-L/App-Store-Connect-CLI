@@ -5,10 +5,10 @@ Quirks and tips for specific App Store Connect API endpoints.
 ## Web App Privacy Data Usage Updates
 
 - Live canary on 2026-09-04 using a disposable app and a redacted web session verified the private `PATCH /iris/v1/appDataUsages/{usageID}` contract for a same-category, same-purpose `DATA_LINKED_TO_YOU` to `DATA_NOT_LINKED_TO_YOU` identity flip. The request uses the existing `appDataUsages` JSON:API resource and its `dataProtection` relationship; Apple returned `200`, and a fresh GET showed the same usage ID with the new protection.
-- The reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition was not exercised by this canary and remains unverified; do not infer it from this note.
+- A second live canary on 2026-09-05 using the same disposable app verified the reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition. The temporary `EMAIL_ADDRESS`/`APP_FUNCTIONALITY` tuple returned `200`, and a fresh GET retained the same usage ID with the new protection. The exact pre-canary `DATA_NOT_COLLECTED` baseline was restored and matched on a fresh GET.
 - The canary seeded the tuple with `POST` (`201`), confirmed it by GET, then restored the semantic baseline by deleting it (`204`) and creating the `DATA_NOT_COLLECTED` declaration (`201`). Direct restore attempts via `POST` or `PATCH` to `DATA_NOT_COLLECTED` returned `409 STATE_ERROR`.
 - The direct mutations advanced the remote `lastPublished` value while `published` remained `true`, despite no publish endpoint being called. Treat this path as a published-state mutation; do not describe the canary or `asc web privacy apply` as unpublished-only.
-- For the verified transition, the planner must pair only the same-category, same-purpose identity flip into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations; other identity-transition directions are not covered by this live contract.
+- For these verified transitions, the planner must pair only a same-category, same-purpose identity flip in either direction into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations.
 
 ## Apple Ads Profile Context Isolation
 
