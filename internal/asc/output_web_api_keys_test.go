@@ -92,3 +92,31 @@ func TestPrintMarkdownWebAPIKeyCreateIndividualUsesRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestWebAPIKeyRevokeResultUsesRegisteredRenderers(t *testing.T) {
+	result := &WebAPIKeyRevokeResult{
+		KeyID:   "ABC123XYZ",
+		Kind:    "team",
+		Changed: true,
+		Active:  false,
+		Status:  "revoked",
+	}
+	ensureOutputRegistryPopulated()
+	if !isRegistryTypeRegistered(typeForPtr[WebAPIKeyRevokeResult]()) {
+		t.Fatal("expected API key revoke result renderer to be registered")
+	}
+
+	table := captureStdout(t, func() error { return PrintTable(result) })
+	for _, want := range []string{"Key ID", "Kind", "Changed", "Active", "Status", "ABC123XYZ", "team", "true", "false", "revoked"} {
+		if !strings.Contains(table, want) {
+			t.Fatalf("table output missing %q: %q", want, table)
+		}
+	}
+
+	markdown := captureStdout(t, func() error { return PrintMarkdown(result) })
+	for _, want := range []string{"Key ID", "Kind", "Changed", "Active", "Status", "ABC123XYZ", "team", "true", "false", "revoked"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown output missing %q: %q", want, markdown)
+		}
+	}
+}

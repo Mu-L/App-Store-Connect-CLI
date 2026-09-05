@@ -1,11 +1,11 @@
 ---
 name: sync-asc-skills
-description: Audit and update rorkai/app-store-connect-cli-skills against the current ASC CLI surface. Use when the user asks whether ASC agent skills need updates, requests a post-release skills sync, or wants command, flag, output, auth, or workflow examples checked for drift.
+description: Check rorkai/app-store-connect-cli-skills against the current ASC CLI surface and correct proven drift when authorized. Use for skill-drift questions, post-release syncs, or checks of command, flag, output, auth, and workflow examples.
 ---
 
 # Synchronize ASC workflow skills
 
-Compare the external workflow-skill repository with live CLI behavior and make only proven, minimal corrections.
+Drift questions produce a read-only report; update requests authorize proven corrections. Follow `AGENTS.md` for commit, push, and PR-creation authority.
 
 ## Establish both sources
 
@@ -14,7 +14,7 @@ Compare the external workflow-skill repository with live CLI behavior and make o
 3. Inventory every skill and identify which commands, flags, environment variables, outputs, or workflows it claims to use.
 4. Run the current CLI's `--help` at each relevant command path. Use `asc search`, `asc schema`, or `asc capabilities` only when their own current help confirms they are appropriate.
 
-Split independent read-only or dry-run skill inventory, help, and example checks across isolated subagents when available. Serialize live mutation-capable examples, use disposable resources with cleanup, and keep shared skill edits, commits, pushes, and PR creation under one coordinated owner.
+Follow `AGENTS.md` for parallel reads and serialized writes. Validate mutation-capable examples with help and schemas first; execution and cleanup require authority, and dry runs must be side-effect-free.
 
 ## Prove drift
 
@@ -34,9 +34,9 @@ Do not update skills merely because a newer CLI version exists. Record exact hel
 1. Change only affected skills and examples; avoid release-number churn and speculative prose.
 2. Keep each `SKILL.md` concise and move lengthy reference material behind progressive disclosure.
 3. Preserve the skills repository's naming, metadata, validation, and style conventions.
-4. Validate every changed command example against a current built or released `asc` binary.
+4. Validate every changed command example against current built or released `asc` help and the relevant schema. Exercise runtime behavior when safe and authorized; report any path not executed.
 5. Run the skills repository's validators and the current skill-creator validator when available.
-6. Open a separate draft PR in the skills repository with the CLI commit or release used as evidence and a command-by-command validation summary.
+6. When PR creation is authorized, open a separate draft PR in the skills repository with the CLI commit or release used as evidence and a summary of validation and unexecuted paths.
 
 Never modify the CLI merely to make stale skill documentation pass.
 
