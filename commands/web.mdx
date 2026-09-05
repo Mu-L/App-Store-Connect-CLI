@@ -371,6 +371,20 @@ asc web bundle-ids capabilities sync-app-clip \
   --confirm
 ```
 
+### `asc web service-ids`
+
+[experimental] Manage Services IDs through a Developer Portal web session. These resources use `platform=SERVICES` and are distinct from public App Store Connect Bundle IDs.
+
+Available commands:
+
+* `asc web service-ids list` - list Services IDs
+* `asc web service-ids view` - inspect one Services ID and its capability graph
+* `asc web service-ids create` - register a minimal Services ID
+* `asc web service-ids rename` - rename a Services ID while preserving capabilities
+* `asc web service-ids delete` - delete a Services ID with preflight and follow-up verification
+
+Use `--service-id SERVICE_RESOURCE_ID` for `view`, `rename`, and `delete`. Creation requires `--identifier`, `--name`, and `--confirm`; rename requires `--name` and `--confirm`, and deletion requires `--confirm`. Rename refuses incomplete capability linkage. Capability configuration and Sign in with Apple settings remain separate Developer Portal workflows.
+
 ### `asc web website-push-ids`
 
 Read Website Push IDs through the Developer Portal web session. The current
@@ -690,6 +704,7 @@ asc web api-keys --help
 asc web apps --help
 asc web removed-apps --help
 asc web bundle-ids --help
+asc web service-ids --help
 asc web website-push-ids --help
 asc web privacy --help
 asc web review --help
