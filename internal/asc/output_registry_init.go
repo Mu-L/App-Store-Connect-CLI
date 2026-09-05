@@ -33,11 +33,13 @@ func registerAllOutputRenderers() {
 	registerRows(webAppGroupDeleteRows)
 	registerRows(webAppGroupUnassignRows)
 	registerRows(webAppGroupSetRows)
+	registerRows(webReviewReplyResultRows)
 	registerRows(webAPIKeysListRows)
 	registerRows(webAPIKeyRevokeRows)
 	registerRows(webSessionExportRows)
 	registerRows(webSessionImportRows)
 	registerRows(webAPIKeyGetRows)
+	registerRows(webAPIKeyCreateIndividualRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
 		h, r := keywordRankSummaryRows(v)
 		render(h, r)

@@ -2330,6 +2330,40 @@ func TestCreateNewFileAtomicRejectsUnsupportedRenameWithoutOutput(t *testing.T) 
 	}
 }
 
+func TestCheckCreateNewFileAtomicProbesAndRemovesPublication(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	if err := root.CheckCreateNewFileAtomic("probe.p8", 0o600); err != nil {
+		t.Fatalf("CheckCreateNewFileAtomic() error = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "probe.p8")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe destination remains: %v", err)
+	}
+}
+
+func TestCheckCreateNewFileAtomicRejectsUnsupportedRenameWithoutOutput(t *testing.T) {
+	dir := t.TempDir()
+	root := mustRoot(t, dir)
+	root.renameNoReplaceForTest = func(_ *os.Root, _, _ string) error {
+		return secureopen.ErrRenameNoReplaceUnsupported
+	}
+
+	err := root.CheckCreateNewFileAtomic("probe.p8", 0o600)
+	if !errors.Is(err, secureopen.ErrRenameNoReplaceUnsupported) {
+		t.Fatalf("CheckCreateNewFileAtomic() error = %v, want unsupported rename", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "probe.p8")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("probe destination remains after unsupported check: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".asc-tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files remain after unsupported check: %v", matches)
+	}
+}
+
 func TestCreateNewFromWriteFailureLeavesNoDestination(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)

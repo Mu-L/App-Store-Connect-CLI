@@ -30,7 +30,7 @@ Use an isolated checkout when needed to validate the exact head or apply authori
 ## Approve and merge
 
 Approval and merge require explicit user intent. That intent may come from the
-current request or from a persisted automation prompt that clearly grants
+current request, preserved session context, or a persisted automation prompt that clearly grants
 approve-and-merge authority. Immediately before approval, or before a merge
 that does not require a new approval, confirm:
 
