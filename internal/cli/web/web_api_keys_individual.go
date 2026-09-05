@@ -48,8 +48,12 @@ creation.
 The command generates an ECDSA P-256 keypair locally, registers only the public
 key with App Store Connect, and saves the PKCS#8 private key as
 ApiKey_<KEY_ID>.p8 with mode 0600. Existing files are never overwritten. Key
-material is never written to command output. If registration is uncertain, the
-private artifact is retained so the remote state can be checked before retrying.
+material is never written to command output. If App Store Connect creates a key
+but local private-key materialization is not confirmed, that key remains active
+without a registered public key. The command reports both the staged and
+canonical paths; inspect both to locate the private artifact, then inspect or
+revoke the identified key before starting another create. The command does not
+automatically register, retry, or revoke that uncertain operation.
 
 Creating an individual API key requires explicit confirmation.
 
@@ -181,7 +185,7 @@ Examples:
 			fileName := fmt.Sprintf("ApiKey_%s.p8", keyID)
 			p8Path := filepath.Join(outputRoot.Path(), fileName)
 			if err := materializeIndividualAPIKey(outputRoot, stagedName, fileName); err != nil {
-				return fmt.Errorf("individual API key %q was created, but final private-key materialization was not confirmed without replacing %q; inspect the staged path %q and canonical path %q before retrying; public-key registration was not attempted: %w", keyID, p8Path, stagedPath, p8Path, err)
+				return fmt.Errorf("individual API key %q was created, but its public key has not been registered because final private-key materialization was not confirmed without replacing %q; the private-key artifact may be at the staged path %q or canonical path %q; inspect both paths and inspect or revoke key %q before starting another create; no automatic retry was sent: %w", keyID, p8Path, stagedPath, p8Path, keyID, err)
 			}
 
 			err = withWebSpinner("Registering individual API key public key", func() error {
@@ -221,7 +225,10 @@ Examples:
 				Active:     verifiedKey.Active,
 				Registered: verifiedKey.PublicKeyPresent,
 			}
-			return shared.PrintOutput(result, *output.Output, *output.Pretty)
+			if err := shared.PrintOutput(result, *output.Output, *output.Pretty); err != nil {
+				return fmt.Errorf("individual API key %q was created and its public key was registered; private key artifact saved to %q; output failed; do not retry automatically: %w", keyID, p8Path, err)
+			}
+			return nil
 		},
 	}
 }

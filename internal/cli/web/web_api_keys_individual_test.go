@@ -494,6 +494,16 @@ func TestWebAPIKeysCreateIndividualFinalRenamePreservesExistingCanonicalFile(t *
 	if err == nil || patchCalled {
 		t.Fatalf("expected final rename failure before patch, got %v (patchCalled=%v)", err, patchCalled)
 	}
+	for _, want := range []string{
+		`individual API key "IND-1" was created`,
+		"public key has not been registered",
+		"inspect or revoke key",
+		filepath.Join(outputDir, "ApiKey_IND-1.p8"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rename failure missing %q: %v", want, err)
+		}
+	}
 	if got, readErr := os.ReadFile(filepath.Join(outputDir, "ApiKey_IND-1.p8")); readErr != nil || string(got) != canonicalContent {
 		t.Fatalf("canonical file changed: contents=%q err=%v", got, readErr)
 	}
@@ -509,6 +519,105 @@ func TestWebAPIKeysCreateIndividualFinalRenamePreservesExistingCanonicalFile(t *
 	}
 	if !stageRetained {
 		t.Fatal("expected staged private artifact to remain after final rename failure")
+	}
+}
+
+func TestWebAPIKeysCreateIndividualVerifiedOutputFailurePreservesReceipt(t *testing.T) {
+	t.Setenv("ASC_WEB_MIN_REQUEST_INTERVAL", "0")
+	outputDir := t.TempDir()
+	postCount := 0
+	patchCount := 0
+	requestCount := 0
+	postCreated := false
+	registeredPublicKey := ""
+	restoreSession := SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		return &webcore.AuthSession{UserEmail: "owner@example.com"}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+	restoreClient := setNewWebAPIKeyClientForTest(func(session *webcore.AuthSession) *webcore.Client {
+		return newCLIAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestCount++
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/iris/v1/users/USER-UUID":
+				_, _ = w.Write([]byte(`{"data":{"type":"users","id":"USER-UUID","attributes":{"username":"owner@example.com"}}}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/iris/v2/apiKeys":
+				if !postCreated {
+					_, _ = w.Write([]byte(`{"data":[]}`))
+					return
+				}
+				publicKey := any(nil)
+				if registeredPublicKey != "" {
+					publicKey = registeredPublicKey
+				}
+				response := map[string]any{"data": []any{map[string]any{
+					"type": "apiKeys", "id": "IND-1",
+					"attributes": map[string]any{"isActive": true, "publicKey": publicKey},
+				}}}
+				_ = json.NewEncoder(w).Encode(response)
+			case r.Method == http.MethodPost && r.URL.Path == "/iris/v2/apiKeys":
+				postCount++
+				postCreated = true
+				w.WriteHeader(http.StatusNoContent)
+			case r.Method == http.MethodPatch && r.URL.Path == "/iris/v2/apiKeys/IND-1":
+				patchCount++
+				var request struct {
+					Data struct {
+						Attributes struct {
+							PublicKey string `json:"publicKey"`
+						} `json:"attributes"`
+					} `json:"data"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatalf("decode patch: %v", err)
+				}
+				registeredPublicKey = request.Data.Attributes.PublicKey
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				http.Error(w, "unexpected request", http.StatusInternalServerError)
+			}
+		}))
+	})
+	t.Cleanup(restoreClient)
+
+	command := WebAPIKeysCreateIndividualCommand()
+	if err := command.FlagSet.Parse([]string{
+		"--user-id", "USER-UUID",
+		"--output-dir", outputDir,
+		"--confirm",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	closedStdout, err := os.CreateTemp(t.TempDir(), "closed-stdout-*")
+	if err != nil {
+		t.Fatalf("create closed stdout fixture: %v", err)
+	}
+	if err := closedStdout.Close(); err != nil {
+		t.Fatalf("close stdout fixture: %v", err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = closedStdout
+	execErr := command.Exec(context.Background(), nil)
+	os.Stdout = originalStdout
+	if execErr == nil {
+		t.Fatal("expected output failure after verified registration")
+	}
+	for _, want := range []string{
+		`individual API key "IND-1" was created`,
+		"public key was registered",
+		filepath.Join(outputDir, "ApiKey_IND-1.p8"),
+		"do not retry automatically",
+	} {
+		if !strings.Contains(execErr.Error(), want) {
+			t.Fatalf("output failure missing %q: %v", want, execErr)
+		}
+	}
+	if postCount != 1 || patchCount != 1 || requestCount != 6 {
+		t.Fatalf("request counts = post %d, patch %d, total %d; want 1, 1, 6", postCount, patchCount, requestCount)
+	}
+	if _, statErr := os.Stat(filepath.Join(outputDir, "ApiKey_IND-1.p8")); statErr != nil {
+		t.Fatalf("expected saved private artifact: %v", statErr)
 	}
 }
 
