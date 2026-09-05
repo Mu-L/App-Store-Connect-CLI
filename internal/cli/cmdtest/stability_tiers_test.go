@@ -40,6 +40,8 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "bundle-ids", "list"}},
 		{[]string{"web", "bundle-ids", "view"}},
 		{[]string{"web", "review", "reply"}},
+		{[]string{"web", "website-push-ids"}},
+		{[]string{"web", "website-push-ids", "list"}},
 	}
 
 	for _, tc := range cases {
@@ -71,11 +73,13 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 	}
 	assertCommandDoesNotMentionExperimental(t, webCmd, []string{"web"})
 	allowed := map[string]struct{}{
-		"web auth export":     {},
-		"web auth import":     {},
-		"web bundle-ids list": {},
-		"web bundle-ids view": {},
-		"web review reply":    {},
+		"web auth export":           {},
+		"web auth import":           {},
+		"web bundle-ids list":       {},
+		"web bundle-ids view":       {},
+		"web review reply":          {},
+		"web website-push-ids":      {},
+		"web website-push-ids list": {},
 	}
 	for _, sub := range webCmd.Subcommands {
 		if sub.Name == "agreements" {

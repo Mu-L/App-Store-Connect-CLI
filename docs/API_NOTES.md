@@ -270,8 +270,8 @@ the App Store Connect web-client source captured for issue #2299:
 
 ## Developer Portal session (web session)
 
-- Bundle IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
-- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
+- Bundle IDs, Website Push IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
+- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, `web website-push-ids list`, every `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
 
@@ -308,6 +308,35 @@ the App Store Connect web-client source captured for issue #2299:
   follow `links.next` or claim pagination; a returned continuation remains
   available in JSON for a later resource-family slice, and table/Markdown
   output emits the standard more-pages warning when it is present.
+
+## [experimental] Developer Portal Website Push IDs (web session)
+
+- `[experimental] asc web website-push-ids list` reads the current Developer
+  Portal identifier page at `https://developer.apple.com/account/resources/identifiers/list`.
+  Its captured request is `POST /services-account/QH65B2/account/ios/identifiers/listWebsitePushIds.action`
+  with an `application/x-www-form-urlencoded` body containing
+  `onlyCountLists=true`, `pageSize=1000`, `pageNumber=1`, `sort=name=asc`, and
+  the selected `teamId`. The request has no `sidx` field. The shared web
+  session helper supplies the team and CSRF context.
+- The live read returned HTTP 200 with `resultCode=0`, `pageNumber=1`,
+  `pageSize=1000`, and an empty root-level `websitePushIdList` in the captured
+  account state. JSON output preserves Apple's complete root response,
+  including unknown provider fields; the list is not nested under `data`.
+  Table and Markdown output use only a small scalar projection of each entry.
+- The captured frontend (`captures/apple-developer-main.js`) maps each legacy
+  item to `id=item.websitePushId` for this resource (offset 849,700), while its generic identifier table
+  reads `name` and `identifier` (offset 866,718); the topic picker also reads
+  `websitePushId`/`id` and `identifier` (offsets 1,806,200–1,808,480).
+  These source-backed fields justify the formatted projection, but the live
+  empty collection means the remaining row schema stays open-ended.
+- Pagination is not exposed because no continuation contract was captured for
+  this legacy response. The command reads only the first fixed page and does
+  not claim a complete account-wide collection.
+- Website Push ID view, create, rename, and delete remain unsupported. The
+  frontend's modern `websitepushIds` JSON:API routes and capability graph need
+  a row-level response and approved disposable-account write capture before a
+  CLI request can be specified safely. No Website Push ID account mutation is
+  performed by the current command.
 
 ## Developer Portal Agreements (web session)
 
