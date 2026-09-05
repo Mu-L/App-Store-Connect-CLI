@@ -317,9 +317,9 @@ func capabilityRows() []Capability {
 			Area:       "app-management",
 			Capability: "App distribution method inspection",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web apps distribution view"},
-			Notes:      []string{"The public apps API does not expose distributionType or educationDiscountType. This command is read-only."},
-			NextAction: "Use App Store Connect web UI, or asc web apps distribution view.",
+			Commands:   []string{"asc web apps distribution view", "asc web apps distribution set"},
+			Notes:      []string{"The public apps API does not expose distributionType or educationDiscountType. The web commands inspect or update the app-level distribution pair: public (APP_STORE) or private (CUSTOM), with public education discount DISCOUNTED or NOT_DISCOUNTED and private NOT_APPLICABLE. The setter preserves existing custom organization and user rows and does not cover DIRECT_URL or unlisted distribution requests, which remain unavailable."},
+			NextAction: "Use App Store Connect web UI, or inspect with asc web apps distribution view and update with asc web apps distribution set --app APP_ID --method public|private [--education-discount discounted|not-discounted] --confirm.",
 		},
 		{
 			Area:       "app-management",
