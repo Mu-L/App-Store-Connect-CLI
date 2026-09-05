@@ -294,6 +294,21 @@ func stringAttr(attrs map[string]any, keys ...string) string {
 	return ""
 }
 
+func stringAttrPreserveWhitespace(attrs map[string]any, key string) string {
+	if attrs == nil {
+		return ""
+	}
+	value, ok := attrs[key]
+	if !ok {
+		return ""
+	}
+	typed, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return typed
+}
+
 func boolAttr(attrs map[string]any, keys ...string) bool {
 	if attrs == nil {
 		return false
@@ -827,7 +842,7 @@ func decodeResolutionCenterDraftMessage(resource jsonAPIResource, included []jso
 		ID:          strings.TrimSpace(resource.ID),
 		ThreadID:    strings.TrimSpace(threadID),
 		CreatedDate: stringAttr(resource.Attributes, "createdDate"),
-		MessageBody: stringAttr(resource.Attributes, "messageBody"),
+		MessageBody: stringAttrPreserveWhitespace(resource.Attributes, "messageBody"),
 		FromActor:   actorFromRef(firstRelationshipRef(resource, "fromActor"), includedMap),
 	}
 	if plainText {

@@ -40,6 +40,7 @@ func registerAllOutputRenderers() {
 	registerRows(webAppTaxCategoryViewResultRows)
 	registerRows(webAppTaxCategorySetResultRows)
 	registerRows(webReviewReplyResultRows)
+	registerRows(webReviewDraftResultRows)
 	registerRows(webAPIKeysListRows)
 	registerRows(webAPIKeyRevokeRows)
 	registerRows(webSessionExportRows)

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -297,5 +298,29 @@ func TestWebReviewReplyRejectsInvalidOutputBeforeSessionOrWrites(t *testing.T) {
 	}
 	if persistCalls != 0 {
 		t.Fatalf("session persistence calls = %d, want 0", persistCalls)
+	}
+}
+
+func TestWebReviewReplyWarnsWhenDraftResponseIsLost(t *testing.T) {
+	transportErr := errors.New("connection reset by peer")
+	requested := stubWebReviewDraftSequence(t, []webReviewDraftHTTPResponse{
+		{method: http.MethodPost, path: "/iris/v1/resolutionCenterDraftMessages", err: transportErr},
+	})
+	command := WebReviewReplyCommand()
+	if err := command.FlagSet.Parse([]string{"--thread-id", "thread-1", "--message", "new", "--confirm", "--output", "json"}); err != nil {
+		t.Fatal(err)
+	}
+	var commandErr error
+	_, _ = captureOutput(t, func() { commandErr = command.Exec(context.Background(), nil) })
+	if !errors.Is(commandErr, transportErr) {
+		t.Fatalf("error = %v, want transport cause", commandErr)
+	}
+	for _, want := range []string{"outcome may be unknown", "do not retry automatically"} {
+		if !strings.Contains(commandErr.Error(), want) {
+			t.Fatalf("error = %v, want %q", commandErr, want)
+		}
+	}
+	if len(*requested) != 1 {
+		t.Fatalf("requests = %v, want exactly one draft POST and no send", *requested)
 	}
 }

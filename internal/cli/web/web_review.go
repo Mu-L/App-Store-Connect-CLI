@@ -935,6 +935,7 @@ Subcommands:
   show  Show one submission with threads/messages/rejections and auto-download screenshots
   threads  List every resolution center thread on an app, with optional draft messages
   reply  Send a Resolution Center reply through a web session
+  drafts  Create, update, or delete an unsent Resolution Center draft
   subscriptions  Inspect and mutate next-version subscription review selection
   iaps  Attach non-renewing IAPs to the next app version review
 
@@ -946,6 +947,7 @@ Subcommands:
 			WebReviewShowCommand(),
 			WebReviewThreadsCommand(),
 			WebReviewReplyCommand(),
+			WebReviewDraftsCommand(),
 			WebReviewSubscriptionsCommand(),
 			WebReviewIAPsCommand(),
 		},
@@ -1020,7 +1022,7 @@ Examples:
 				return err
 			})
 			if err != nil {
-				return withWebAuthHint(err, "web review reply")
+				return webReviewMutationError(err, "web review reply")
 			}
 			if draft == nil || strings.TrimSpace(draft.ID) == "" {
 				return fmt.Errorf("web review reply failed: draft create returned no draft id; send was not attempted")
@@ -1397,4 +1399,13 @@ Selection:
 			return nil
 		},
 	}
+}
+
+func webReviewMutationError(err error, operation string) error {
+	hinted := withWebAuthHint(err, operation)
+	var apiErr *webcore.APIError
+	if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 && apiErr.Status != http.StatusRequestTimeout {
+		return hinted
+	}
+	return fmt.Errorf("%w; mutation outcome may be unknown and may already have been applied; do not retry automatically", hinted)
 }
