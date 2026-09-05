@@ -20,9 +20,9 @@ Use these skills for their matching workflows instead of expanding this always-l
 
 ## Authority and follow-through
 
-- Audits, reviews, research, triage, status checks, and drafts are read-only. Edits, commits, pushes, PR creation, comments, labels, approval, merge, publication, external sends, and deletion require authority from the request or session context. One request may authorize several actions; do not ask again for granted authority.
+- Audits, reviews, research, triage, status checks, and composing draft text are read-only. Creating or updating a remote draft is an external write. Edits, commits, pushes, PR creation, comments, labels, approval, merge, publication, external sends, and deletion require authority from the request or session context. One request may authorize several actions; do not ask again for granted authority. Creating a PR for agreed changes includes the necessary edits, checks, commit, branch push, and PR creation, but not merge.
 - User instructions override skill guidelines within system and developer constraints; skill selection grants no authority. Make routine choices from repository conventions. Ask only about material scope, compatibility, or authority gaps, after preparing authorized work for review; continue independent work while awaiting answers.
-- If a skill causes a pause or scope change, link its `SKILL.md`, quote the instruction, and explain the unresolved decision. Preserve the objective and authority across follow-ups unless the user changes scope. Inspect state before retrying an interrupted or uncertain write.
+- If a skill causes a pause or scope change, link its `SKILL.md`, quote the instruction, and explain the unresolved decision. Preserve the objective, targets, authority, and verified progress across follow-ups and skill handoffs unless the user changes scope. Switching skills continues the current task; a failing gate blocks dependent actions, not independent authorized work. Inspect state before retrying an interrupted or uncertain write.
 
 ## Core CLI contract
 
