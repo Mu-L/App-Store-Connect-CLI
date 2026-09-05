@@ -38,6 +38,14 @@ func (c *Client) ListDeveloperWebsitePushIDs(ctx context.Context) (*DeveloperWeb
 	if err := c.ensureDeveloperPortalSession(ctx); err != nil {
 		return nil, err
 	}
+	return c.listDeveloperWebsitePushIDsAfterSession(ctx)
+}
+
+// listDeveloperWebsitePushIDsAfterSession reads the captured first page after
+// the caller has already established the Developer Portal session. Mutation
+// flows use this seam so their preflight and postcondition reads do not
+// bootstrap the account session again between requests.
+func (c *Client) listDeveloperWebsitePushIDsAfterSession(ctx context.Context) (*DeveloperWebsitePushIDsListResult, error) {
 	teamID := c.developerPortalTeamID()
 	if teamID == "" {
 		return nil, fmt.Errorf("developer portal team is not selected; %s", developerPortalAuthHint)

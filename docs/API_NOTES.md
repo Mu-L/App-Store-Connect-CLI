@@ -299,7 +299,7 @@ the App Store Connect web-client source captured for issue #2299:
 ## Developer Portal session (web session)
 
 - Bundle IDs, Services IDs, Website Push IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then later portal requests carry the selected `teamId` through each endpoint's captured body or session context. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
-- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, `web website-push-ids list`, every `web service-ids` and `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
+- `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web website-push-ids`, `web service-ids` and `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
 
@@ -385,8 +385,9 @@ the App Store Connect web-client source captured for issue #2299:
   retried automatically.
 - Services ID lifecycle support is private-only because the public OpenAPI
   `BundleIdPlatform` enum does not include `SERVICES`. Capability graph
-  mutation, Sign in with Apple domain configuration, Website Push IDs, and
-  iCloud containers remain separate, uncaptured workflows.
+  mutation and Sign in with Apple domain configuration remain uncaptured.
+  Website Push ID lifecycle and iCloud container reads use the separate
+  captured workflows documented below.
 
 ## [experimental] Developer Portal Website Push IDs (web session)
 
@@ -411,11 +412,49 @@ the App Store Connect web-client source captured for issue #2299:
 - Pagination is not exposed because no continuation contract was captured for
   this legacy response. The command reads only the first fixed page and does
   not claim a complete account-wide collection.
-- Website Push ID view, create, rename, and delete remain unsupported. The
-  frontend's modern `websitepushIds` JSON:API routes and capability graph need
-  a row-level response and approved disposable-account write capture before a
-  CLI request can be specified safely. No Website Push ID account mutation is
-  performed by the current command.
+- Website Push mutation preflight and legacy-list verification require page number 1 and a positive returned page size. A collection filling that returned page is incomplete for mutation purposes, even if Apple reduces the requested page size; no continuation contract is assumed.
+- `[experimental] asc web website-push-ids view` reads one modern
+  `websitepushIds` resource with a physical `POST
+  /services-account/v1/websitepushIds/{id}?include=websitepushIdCapabilities`,
+  `X-HTTP-Method-Override: GET`, and a JSON body containing only the selected
+  `teamId`. JSON output preserves Apple's complete JSON:API envelope.
+- `[experimental] asc web website-push-ids create` sends the captured modern
+  JSON:API `POST /services-account/v1/websitepushIds` body with
+  `data.type=websitepushIds`, `name`, `identifier`, `teamId`, and an explicitly
+  empty `websitepushIdCapabilities` relationship. The CLI requires the legacy
+  list preflight to show no matching identifier and the capability catalog to
+  be empty. It expects HTTP 201 and verifies the created resource by detail
+  read; an empty or malformed create response is settled from the legacy list
+  without retrying the POST.
+- `[experimental] asc web website-push-ids delete` preflights the modern detail
+  resource and requires `canDelete=true` plus an explicitly empty capability
+  relationship. It sends physical `POST
+  /services-account/v1/websitepushIds/{id}` with
+  `X-HTTP-Method-Override: DELETE` and a body containing only `teamId`, expects
+  HTTP 204, then verifies canonical detail absence and legacy-list absence.
+  Unknown outcomes are reported without an automatic retry.
+  Both mutation commands retain the selected team on an unverified write,
+  and the error always explains that the write may have succeeded and must
+  be inspected before retrying.
+- Rename remains unavailable: the captured Website Push UI exposes no rename
+  or Save control. Capability configuration and non-empty capability graphs
+  remain fail-closed because no writable capability contract is exposed by
+  this slice. The live disposable canary used for this contract was deleted
+  and the final legacy list returned empty.
+- A final built-CLI canary using binary SHA-256
+  `fd940938b7477aa27b0f5c793618af0c5c1e30d050f85b6bacf1738378ce31f9`
+  exercised the complete happy path for one uniquely generated owned
+  disposable identifier: baseline `list`, `create`, `view`, `delete`, and
+  final `list` all exited successfully. The create and delete receipts and
+  detail readback matched the canary identity, the capability relationship and
+  included graph were empty, the baseline list remained unchanged, and final
+  absence plus temporary-evidence cleanup were verified. The CLI view exposed
+  no certificate fields; `certificateAbsenceIndependentlyVerified` is false
+  because this command slice has no certificate endpoint, so the canary does
+  not claim independent certificate absence.
+
+- Empty capability data is accepted only when available paging metadata also proves emptiness: a non-empty next link, malformed total, or nonzero total blocks the operation. This applies to the create capability catalog and the detail relationship checked for create verification and delete preflight.
+- HTTP 408 is an ambiguous Website Push write outcome, like a 5xx response. Create and delete use read-only settlement without replaying the mutation; an unproven result retains the inspection-before-retry warning.
 
 ## Developer Portal Agreements (web session)
 
