@@ -51,6 +51,7 @@ Examples:
 			WebAppsCommand(),
 			WebRemovedAppsCommand(),
 			WebBundleIDsCommand(),
+			WebICloudContainersCommand(),
 			WebAppGroupsCommand(),
 			WebPrivacyCommand(),
 			WebReviewCommand(),

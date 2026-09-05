@@ -543,6 +543,17 @@ func capabilityRows() []Capability {
 		},
 		{
 			Area:       "signing",
+			Capability: "Developer Portal iCloud container reads",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web icloud-containers list"},
+			APIResources: []string{
+				"cloudContainers",
+			},
+			Notes:      []string{"Read-only iCloud container collection reads use the captured Developer Portal web-session endpoint; this surface does not expose container create, update, delete, or detail commands."},
+			NextAction: "Use asc web icloud-containers list.",
+		},
+		{
+			Area:       "signing",
 			Capability: "App Clip Bundle ID capability sync",
 			Status:     statusWebSession,
 			Commands:   []string{"asc web bundle-ids capabilities sync-app-clip"},
