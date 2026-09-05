@@ -1468,6 +1468,81 @@ func TestRemoveFileIfSamePreservesReplacementBetweenQuarantineCheckAndRemoval(t 
 	}
 }
 
+func TestLegacyConditionalMutationsRejectQuarantineModeDrift(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits beyond owner-writable are unsupported on Windows; 0600 and 0640 both report as writable")
+	}
+	for _, testCase := range []struct {
+		name       string
+		invoke     func(Root, os.FileInfo) error
+		wantResult string
+	}{
+		{
+			name: "remove",
+			invoke: func(root Root, expected os.FileInfo) error {
+				return root.RemoveFileIfSame("settings.xcconfig", expected, []byte("old"))
+			},
+		},
+		{
+			name: "write",
+			invoke: func(root Root, expected os.FileInfo) error {
+				return root.WriteFileIfSame("settings.xcconfig", []byte("new"), 0o640, expected, []byte("old"), true)
+			},
+			wantResult: "new",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := mustRoot(t, dir)
+			t.Cleanup(func() { _ = root.Close() })
+			path := filepath.Join(dir, "settings.xcconfig")
+			if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			expected, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var quarantineName string
+			root.openExpectedFileForTest = func(parent *os.Root, name string, expected os.FileInfo, expectedData []byte) (*os.File, os.FileInfo, error) {
+				file, info, err := openExpectedRootedFile(parent, name, expected, expectedData)
+				if err != nil || name == "settings.xcconfig" {
+					return file, info, err
+				}
+				quarantineName = name
+				if err := file.Chmod(0o640); err != nil {
+					_ = file.Close()
+					t.Fatalf("chmod quarantined file: %v", err)
+				}
+				return file, info, nil
+			}
+
+			err = testCase.invoke(root, expected)
+			if err == nil {
+				t.Fatal("legacy conditional mutation succeeded after quarantine mode drift")
+			}
+			if quarantineName == "" {
+				t.Fatal("quarantine mode race hook did not observe a quarantine entry")
+			}
+			quarantinePath := filepath.Join(dir, quarantineName)
+			quarantineInfo, statErr := os.Stat(quarantinePath)
+			if statErr != nil {
+				t.Fatalf("stat preserved quarantine: %v", statErr)
+			}
+			if got := quarantineInfo.Mode().Perm(); got != 0o640 {
+				t.Fatalf("preserved quarantine mode = %o, want drifted mode 640", got)
+			}
+			if testCase.wantResult == "" {
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("removed destination = %v, want absent", statErr)
+				}
+			} else if got := mustRead(t, path); got != testCase.wantResult {
+				t.Fatalf("published destination = %q, want %q", got, testCase.wantResult)
+			}
+		})
+	}
+}
+
 func TestWriteFileIfSameClosesStagingBeforePublication(t *testing.T) {
 	dir := t.TempDir()
 	root := mustRoot(t, dir)
