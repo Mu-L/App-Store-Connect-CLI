@@ -284,6 +284,9 @@ func (c *Client) GetAppTaxCategory(ctx context.Context, appID string) (*AppTaxCa
 	if strings.TrimSpace(resource.ID) == "" {
 		return nil, fmt.Errorf("app tax category response did not include a resource id")
 	}
+	if strings.TrimSpace(resource.ID) != appID || strings.TrimSpace(resource.Type) != "appTaxCategories" {
+		return nil, fmt.Errorf("app tax category response identified resource %q of type %q, want app tax category for %q", resource.ID, resource.Type, appID)
+	}
 	return decodeAppTaxCategoryResource(resource, payload.Included, appID), nil
 }
 
