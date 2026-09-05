@@ -300,6 +300,45 @@ func TestSetAppDistributionMarksServerErrorUncertain(t *testing.T) {
 	}
 }
 
+func TestSetAppDistributionReconcilesRequestTimeoutWithoutRetry(t *testing.T) {
+	for _, observed := range []string{"APP_STORE", "CUSTOM"} {
+		t.Run(observed, func(t *testing.T) {
+			var reads, writes int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodPatch:
+					writes++
+					w.WriteHeader(http.StatusRequestTimeout)
+				case http.MethodGet:
+					reads++
+					state, education := "APP_STORE", "DISCOUNTED"
+					if reads > 1 && observed == "CUSTOM" {
+						state, education = "CUSTOM", "NOT_APPLICABLE"
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"type": "apps", "id": "app-123", "attributes": map[string]string{"distributionType": state, "educationDiscountType": education}}})
+				default:
+					t.Errorf("unexpected method %s", r.Method)
+					http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+				}
+			}))
+			defer server.Close()
+			result, err := testWebClient(server).SetAppDistribution(context.Background(), AppDistributionSetRequest{AppID: "app-123", DistributionType: AppDistributionTypeCustom})
+			var uncertain *AppDistributionUnverifiedError
+			var apiErr *APIError
+			if !errors.As(err, &uncertain) || !errors.As(err, &apiErr) || apiErr.Status != http.StatusRequestTimeout {
+				t.Fatalf("error=%v, want uncertain error preserving HTTP408", err)
+			}
+			if writes != 1 || reads != 2 {
+				t.Fatalf("writes=%d reads=%d, want one PATCH and preflight/reconciliation GETs", writes, reads)
+			}
+			if result == nil || result.Status != "uncertain" || result.Verified != (observed == "CUSTOM") {
+				t.Fatalf("receipt=%+v, want uncertain status reflecting readback %s", result, observed)
+			}
+		})
+	}
+}
+
 func TestSetAppDistributionMarksTransportFailureUncertain(t *testing.T) {
 	var requestCount int
 	client := &Client{
@@ -642,4 +681,46 @@ func setAppDistributionVerificationWait(t *testing.T, wait func(context.Context,
 	t.Cleanup(func() {
 		appDistributionVerificationWaitFn = previous
 	})
+}
+
+func TestSetAppDistributionRejectsUnexpectedResourceIdentity(t *testing.T) {
+	for _, phase := range []string{"preflight change", "preflight no-op", "verification"} {
+		for _, identity := range []struct{ name, id, kind string }{{"wrong ID", "app-999", "apps"}, {"missing ID", "", "apps"}, {"wrong type", "app-123", "builds"}} {
+			t.Run(phase+"/"+identity.name, func(t *testing.T) {
+				requests, patches := 0, 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests++
+					if r.Method == http.MethodPatch {
+						patches++
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+					id, kind, distribution, education := identity.id, identity.kind, "CUSTOM", "NOT_APPLICABLE"
+					if phase == "preflight change" || (phase == "verification" && requests == 1) {
+						distribution, education = "APP_STORE", "DISCOUNTED"
+					}
+					if phase == "verification" && requests == 1 {
+						id, kind = "app-123", "apps"
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": id, "type": kind, "attributes": map[string]any{"distributionType": distribution, "educationDiscountType": education}}}); err != nil {
+						t.Error(err)
+					}
+				}))
+				defer server.Close()
+				result, err := testWebClient(server).SetAppDistribution(context.Background(), AppDistributionSetRequest{AppID: "app-123", DistributionType: AppDistributionTypeCustom})
+				if err == nil {
+					t.Fatalf("accepted unexpected resource identity: %+v", result)
+				}
+				if phase == "verification" {
+					var uncertain *AppDistributionUnverifiedError
+					if !errors.As(err, &uncertain) || result == nil || result.Verified || requests != 3 || patches != 1 {
+						t.Fatalf("result=%+v error=%v requests=%d patches=%d", result, err, requests, patches)
+					}
+				} else if result != nil || requests != 1 || patches != 0 {
+					t.Fatalf("preflight wrote or returned success: result=%+v error=%v requests=%d patches=%d", result, err, requests, patches)
+				}
+			})
+		}
+	}
 }
