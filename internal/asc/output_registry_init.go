@@ -36,6 +36,7 @@ func registerAllOutputRenderers() {
 	registerRows(webSessionExportRows)
 	registerRows(webSessionImportRows)
 	registerRows(webAPIKeyGetRows)
+	registerRows(developerBundleIDCapabilityDisableResultRows)
 	registerDirect(func(v *KeywordRankReport, render func([]string, [][]string)) error {
 		h, r := keywordRankSummaryRows(v)
 		render(h, r)

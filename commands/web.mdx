@@ -277,6 +277,7 @@ Available commands:
 * `asc web bundle-ids list` - [experimental] list the captured iOS and Mac Bundle ID collection for the selected Developer team
 * `asc web bundle-ids view` - [experimental] inspect one opaque Bundle ID and its included capability graph
 * `asc web bundle-ids capabilities enable` - enable a Developer Portal-only Bundle ID capability
+* `asc web bundle-ids capabilities disable` - disable a Developer Portal-only Bundle ID capability
 * `asc web bundle-ids capabilities sync-app-clip` - sync an App Clip capability with its parent Bundle ID
 
 Only the `list` and `view` read leaves are experimental. The existing
@@ -293,13 +294,22 @@ Bundle ID fields only and warn on stderr when included resources are present;
 pass `--output json` to inspect the complete capability graph. Both commands
 are read-only and do not require `--confirm`.
 
-Currently supported capability IDs for `enable`: `PRIVATE_CLOUD_COMPUTE`.
-Existing settings and relationships are preserved. If the requested capability
-is already enabled, the command returns an already-enabled result without
-sending a PATCH. `enable` accepts `--developer-team` (Developer Portal team ID
-or exact team name) when the Apple Account belongs to more than one portal
-team. `sync-app-clip` uses App Store Connect iris endpoints, not Developer
-Portal, so it does not take `--developer-team`.
+Currently supported capability IDs for `enable` and `disable`:
+`PRIVATE_CLOUD_COMPUTE`. Existing settings and relationships are preserved.
+If the requested capability is already enabled, `enable` returns an
+already-enabled result without sending a PATCH. If it is already disabled,
+`disable` returns an already-disabled result without sending a PATCH. `disable`
+sets every matching enabled resource to `enabled:false`, preserves duplicate
+resources and unrelated settings or relationships in the outgoing payload,
+and uses one fresh read to verify the same Bundle ID and a complete included
+capability graph. All pre-existing unrelated capability resources must remain;
+the target resources must either retain the same IDs with `enabled:false` for
+every target or be removed by Apple as a complete set. Missing or partial
+target graphs remain unverified. Both commands accept `--developer-team`
+(Developer Portal
+team ID or exact team name) when the Apple Account belongs to more than one
+portal team. `sync-app-clip` uses App Store Connect iris endpoints, not
+Developer Portal, so it does not take `--developer-team`.
 
 The capability commands that change an App ID require `--confirm` because a
 changed App ID invalidates existing provisioning profiles. `sync-app-clip` reads
@@ -315,6 +325,12 @@ asc web bundle-ids list --output table
 asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
 
 asc web bundle-ids capabilities enable \
+  --bundle-id "BUNDLE_RESOURCE_ID" \
+  --capability "PRIVATE_CLOUD_COMPUTE" \
+  --developer-team "TEAM_ID" \
+  --confirm
+
+asc web bundle-ids capabilities disable \
   --bundle-id "BUNDLE_RESOURCE_ID" \
   --capability "PRIVATE_CLOUD_COMPUTE" \
   --developer-team "TEAM_ID" \

@@ -92,6 +92,14 @@ func SetEnableDeveloperBundleIDCapability(fn func(context.Context, *webcore.Clie
 	}
 }
 
+func SetDisableDeveloperBundleIDCapability(fn func(context.Context, *webcore.Client, webcore.DeveloperBundleIDCapabilityDisableRequest) (*asc.DeveloperBundleIDCapabilityDisableResult, error)) func() {
+	prev := disableDeveloperBundleIDCapabilityFn
+	disableDeveloperBundleIDCapabilityFn = fn
+	return func() {
+		disableDeveloperBundleIDCapabilityFn = prev
+	}
+}
+
 func SetListDeveloperBundleIDs(fn func(context.Context, *webcore.Client) (*webcore.DeveloperBundleIDsListResult, error)) func() {
 	prev := listDeveloperBundleIDsFn
 	listDeveloperBundleIDsFn = fn
