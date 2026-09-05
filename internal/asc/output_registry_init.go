@@ -28,6 +28,8 @@ func registerAllOutputRenderers() {
 	registerRows(webXcodeCloudNextBuildNumberRows)
 	registerRows(webXcodeCloudWorkflowsListRows)
 	registerRows(webXcodeCloudVersionAliasesRows)
+	registerRows(webXcodeCloudVersionAliasRows)
+	registerRows(webXcodeCloudVersionAliasDeleteRows)
 	registerRows(webAppGroupDeleteRows)
 	registerRows(webAppGroupUnassignRows)
 	registerRows(webAppGroupSetRows)
