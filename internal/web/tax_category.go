@@ -230,6 +230,26 @@ func decodeAppTaxCategoryResource(resource jsonAPIResource, included []jsonAPIRe
 	return result
 }
 
+func (c *Client) verifiedUnconfiguredAppTaxCategory(ctx context.Context, appID string) (*AppTaxCategory, error) {
+	verifiedApp, verifyErr := c.GetApp(ctx, appID)
+	if verifyErr != nil {
+		return nil, fmt.Errorf("failed to verify app %q after missing tax category: %w", appID, verifyErr)
+	}
+	if verifiedApp == nil || strings.TrimSpace(verifiedApp.Data.ID) != appID || strings.TrimSpace(verifiedApp.Data.Type) != "apps" {
+		var verifiedID, verifiedType string
+		if verifiedApp != nil {
+			verifiedID = strings.TrimSpace(verifiedApp.Data.ID)
+			verifiedType = strings.TrimSpace(verifiedApp.Data.Type)
+		}
+		return nil, fmt.Errorf("failed to verify app %q after missing tax category: response identified app %q of type %q", appID, verifiedID, verifiedType)
+	}
+	return &AppTaxCategory{
+		AppID:               appID,
+		EnabledConditionIDs: []string{},
+		Configured:          false,
+	}, nil
+}
+
 // GetAppTaxCategory reads an app's explicit tax category and enabled
 // conditions. A tax-category 404 is treated as Apple's App Store Software UI
 // default only after a successful app resource read verifies the app exists.
@@ -245,23 +265,7 @@ func (c *Client) GetAppTaxCategory(ctx context.Context, appID string) (*AppTaxCa
 	responseBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		if IsNotFound(err) {
-			verifiedApp, verifyErr := c.GetApp(ctx, appID)
-			if verifyErr != nil {
-				return nil, fmt.Errorf("failed to verify app %q after missing tax category: %w", appID, verifyErr)
-			}
-			if verifiedApp == nil || strings.TrimSpace(verifiedApp.Data.ID) != appID || strings.TrimSpace(verifiedApp.Data.Type) != "apps" {
-				var verifiedID, verifiedType string
-				if verifiedApp != nil {
-					verifiedID = strings.TrimSpace(verifiedApp.Data.ID)
-					verifiedType = strings.TrimSpace(verifiedApp.Data.Type)
-				}
-				return nil, fmt.Errorf("failed to verify app %q after missing tax category: response identified app %q of type %q", appID, verifiedID, verifiedType)
-			}
-			return &AppTaxCategory{
-				AppID:               appID,
-				EnabledConditionIDs: []string{},
-				Configured:          false,
-			}, nil
+			return c.verifiedUnconfiguredAppTaxCategory(ctx, appID)
 		}
 		return nil, err
 	}
@@ -271,11 +275,7 @@ func (c *Client) GetAppTaxCategory(ctx context.Context, appID string) (*AppTaxCa
 	}
 	trimmedData := strings.TrimSpace(string(payload.Data))
 	if trimmedData == "" || trimmedData == "null" {
-		return &AppTaxCategory{
-			AppID:               appID,
-			EnabledConditionIDs: []string{},
-			Configured:          false,
-		}, nil
+		return c.verifiedUnconfiguredAppTaxCategory(ctx, appID)
 	}
 	var resource jsonAPIResource
 	if err := json.Unmarshal(payload.Data, &resource); err != nil {

@@ -142,6 +142,30 @@ func TestGetAppTaxCategoryRequiresAppVerificationAfterNotFound(t *testing.T) {
 	}
 }
 
+func TestGetAppTaxCategoryRequiresAppVerificationAfterNullData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/appTaxCategories/app-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":null}`)
+		case "/apps/app-1":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"errors":[{"code":"RESOURCE_NOT_FOUND"}]}`)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	current, err := testWebClient(server).GetAppTaxCategory(context.Background(), "app-1")
+	if err == nil || !strings.Contains(err.Error(), "verify app") {
+		t.Fatalf("expected app verification error, got current=%#v err=%v", current, err)
+	}
+	if current != nil {
+		t.Fatalf("expected no unconfigured result when app verification fails: %#v", current)
+	}
+}
+
 func TestSaveAppTaxCategoryUsesCapturedPostBodyForUnconfiguredApp(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/appTaxCategories" {
