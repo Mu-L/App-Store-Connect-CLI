@@ -185,6 +185,149 @@ func TestRenameDeveloperServiceIDPreservesCapabilityGraph(t *testing.T) {
 	}
 }
 
+func TestRenameDeveloperServiceIDRejectsPostWriteCapabilityGraphChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{
+			name: "dropped capability reference",
+			mutate: func(body string) string {
+				return strings.Replace(body, `,{"type":"bundleIdCapabilities","id":"cap-2"}`, "", 1)
+			},
+		},
+		{
+			name: "missing referenced capability details",
+			mutate: func(body string) string {
+				return strings.Replace(body, `"id":"cap-2","attributes"`, `"id":"cap-3","attributes"`, 1)
+			},
+		},
+		{
+			name: "changed enabled state",
+			mutate: func(body string) string {
+				return strings.Replace(body, `"enabled":false`, `"enabled":true`, 1)
+			},
+		},
+		{
+			name: "changed settings",
+			mutate: func(body string) string {
+				return strings.Replace(body, `"key":"OTHER","value":"two"`, `"key":"OTHER","value":"changed"`, 1)
+			},
+		},
+		{
+			name: "changed capability linkage",
+			mutate: func(body string) string {
+				return strings.Replace(body, `"id":"PUSH_NOTIFICATIONS"`, `"id":"APPLE_ID_AUTH"`, 1)
+			},
+		},
+		{
+			name: "changed app consent linkage",
+			mutate: func(body string) string {
+				return strings.Replace(body, `"id":"consent-2"`, `"id":"consent-3"`, 1)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			verified, requests, err := renameDeveloperServiceIDWithPostRead(t, tc.mutate(serviceIDDetailCapabilityGraphFixture("New Name", false)))
+			var unverified *DeveloperServiceIDUnverifiedError
+			if !errors.As(err, &unverified) {
+				t.Fatalf("RenameDeveloperServiceID() error = %v, want unverified post-write outcome", err)
+			}
+			if verified {
+				t.Fatal("RenameDeveloperServiceID() returned a verified receipt for a changed capability graph")
+			}
+			if requests != 4 {
+				t.Fatalf("requests = %d, want bootstrap, preflight, PATCH, and post-write read", requests)
+			}
+		})
+	}
+}
+
+func TestRenameDeveloperServiceIDAcceptsReorderedCapabilityGraph(t *testing.T) {
+	verified, requests, err := renameDeveloperServiceIDWithPostRead(t, serviceIDDetailCapabilityGraphFixture("New Name", true))
+	if err != nil {
+		t.Fatalf("RenameDeveloperServiceID() error: %v", err)
+	}
+	if !verified {
+		t.Fatal("RenameDeveloperServiceID() returned an unverified receipt for an equivalent reordered capability graph")
+	}
+	if requests != 4 {
+		t.Fatalf("requests = %d, want bootstrap, preflight, PATCH, and post-write read", requests)
+	}
+}
+
+func renameDeveloperServiceIDWithPostRead(t *testing.T, postReadBody string) (bool, int, error) {
+	return renameDeveloperServiceIDWithResponses(t, serviceIDDetailCapabilityGraphFixture("Old Name", false), postReadBody)
+}
+
+func TestRenameDeveloperServiceIDRejectsIncompletePreWriteCapabilityGraphBeforeMutation(t *testing.T) {
+	preflight := strings.Replace(serviceIDDetailCapabilityGraphFixture("Old Name", false), `"id":"cap-2","attributes"`, `"id":"cap-3","attributes"`, 1)
+	verified, requests, err := renameDeveloperServiceIDWithResponses(t, preflight, serviceIDDetailCapabilityGraphFixture("New Name", false))
+	if err == nil || !strings.Contains(err.Error(), "included capability") {
+		t.Fatalf("RenameDeveloperServiceID() error = %v, want pre-write capability graph rejection", err)
+	}
+	if verified {
+		t.Fatal("RenameDeveloperServiceID() returned a verified receipt after rejecting its pre-write graph")
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want bootstrap and preflight only", requests)
+	}
+}
+
+func renameDeveloperServiceIDWithResponses(t *testing.T, preflightBody, postReadBody string) (bool, int, error) {
+	t.Helper()
+	var requests int
+	client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
+		requests++
+		switch requests {
+		case 1:
+			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), http.Header{"csrf": {"csrf"}, "csrf_ts": {"csrf-ts"}}), nil
+		case 2:
+			if r.Method != http.MethodPost || r.URL.Path != "/services-account/v1/bundleIds/service-1" || r.Header.Get("X-HTTP-Method-Override") != http.MethodGet {
+				t.Fatalf("preflight transport = %s %s override=%q", r.Method, r.URL.String(), r.Header.Get("X-HTTP-Method-Override"))
+			}
+			return developerPortalTestResponse(http.StatusOK, preflightBody, nil), nil
+		case 3:
+			if r.Method != http.MethodPatch || r.URL.Path != "/services-account/v1/bundleIds/service-1" || r.Header.Get("X-HTTP-Method-Override") != "" {
+				t.Fatalf("rename transport = %s %s override=%q", r.Method, r.URL.String(), r.Header.Get("X-HTTP-Method-Override"))
+			}
+			var payload developerBundleIDPatchRequest
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode rename payload: %v", err)
+			}
+			var relationship struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+				Meta map[string]any `json:"meta"`
+			}
+			if err := json.Unmarshal(payload.Data.Relationships["bundleIdCapabilities"], &relationship); err != nil {
+				t.Fatalf("decode capability relationship: %v", err)
+			}
+			if len(relationship.Data) != 2 || relationship.Data[0].ID != "cap-1" || relationship.Data[1].ID != "cap-2" {
+				t.Fatalf("rename payload lost capability references: %+v", relationship.Data)
+			}
+			if relationship.Meta["opaque"] != "keep" {
+				t.Fatalf("rename payload lost opaque capability relationship metadata: %+v", relationship.Meta)
+			}
+			return developerPortalTestResponse(http.StatusOK, `{}`, nil), nil
+		case 4:
+			if r.Method != http.MethodPost || r.URL.Path != "/services-account/v1/bundleIds/service-1" || r.Header.Get("X-HTTP-Method-Override") != http.MethodGet {
+				t.Fatalf("post-write transport = %s %s override=%q", r.Method, r.URL.String(), r.Header.Get("X-HTTP-Method-Override"))
+			}
+			return developerPortalTestResponse(http.StatusOK, postReadBody, nil), nil
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requests, r.Method, r.URL.String())
+			return nil, nil
+		}
+	})
+
+	result, err := client.RenameDeveloperServiceID(context.Background(), DeveloperServiceIDRenameRequest{ServiceID: "service-1", Name: "New Name"})
+	return result != nil && result.Verified, requests, err
+}
+
 func TestRenameDeveloperServiceIDRejectsIncompleteIdentityBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -255,7 +398,7 @@ func TestRenameDeveloperServiceIDPreservesValidEmptyCapabilityRelationship(t *te
 			}
 			return developerPortalTestResponse(http.StatusOK, `{}`, nil), nil
 		case 4:
-			return developerPortalTestResponse(http.StatusOK, serviceIDDetailFixture("New Name", "SERVICES"), nil), nil
+			return developerPortalTestResponse(http.StatusOK, serviceIDDetailFixtureWithRelationships("New Name", "SERVICES", relationship), nil), nil
 		default:
 			t.Fatalf("unexpected request %d: %s %s", requests, r.Method, r.URL.String())
 			return nil, nil
@@ -382,6 +525,23 @@ func serviceIDDetailFixture(name, platform string) string {
 
 func serviceIDDetailFixtureWithRelationships(name, platform, relationships string) string {
 	return `{"data":{"id":"service-1","type":"bundleIds","attributes":{"name":"` + name + `","identifier":"com.example.service","platform":"` + platform + `","seedId":"TEAM123456","~permissions.delete":true,"~permissions.edit":true},"relationships":` + relationships + `},"included":[{"type":"bundleIdCapabilities","id":"cap-1","attributes":{"enabled":true,"settings":[{"key":"KEEP","value":"one"}]},"relationships":{"capability":{"data":{"type":"capabilities","id":"APPLE_ID_AUTH"}}}},{"type":"bundleIdCapabilities","id":"cap-2","attributes":{"enabled":false,"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"}}}}]}`
+}
+
+func serviceIDDetailCapabilityGraphFixture(name string, reverse bool) string {
+	marker := "preflight"
+	references := `[{"type":"bundleIdCapabilities","id":"cap-1"},{"type":"bundleIdCapabilities","id":"cap-2"}]`
+	capabilityOne := `{"type":"bundleIdCapabilities","id":"cap-1","attributes":{"enabled":true,"settings":[{"key":"KEEP","value":"one"},{"key":"SECOND","value":"two"}],"providerOpaque":"stable-one"},"relationships":{"capability":{"data":{"type":"capabilities","id":"APPLE_ID_AUTH"},"links":{"related":"/capability/preflight"},"meta":{"request":"preflight"}},"appConsentBundleId":{"data":{"type":"bundleIds","id":"consent-1"},"links":{"related":"/consent/preflight"},"meta":{"request":"preflight"}}},"links":{"self":"/bundleIdCapabilities/cap-1/preflight"},"meta":{"request":"preflight"}}`
+	capabilityTwo := `{"type":"bundleIdCapabilities","id":"cap-2","attributes":{"enabled":false,"settings":[{"key":"OTHER","value":"two"}],"providerOpaque":"stable-two"},"relationships":{"capability":{"data":{"type":"capabilities","id":"PUSH_NOTIFICATIONS"},"links":{"related":"/capability/preflight"},"meta":{"request":"preflight"}},"appConsentBundleId":{"data":{"type":"bundleIds","id":"consent-2"},"links":{"related":"/consent/preflight"},"meta":{"request":"preflight"}}},"links":{"self":"/bundleIdCapabilities/cap-2/preflight"},"meta":{"request":"preflight"}}`
+	included := "[" + capabilityOne + "," + capabilityTwo + "]"
+	if reverse {
+		marker = "postwrite"
+		references = `[{"type":"bundleIdCapabilities","id":"cap-2"},{"type":"bundleIdCapabilities","id":"cap-1"}]`
+		capabilityOne = strings.ReplaceAll(capabilityOne, "preflight", marker)
+		capabilityTwo = strings.ReplaceAll(capabilityTwo, "preflight", marker)
+		capabilityOne = strings.Replace(capabilityOne, `"settings":[{"key":"KEEP","value":"one"},{"key":"SECOND","value":"two"}]`, `"settings":[{"key":"SECOND","value":"two"},{"key":"KEEP","value":"one"}]`, 1)
+		included = "[" + capabilityTwo + "," + capabilityOne + "]"
+	}
+	return `{"links":{"self":"/bundleIds/service-1/` + marker + `"},"meta":{"request":"` + marker + `"},"data":{"id":"service-1","type":"bundleIds","attributes":{"name":"` + name + `","identifier":"com.example.service","platform":"SERVICES","seedId":"TEAM123456","~permissions.delete":true,"~permissions.edit":true},"relationships":{"bundleIdCapabilities":{"data":` + references + `,"links":{"self":"/relationships/` + marker + `"},"meta":{"opaque":"keep","request":"` + marker + `"}}}},"included":` + included + `}`
 }
 
 func mapsEqual(got, want map[string]string) bool {

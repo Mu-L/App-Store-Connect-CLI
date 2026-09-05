@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
@@ -274,6 +275,10 @@ func (c *Client) RenameDeveloperServiceID(ctx context.Context, request Developer
 	if err != nil {
 		return nil, err
 	}
+	expectedCapabilityGraph, err := developerServiceIDCapabilityGraph(current)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := c.doDeveloperPortalRequest(ctx, http.MethodPatch, "/bundleIds/"+url.PathEscape(request.ServiceID), payload, developerPortalHeaders(request.ServiceID), true); err != nil {
 		return nil, developerServiceIDWriteError("rename", err)
 	}
@@ -283,6 +288,9 @@ func (c *Client) RenameDeveloperServiceID(ctx context.Context, request Developer
 	}
 	if err := verifyDeveloperServiceIDIdentity(view.Data, request.ServiceID, identifier, request.Name); err != nil {
 		return nil, &DeveloperServiceIDUnverifiedError{Err: fmt.Errorf("developer portal accepted the Services ID rename but verification disagreed: %w", err)}
+	}
+	if err := verifyDeveloperServiceIDCapabilityGraph(expectedCapabilityGraph, view.Raw); err != nil {
+		return nil, &DeveloperServiceIDUnverifiedError{Err: fmt.Errorf("developer portal accepted the Services ID rename but capability verification disagreed: %w", err)}
 	}
 	return &asc.WebServiceIDMutationResult{
 		Operation:  "rename",
@@ -513,6 +521,186 @@ func developerServiceIDRequiredRawAttribute(attributes json.RawMessage, serviceI
 func developerServiceIDAttribute(attributes map[string]any, key string) (string, bool) {
 	value, ok := attributes[key].(string)
 	return strings.TrimSpace(value), ok
+}
+
+type developerServiceIDCapabilitySnapshot struct {
+	Enabled          string
+	Settings         string
+	Capability       string
+	AppConsentBundle string
+}
+
+// verifyDeveloperServiceIDCapabilityGraph compares only the capability graph
+// carried by the Services ID resource. Response links and meta are transport
+// metadata. The capability references and settings are compared as sets, while
+// the selected relationship data is compared after JSON object-key ordering is
+// normalized. The original raw relationship map is still used for the PATCH.
+func verifyDeveloperServiceIDCapabilityGraph(expected map[string]developerServiceIDCapabilitySnapshot, postReadRaw json.RawMessage) error {
+	var postRead developerBundleIDResponse
+	if err := json.Unmarshal(postReadRaw, &postRead); err != nil {
+		return fmt.Errorf("failed to parse post-write Services ID response for capability verification: %w", err)
+	}
+
+	got, err := developerServiceIDCapabilityGraph(postRead)
+	if err != nil {
+		return fmt.Errorf("cannot inspect post-write capability graph: %w", err)
+	}
+	if len(expected) != len(got) {
+		return fmt.Errorf("post-write capability reference count is %d, want %d", len(got), len(expected))
+	}
+	for key, expectedCapability := range expected {
+		actual, ok := got[key]
+		if !ok {
+			return fmt.Errorf("post-write capability graph is missing %q", key)
+		}
+		if expectedCapability.Enabled != actual.Enabled {
+			return fmt.Errorf("post-write capability %q enabled state changed", key)
+		}
+		if expectedCapability.Settings != actual.Settings {
+			return fmt.Errorf("post-write capability %q settings changed", key)
+		}
+		if expectedCapability.Capability != actual.Capability {
+			return fmt.Errorf("post-write capability %q capability linkage changed", key)
+		}
+		if expectedCapability.AppConsentBundle != actual.AppConsentBundle {
+			return fmt.Errorf("post-write capability %q app consent linkage changed", key)
+		}
+	}
+	return nil
+}
+
+func developerServiceIDCapabilityGraph(response developerBundleIDResponse) (map[string]developerServiceIDCapabilitySnapshot, error) {
+	rawRelationship, ok := response.Data.Relationships["bundleIdCapabilities"]
+	if !ok {
+		return nil, fmt.Errorf("bundleIdCapabilities relationship is missing")
+	}
+	references, err := decodeStrictDeveloperRelationship(rawRelationship)
+	if err != nil {
+		return nil, fmt.Errorf("bundleIdCapabilities relationship %w", err)
+	}
+
+	includedByID := make(map[string]developerResource, len(response.Included))
+	for _, resource := range response.Included {
+		if resource.Type != "bundleIdCapabilities" || strings.TrimSpace(resource.ID) == "" {
+			continue
+		}
+		if _, duplicate := includedByID[resource.ID]; duplicate {
+			return nil, fmt.Errorf("included capability %q appears more than once", resource.ID)
+		}
+		includedByID[resource.ID] = resource
+	}
+
+	graph := make(map[string]developerServiceIDCapabilitySnapshot, len(references))
+	for _, reference := range references {
+		if reference.Type != "bundleIdCapabilities" || strings.TrimSpace(reference.ID) == "" || reference.ID != strings.TrimSpace(reference.ID) {
+			return nil, fmt.Errorf("bundleIdCapabilities relationship contains an invalid reference (type %q, id %q)", reference.Type, reference.ID)
+		}
+		key := reference.Type + "#" + reference.ID
+		if _, duplicate := graph[key]; duplicate {
+			return nil, fmt.Errorf("bundleIdCapabilities relationship contains duplicate reference %q", reference.ID)
+		}
+		resource, ok := includedByID[reference.ID]
+		if !ok {
+			return nil, fmt.Errorf("included capability %q is missing", reference.ID)
+		}
+		snapshot, err := developerServiceIDCapabilitySnapshotFor(resource)
+		if err != nil {
+			return nil, fmt.Errorf("capability %q: %w", reference.ID, err)
+		}
+		graph[key] = snapshot
+	}
+	return graph, nil
+}
+
+func developerServiceIDCapabilitySnapshotFor(resource developerResource) (developerServiceIDCapabilitySnapshot, error) {
+	enabled, err := canonicalDeveloperServiceIDAttribute(resource.Attributes, "enabled", false)
+	if err != nil {
+		return developerServiceIDCapabilitySnapshot{}, fmt.Errorf("enabled attribute %w", err)
+	}
+	settings, err := canonicalDeveloperServiceIDAttribute(resource.Attributes, "settings", true)
+	if err != nil {
+		return developerServiceIDCapabilitySnapshot{}, fmt.Errorf("settings attribute %w", err)
+	}
+	capability, err := canonicalDeveloperServiceIDRelationshipData(resource.Relationships, "capability")
+	if err != nil {
+		return developerServiceIDCapabilitySnapshot{}, fmt.Errorf("capability relationship %w", err)
+	}
+	appConsentBundle, err := canonicalDeveloperServiceIDRelationshipData(resource.Relationships, "appConsentBundleId")
+	if err != nil {
+		return developerServiceIDCapabilitySnapshot{}, fmt.Errorf("app consent relationship %w", err)
+	}
+	return developerServiceIDCapabilitySnapshot{
+		Enabled:          enabled,
+		Settings:         settings,
+		Capability:       capability,
+		AppConsentBundle: appConsentBundle,
+	}, nil
+}
+
+func canonicalDeveloperServiceIDAttribute(raw json.RawMessage, key string, sortArray bool) (string, error) {
+	var attributes map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &attributes); err != nil {
+		return "", fmt.Errorf("could not be parsed: %w", err)
+	}
+	if attributes == nil {
+		return "", fmt.Errorf("are missing")
+	}
+	value, ok := attributes[key]
+	if !ok {
+		return "<missing>", nil
+	}
+	encoded, err := canonicalDeveloperServiceIDValue(value, sortArray)
+	if err != nil {
+		return "", fmt.Errorf("could not be normalized: %w", err)
+	}
+	return encoded, nil
+}
+
+func canonicalDeveloperServiceIDRelationshipData(relationships map[string]json.RawMessage, key string) (string, error) {
+	raw, ok := relationships[key]
+	if !ok {
+		return "<missing>", nil
+	}
+	var relationship struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &relationship); err != nil {
+		return "", fmt.Errorf("could not be parsed: %w", err)
+	}
+	encoded, err := canonicalDeveloperServiceIDValue(relationship.Data, false)
+	if err != nil {
+		return "", fmt.Errorf("data could not be normalized: %w", err)
+	}
+	return encoded, nil
+}
+
+func canonicalDeveloperServiceIDValue(raw json.RawMessage, sortArray bool) (string, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return `"<missing>"`, nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("could not be parsed: %w", err)
+	}
+	if sortArray {
+		if values, ok := value.([]any); ok {
+			encodedValues := make([]string, len(values))
+			for index, item := range values {
+				encoded, err := json.Marshal(item)
+				if err != nil {
+					return "", fmt.Errorf("array item %d could not be encoded: %w", index, err)
+				}
+				encodedValues[index] = string(encoded)
+			}
+			sort.Strings(encodedValues)
+			return "[" + strings.Join(encodedValues, ",") + "]", nil
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("could not be encoded: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func verifyDeveloperServiceIDIdentity(resource DeveloperBundleID, serviceID, identifier, name string) error {
