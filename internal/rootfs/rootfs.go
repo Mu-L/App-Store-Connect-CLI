@@ -1701,6 +1701,22 @@ func (r Root) CheckCreateNewFile(name string) error {
 	return fmt.Errorf("%q already exists: %w", resolved, os.ErrExist)
 }
 
+// CheckCreateNewFileAtomic verifies that name can be published with an atomic
+// no-replace rename, then removes the probe file it created. The probe uses the
+// same rooted publication path as CreateNewFileAtomic and never falls back to
+// exclusive creation. Callers should pass an unpredictable temporary name.
+func (r Root) CheckCreateNewFileAtomic(name string, perm os.FileMode) error {
+	if err := r.CheckCreateNewFile(name); err != nil {
+		return err
+	}
+	info, err := r.CreateNewFileAtomicWithInfo(name, nil, perm)
+	if info != nil {
+		cleanupErr := r.RemoveFileIfSame(name, info, nil)
+		return errors.Join(err, cleanupErr)
+	}
+	return err
+}
+
 // RemoveFileIfSame is the compatibility adapter for callers that still have a
 // metadata snapshot. New transaction code must use RemoveFileIfSameIdentity;
 // this historical path keeps its snapshot and fallback semantics unchanged.

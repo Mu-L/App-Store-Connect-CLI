@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
@@ -61,6 +62,68 @@ func TestWebAPIKeysCreateIndividualRequiresConfirmBeforeSession(t *testing.T) {
 	}
 	if resolveCalled {
 		t.Fatal("did not expect session resolution before confirmation validation")
+	}
+}
+
+func TestWebAPIKeysCreateIndividualUnsupportedPublicationDoesNotCreate(t *testing.T) {
+	t.Setenv("ASC_WEB_MIN_REQUEST_INTERVAL", "0")
+	outputDir := t.TempDir()
+	publicationErr := errors.New("atomic no-replace rename unsupported")
+	publicationCalls := 0
+	postCount := 0
+	patchCount := 0
+	resolveCalled := false
+	restorePublication := setCheckIndividualAPIKeyOutputPublicationForTest(func(rootfs.Root, string) error {
+		publicationCalls++
+		return publicationErr
+	})
+	t.Cleanup(restorePublication)
+	restoreSession := SetResolveWebSession(func(ctx context.Context, appleID, password, twoFactorCode string) (*webcore.AuthSession, string, error) {
+		resolveCalled = true
+		return &webcore.AuthSession{UserEmail: "owner@example.com"}, "cache", nil
+	})
+	t.Cleanup(restoreSession)
+	restoreClient := setNewWebAPIKeyClientForTest(func(session *webcore.AuthSession) *webcore.Client {
+		return newCLIAPIKeyHTTPTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/iris/v1/users/USER-UUID":
+				_, _ = w.Write([]byte(`{"data":{"type":"users","id":"USER-UUID","attributes":{"username":"owner@example.com"}}}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/iris/v2/apiKeys":
+				_, _ = w.Write([]byte(`{"data":[]}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/iris/v2/apiKeys":
+				postCount++
+				http.Error(w, "unexpected create", http.StatusInternalServerError)
+			case r.Method == http.MethodPatch && r.URL.Path == "/iris/v2/apiKeys/IND-1":
+				patchCount++
+				http.Error(w, "unexpected patch", http.StatusInternalServerError)
+			default:
+				http.Error(w, "unexpected request", http.StatusInternalServerError)
+			}
+		}))
+	})
+	t.Cleanup(restoreClient)
+
+	command := WebAPIKeysCreateIndividualCommand()
+	if err := command.FlagSet.Parse([]string{
+		"--user-id", "USER-UUID",
+		"--output-dir", outputDir,
+		"--confirm",
+	}); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	err := command.Exec(context.Background(), nil)
+	if !errors.Is(err, publicationErr) {
+		t.Fatalf("expected publication preflight error, got %v", err)
+	}
+	if publicationCalls != 1 {
+		t.Fatalf("publication probe calls = %d, want 1", publicationCalls)
+	}
+	if resolveCalled {
+		t.Fatal("did not expect session resolution after publication preflight failure")
+	}
+	if postCount != 0 || patchCount != 0 {
+		t.Fatalf("remote mutations = POST %d, PATCH %d; want zero", postCount, patchCount)
 	}
 }
 
@@ -757,6 +820,12 @@ func setNewWebAPIKeyClientForTest(fn func(*webcore.AuthSession) *webcore.Client)
 	previous := newWebAPIKeyClientFn
 	newWebAPIKeyClientFn = fn
 	return func() { newWebAPIKeyClientFn = previous }
+}
+
+func setCheckIndividualAPIKeyOutputPublicationForTest(fn func(rootfs.Root, string) error) func() {
+	previous := checkIndividualAPIKeyOutputPublicationFn
+	checkIndividualAPIKeyOutputPublicationFn = fn
+	return func() { checkIndividualAPIKeyOutputPublicationFn = previous }
 }
 
 func generateTestPublicKeyPEM(t *testing.T) string {

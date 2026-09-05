@@ -22,6 +22,10 @@ import (
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 )
 
+var checkIndividualAPIKeyOutputPublicationFn = func(root rootfs.Root, probeName string) error {
+	return root.CheckCreateNewFileAtomic(probeName, 0o600)
+}
+
 // WebAPIKeysCreateIndividualCommand creates and registers an individual API
 // key for the authenticated Apple Account user.
 func WebAPIKeysCreateIndividualCommand() *ffcli.Command {
@@ -98,6 +102,13 @@ Examples:
 			defer outputRoot.Close()
 			if err := outputRoot.MkdirAll(".", 0o700); err != nil {
 				return fmt.Errorf("prepare individual API key output directory: %w", err)
+			}
+			probeName, err := newIndividualAPIKeyStagingName()
+			if err != nil {
+				return fmt.Errorf("prepare individual API key publication probe; remote create was not attempted: %w", err)
+			}
+			if err := checkIndividualAPIKeyOutputPublicationFn(outputRoot, probeName); err != nil {
+				return fmt.Errorf("verify individual API key output directory supports atomic no-replace private-key publication; remote create was not attempted: %w", err)
 			}
 
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
