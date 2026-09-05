@@ -251,3 +251,26 @@ func taxCategoryWriteMap(t *testing.T, parent map[string]any, key string) map[st
 	}
 	return value
 }
+
+func TestGetAppTaxCategoryRejectsUnexpectedResourceIdentity(t *testing.T) {
+	for _, resource := range []struct{ name, id, kind string }{{"wrong app", "app-2", "appTaxCategories"}, {"wrong type", "app-1", "apps"}, {"missing type", "app-1", ""}} {
+		t.Run(resource.name, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Method != http.MethodGet || r.URL.Path != "/appTaxCategories/app-1" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": resource.id, "type": resource.kind, "relationships": map[string]any{"category": map[string]any{"data": map[string]string{"id": "cat-games", "type": "taxCategories"}}}}}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			result, err := testWebClient(server).GetAppTaxCategory(context.Background(), "app-1")
+			if err == nil || result != nil || requests != 1 {
+				t.Fatalf("accepted unexpected tax resource: result=%+v error=%v requests=%d", result, err, requests)
+			}
+		})
+	}
+}
