@@ -1811,8 +1811,26 @@ func (r Root) RemoveFileIfSameIdentity(name string, expected *FileIdentity) (res
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.Join(err, r.restoreExpectedQuarantine(parent, quarantineName, base, expected, err))
 	}
-	if err := r.removeExpectedIdentityQuarantine(parent, quarantineName, expected); err != nil {
-		return err
+	if cleanupErr := r.removeExpectedIdentityQuarantine(parent, quarantineName, expected); cleanupErr != nil {
+		// Cleanup deliberately leaves the quarantine in place when its final
+		// identity check is uncertain. A fresh observation of the canonical
+		// pathname distinguishes a removed receipt, which permits callers to
+		// roll back earlier writes, from a replacement that must be preserved.
+		_, destinationErr := parent.Lstat(base)
+		switch {
+		case destinationErr == nil:
+			return errors.Join(
+				fmt.Errorf("%w: destination was replaced while cleaning up the expected file", ErrFileIdentityChanged),
+				cleanupErr,
+			)
+		case errors.Is(destinationErr, os.ErrNotExist):
+			return errors.Join(ErrFileIdentityRemoved, cleanupErr)
+		default:
+			return errors.Join(
+				cleanupErr,
+				fmt.Errorf("verify destination after quarantine cleanup: %w", destinationErr),
+			)
+		}
 	}
 	removed = true
 	syncErr := r.syncConditionalParentDirectory(parent)
@@ -2791,7 +2809,7 @@ func (r Root) removeExpectedQuarantine(parent *os.Root, quarantineName string, e
 		_ = file.Close()
 		return fmt.Errorf("recheck quarantined file before removal: %w", err)
 	}
-	if !os.SameFile(info, latest) || latest.Mode().Perm() != info.Mode().Perm() {
+	if !os.SameFile(info, latest) || latest.Mode() != info.Mode() || latest.Mode() != expected.Mode() {
 		_ = file.Close()
 		return fmt.Errorf("quarantined file identity changed before removal")
 	}
