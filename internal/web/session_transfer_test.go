@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -191,6 +192,139 @@ func TestImportSessionBundleIsLocalOnly(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("live session validation calls = %d, want 0", calls)
+	}
+}
+
+func TestValidateSessionBundleUsesTemporarySessionWithoutPersisting(t *testing.T) {
+	withFileSessionCache(t)
+	bundle := validTestBundle(time.Now().Add(time.Hour))
+	cacheDir := os.Getenv(webSessionCacheDirEnv)
+	var calls int
+	previousFetcher := sessionInfoFetcher
+	sessionInfoFetcher = func(_ context.Context, client *http.Client) (*sessionInfo, error) {
+		calls++
+		target, err := url.Parse("https://appstoreconnect.apple.com/")
+		if err != nil {
+			return nil, err
+		}
+		var token string
+		for _, cookie := range client.Jar.Cookies(target) {
+			if cookie != nil && cookie.Name == "myacinfo" {
+				token = cookie.Value
+				break
+			}
+		}
+		if token != "token" {
+			return nil, fmt.Errorf("temporary session cookie = %q, want token", token)
+		}
+		info := &sessionInfo{}
+		info.User.EmailAddress = "USER@example.com"
+		return info, nil
+	}
+	t.Cleanup(func() { sessionInfoFetcher = previousFetcher })
+
+	if err := ValidateSessionBundle(context.Background(), bundle); err != nil {
+		t.Fatalf("ValidateSessionBundle() error = %v, want nil", err)
+	}
+	if calls != 1 {
+		t.Fatalf("session validation calls = %d, want 1", calls)
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadDir(%q) error = %v", cacheDir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("successful live validation wrote to the cache: %v", entries)
+	}
+}
+
+func TestValidateSessionBundleRejectsNilBundle(t *testing.T) {
+	if err := ValidateSessionBundle(context.Background(), nil); !errors.Is(err, ErrSessionBundleValidationFailed) {
+		t.Fatalf("ValidateSessionBundle(nil) error = %v, want ErrSessionBundleValidationFailed", err)
+	}
+}
+
+func TestValidateSessionBundleRejectsLiveFailuresWithoutPersisting(t *testing.T) {
+	cases := []struct {
+		name      string
+		fetch     func() (*sessionInfo, error)
+		wantCause error
+		wantText  string
+	}{
+		{
+			name: "account mismatch",
+			fetch: func() (*sessionInfo, error) {
+				info := &sessionInfo{}
+				info.User.EmailAddress = "other@example.com"
+				return info, nil
+			},
+			wantText: "does not match",
+		},
+		{
+			name: "missing account identity",
+			fetch: func() (*sessionInfo, error) {
+				return &sessionInfo{}, nil
+			},
+			wantText: "no Apple Account identity",
+		},
+		{
+			name: "expired unauthorized session",
+			fetch: func() (*sessionInfo, error) {
+				return nil, &sessionInfoStatusError{Status: http.StatusUnauthorized}
+			},
+			wantCause: ErrCachedSessionExpired,
+		},
+		{
+			name: "expired forbidden session",
+			fetch: func() (*sessionInfo, error) {
+				return nil, &sessionInfoStatusError{Status: http.StatusForbidden}
+			},
+			wantCause: ErrCachedSessionExpired,
+		},
+		{
+			name: "transient validation failure",
+			fetch: func() (*sessionInfo, error) {
+				return nil, errors.New("temporary network failure")
+			},
+			wantCause: ErrCachedSessionValidationFailed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withFileSessionCache(t)
+			previousFetcher := sessionInfoFetcher
+			sessionInfoFetcher = func(context.Context, *http.Client) (*sessionInfo, error) {
+				return tc.fetch()
+			}
+			t.Cleanup(func() { sessionInfoFetcher = previousFetcher })
+
+			if err := ValidateSessionBundle(context.Background(), validTestBundle(time.Now().Add(time.Hour))); err == nil {
+				t.Fatal("ValidateSessionBundle() error = nil, want a validation failure")
+			} else {
+				if !errors.Is(err, ErrSessionBundleValidationFailed) {
+					t.Fatalf("ValidateSessionBundle() error = %v, want ErrSessionBundleValidationFailed", err)
+				}
+				if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+					t.Fatalf("ValidateSessionBundle() error = %v, want cause %v", err, tc.wantCause)
+				}
+				if tc.wantText != "" && !strings.Contains(err.Error(), tc.wantText) {
+					t.Fatalf("ValidateSessionBundle() error = %v, want text %q", err, tc.wantText)
+				}
+				if strings.Contains(err.Error(), "token") {
+					t.Fatalf("validation error leaked a cookie value: %v", err)
+				}
+			}
+
+			cacheDir := os.Getenv(webSessionCacheDirEnv)
+			entries, err := os.ReadDir(cacheDir)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatalf("ReadDir(%q) error = %v", cacheDir, err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("failed live validation wrote to the cache: %v", entries)
+			}
+		})
 	}
 }
 

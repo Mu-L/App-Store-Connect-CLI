@@ -1376,26 +1376,34 @@ func resumeFromPersistedSession(ctx context.Context, sess persistedSession) (*Au
 	return session, true, nil
 }
 
-func resumeFromPersistedSessionReadOnly(ctx context.Context, sess persistedSession) (*AuthSession, bool, error) {
-	identity := &AuthSession{UserEmail: strings.TrimSpace(sess.UserEmail)}
+func validatePersistedSessionReadOnly(ctx context.Context, sess persistedSession) (*http.Client, *sessionInfo, bool, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return identity, false, err
+		return nil, nil, false, err
 	}
 	loaded := hydrateCookieJar(jar, sess)
 	if loaded == 0 {
-		return identity, false, nil
+		return nil, nil, false, nil
 	}
 	client := newWebHTTPClient(jar)
 	info, err := sessionInfoFetcher(ctx, client)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return identity, false, ctxErr
+			return nil, nil, false, ctxErr
 		}
 		if isSessionInfoAuthExpired(err) {
-			return identity, false, ErrCachedSessionExpired
+			return nil, nil, false, ErrCachedSessionExpired
 		}
-		return identity, false, ErrCachedSessionValidationFailed
+		return nil, nil, false, ErrCachedSessionValidationFailed
+	}
+	return client, info, true, nil
+}
+
+func resumeFromPersistedSessionReadOnly(ctx context.Context, sess persistedSession) (*AuthSession, bool, error) {
+	identity := &AuthSession{UserEmail: strings.TrimSpace(sess.UserEmail)}
+	client, info, ok, err := validatePersistedSessionReadOnly(ctx, sess)
+	if err != nil || !ok {
+		return identity, ok, err
 	}
 	session := &AuthSession{Client: client, UserEmail: strings.TrimSpace(sess.UserEmail)}
 	applySessionInfo(session, info)
