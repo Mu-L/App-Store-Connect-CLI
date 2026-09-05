@@ -44,7 +44,7 @@ asc <subcommand> [flags]
 
 ### Web Session Commands
 
-- `web` - Apple web-session workflows.
+- `web` - Apple web-session workflows, including finance report downloads.
 
 ### Analytics and Finance
 

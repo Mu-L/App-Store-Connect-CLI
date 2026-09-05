@@ -81,7 +81,7 @@ func TestRun_CapabilitiesJSONReportsKnownGaps(t *testing.T) {
 	assertCapability(t, resp, "Subscription sale availability and pricing web workflows", "web-session", "asc web subscriptions")
 	assertCapability(t, resp, "App Store Connect analytics web dashboards", "web-session", "asc web analytics")
 	assertCapability(t, resp, "Xcode Cloud usage and web workflow management", "web-session", "asc web xcode-cloud")
-	assertCapability(t, resp, "Transaction tax reports", "not-public-api", "")
+	assertCapability(t, resp, "Transaction tax reports", "web-session", "asc web finance transaction-tax download")
 	assertCapability(t, resp, "Subscriptions and in-app purchases", "cli-supported", "asc review items add")
 	assertMonetizationVersionWorkflow(t, resp)
 }
