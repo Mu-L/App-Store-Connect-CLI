@@ -15,7 +15,7 @@ Produce a current, evidence-backed verdict and proposed repository labels. Apply
 4. For API claims, verify the exact method and endpoint in `docs/openapi/latest.json`; use the `sosumi.ai` documentation mirror for explanatory context.
 5. Check whether the report is already fixed on current `origin/main`, duplicated, unsupported by the public API, or blocked by Apple/platform behavior.
 
-Run independent read-only or verified side-effect-free dry-run issue, source, help, API, duplicate, and linked-PR checks in parallel or with isolated subagents when useful. Live reproductions require authority for mutations and cleanup, even on disposable resources. Keep authorized labels, issue comments, and implementation handoffs coordinated and serialized.
+Follow `AGENTS.md` for parallel reads and serialized writes. Live reproductions require authority for mutations and cleanup, even on disposable resources; confirm dry runs are side-effect-free.
 
 ## Classify the outcome
 
@@ -30,11 +30,7 @@ Separate urgency from implementation size. Explain user impact, blast radius, wo
 
 ## Recommend or apply labels
 
-Follow `CONTRIBUTING.md` and recommend exactly one label from each bucket, applying them when authorized:
-
-- Type: `bug`, `enhancement`, or `question`.
-- Priority: `p0`, `p1`, `p2`, or `p3`.
-- Difficulty: `easy`, `medium`, or `hard`.
+Recommend one type, priority, and difficulty from `AGENTS.md`'s buckets using the meanings in `CONTRIBUTING.md`. Apply them only when authorized.
 
 For authorized label updates, remove conflicting labels and add the selected replacements, then verify the resulting buckets. If evidence is incomplete, mark the recommendation provisional and identify the missing evidence; uncertainty alone does not establish low urgency or easy implementation.
 

@@ -5,8 +5,6 @@ description: Publish and verify a new release of the App-Store-Connect-CLI repos
 
 # Release the ASC CLI
 
-Treat a release request as an end-to-end publishing operation, not merely a tag push.
-
 ## Prove the release target
 
 1. Resolve the requested plain semantic version without a `v` prefix.
@@ -40,7 +38,7 @@ If formatting changes files, inspect the diff and stop the release gate. Prepare
 
 ## Verify consumer-visible state
 
-Do not declare success from CI alone. Verify:
+Verify:
 
 - The GitHub release is published, not draft or prerelease unless requested.
 - Expected macOS, Linux, Windows, and checksum assets exist.

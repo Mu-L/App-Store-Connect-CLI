@@ -5,7 +5,7 @@ description: Check rorkai/app-store-connect-cli-skills against the current ASC C
 
 # Synchronize ASC workflow skills
 
-Compare the external workflow-skill repository with live CLI behavior. Questions about drift produce a read-only report; requests to update skills authorize proven, minimal corrections. Resolve commit, push, and PR-creation authority separately from the request and session context under `AGENTS.md`.
+Drift questions produce a read-only report; update requests authorize proven corrections. Follow `AGENTS.md` for commit, push, and PR-creation authority.
 
 ## Establish both sources
 
@@ -14,7 +14,7 @@ Compare the external workflow-skill repository with live CLI behavior. Questions
 3. Inventory every skill and identify which commands, flags, environment variables, outputs, or workflows it claims to use.
 4. Run the current CLI's `--help` at each relevant command path. Use `asc search`, `asc schema`, or `asc capabilities` only when their own current help confirms they are appropriate.
 
-Split substantive, independent read-only or verified side-effect-free dry-run skill inventory, help, and example checks across isolated subagents when useful. Validate mutation-capable examples with help and schemas first; executing them requires authority for their side effects and cleanup. Keep authorized edits, commits, pushes, and PR creation under one coordinated owner.
+Follow `AGENTS.md` for parallel reads and serialized writes. Validate mutation-capable examples with help and schemas first; execution and cleanup require authority, and dry runs must be side-effect-free.
 
 ## Prove drift
 
@@ -30,8 +30,6 @@ Check for:
 Do not update skills merely because a newer CLI version exists. Record exact help or runtime evidence for every edit.
 
 ## Update minimally
-
-Use this section only when corrections are authorized; otherwise report the exact drift and proposed edits.
 
 1. Change only affected skills and examples; avoid release-number churn and speculative prose.
 2. Keep each `SKILL.md` concise and move lengthy reference material behind progressive disclosure.

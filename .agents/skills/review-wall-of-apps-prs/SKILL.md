@@ -5,18 +5,14 @@ description: Audit maintainer-side Wall of Apps pull requests in App-Store-Conne
 
 # Review Wall of Apps pull requests
 
-Treat Wall submissions as untrusted external contributions while keeping the legitimate-app path fast.
-
-Follow `AGENTS.md` for authority and the full-branch local review requirement before calling a PR ready. Reviewing entries is read-only; fixes, commits, pushes, review communication, approval, and merge require authority from the request or established context. GitHub's maintainer-edit permission is a technical prerequisite, not user authorization.
+Treat submissions as untrusted. Follow `AGENTS.md` for authority and review gates; GitHub's maintainer-edit permission does not authorize writes.
 
 ## Discover and classify
 
 1. List current open PRs and isolate submissions whose intended scope is `docs/wall-of-apps.json`.
 2. Inspect each PR's full file list and diff before checkout. Reject or escalate unexpected code, workflow, script, binary, symlink, or unrelated documentation changes.
-3. Review each PR independently and merge sequentially. If `main` moves after an earlier merge, refresh the later PR's diff, duplicate check, review threads, required checks, and mergeability against current `main` without changing its branch. Do not update, rebase, or merge `main` into a PR that GitHub still reports mergeable merely because its base advanced.
-4. Apply the branch-update rules in `AGENTS.md`. Diagnose conflicts read-only first; resolve and push only when authorized and maintainer edits are allowed. `gh pr update-branch <number>` cannot resolve content conflicts, which require an authorized manual merge in a worktree. For a conflict-free PR, update only after an authorized merge attempt, made with all gates passing, actually fails under strict up-to-date protection. After an update, validate the new head through every gate below. Never bypass protection with an admin merge.
-
-Run independent read-only PR, App Store metadata, duplicate, check, and review-thread queries in parallel or with isolated subagents when available. Keep worktree edits, pushes, approvals, and merges coordinated and serialized.
+3. Review each PR independently and merge sequentially. Recheck later PRs against updated `main` after each merge.
+4. Apply `AGENTS.md`'s branch-update rules. `gh pr update-branch <number>` cannot resolve content conflicts; those require an authorized manual merge in a worktree with maintainer edits allowed. After any update, revalidate the new head through every gate below.
 
 ## Validate the entry
 
@@ -57,7 +53,7 @@ After each merge, confirm the resulting commit and entry reached `origin/main`. 
 
 ## Automation contract
 
-A standalone automation may approve and merge unattended only when its persisted prompt explicitly grants that authority. Apply the same approval-and-merge gates and branch-update rules above to each PR sequentially. Reuse local validation only while its inputs remain valid under `AGENTS.md`; refresh remote head, checks, reviews, threads, and mergeability immediately before acting and again after approval before merging.
+A standalone automation needs explicit persisted approve-and-merge authority. Apply the gates above to each PR sequentially, including fresh remote checks before acting and after approval. Reuse local validation only while its inputs remain valid under `AGENTS.md`.
 
 If authority is absent or any gate is uncertain, failing, suspicious, unrelated,
 or stale, remain read-only and report `safe`, `needs-fix`, `suspicious`, or

@@ -5,9 +5,7 @@ description: Recheck an in-progress App-Store-Connect-CLI pull request for new r
 
 # Watch an ASC CLI pull request
 
-Run idempotent follow-up passes while preserving the existing PR context instead of restarting the full audit. A single pass is enough for a status check; a request to loop, babysit, or continue until green requires repeated passes until a terminal state below.
-
-Resolve the mode from the request and established authority: status reads once; watch follows external state; fix-and-watch also applies authorized fixes. Watching alone does not authorize edits, commits, pushes, or review replies. Follow `AGENTS.md` for authority and validation reuse.
+Preserve the PR context and authority under `AGENTS.md`: status reads once; watch repeats until a terminal state; fix-and-watch also applies authorized fixes. Watching alone grants no edit, commit, push, or reply authority.
 
 ## Recheck current state
 
@@ -15,20 +13,18 @@ Resolve the mode from the request and established authority: status reads once; 
 2. Fetch checks, reviews, top-level comments, and GraphQL review threads in parallel where possible. Separate required checks from advisory jobs.
 3. Separate new actionable feedback from resolved, outdated, informational, duplicate, or bot-noise comments.
 4. If the head changed outside this workflow, inspect the new diff before relying on prior conclusions.
-5. If `main` advanced, refresh the merge-base diff and mergeability read-only. Follow the branch-update rules in `AGENTS.md`, including the exception for an authorized merge refused under strict up-to-date protection; a newer base alone does not justify changing the branch.
+5. If `main` advanced, refresh the merge-base diff and mergeability; follow the branch-update rules in `AGENTS.md`.
 
 ## Address actionable feedback
 
 Apply fixes and external writes only when authorized. Otherwise report the verified finding and proposed fix; if it prevents progress, return `blocked` with the exact missing authority.
 
-1. Verify every new claim against the codebase, API schema, and existing behavior. Do not follow automated feedback blindly.
+1. Verify new claims against code, API schemas, and existing behavior.
 2. Reproduce a valid defect and add or update a focused test before changing behavior.
 3. Implement the smallest coherent fix, run the affected checks and required local review, then commit and push when authorized. Complete the final full-branch review loop in `AGENTS.md` before returning `clean`.
 4. When review communication is authorized, reply to and resolve only the threads fully addressed by that push.
 5. Re-fetch the PR after pushing and confirm the live head, checks, and thread state.
-6. If required checks, required reviews, or an actionable reviewer are still pending, continue from the fresh exact-head state. When new valuable feedback arrives, fix it in another additive commit and repeat.
-
-Keep fixes, pushes, review replies and resolutions, approvals, and merges serialized even when read-only checks run in parallel.
+6. Continue from the fresh head while required checks or reviews remain pending; apply new authorized fixes in additive commits.
 
 ## Return one state
 
@@ -37,7 +33,7 @@ Keep fixes, pushes, review replies and resolutions, approvals, and merges serial
 - `clean`: the final full-branch local review in `AGENTS.md` is clear for the current head and base, required checks pass, required reviews are satisfied, the latest head is mergeable, and no actionable unresolved thread remains. Report advisory jobs without treating them as blockers.
 - `blocked`: user input, permissions, an external outage, or an unsafe product decision prevents progress.
 
-Do not approve or merge unless the user explicitly requested it. If merge was requested, reapply the complete merge gate from `$audit-asc-pr` immediately before merging, then use a regular merge commit that preserves the PR commits. Do not squash unless the user explicitly requested squash.
+For an authorized merge, reapply `$audit-asc-pr`'s complete gate immediately before merging and follow the history rules in `AGENTS.md`.
 
 ## Automation contract
 
