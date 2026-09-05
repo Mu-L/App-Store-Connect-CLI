@@ -48,6 +48,8 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "review", "reply"}},
 		{[]string{"web", "website-push-ids"}},
 		{[]string{"web", "website-push-ids", "list"}},
+		{[]string{"web", "icloud-containers"}},
+		{[]string{"web", "icloud-containers", "list"}},
 	}
 
 	for _, tc := range cases {
@@ -92,6 +94,9 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 		"web review reply":          {},
 		"web website-push-ids":      {},
 		"web website-push-ids list": {},
+
+		"web icloud-containers":      {},
+		"web icloud-containers list": {},
 	}
 	for _, sub := range webCmd.Subcommands {
 		if sub.Name == "agreements" {

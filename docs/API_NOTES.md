@@ -123,6 +123,12 @@ the App Store Connect web-client source captured for issue #2299:
 - `asc web apps delete` uses this collection for the "removed from sale in all territories" preflight. The public API counterpart is `/v2/appAvailabilities/{id}/territoryAvailabilities`.
 - `asc web removed-apps restore` uses PATCH `/iris/v1/apps/{id}` with `removed:false`, verifies the app is no longer removed, then POSTs `/iris/v1/userAppPermissions` with `GRANT` (full) or `REVOKE` (limited) for `ALL_SILOABLE_USERS`. Permission writes are skipped when PATCH or verification fails.
 
+## Developer Portal iCloud containers
+
+- `asc web icloud-containers list` reads the modern Developer Portal collection through the cookie-authenticated web session. The logical request is `GET /services-account/v1/cloudContainers?filter[AND][hidden]=false` (or `true` with `--hidden`); Apple's browser transport sends it as `POST` with `X-HTTP-Method-Override: GET`.
+- The request body carries the selected `teamId` and `urlEncodedQueryParams=limit=1000&offset=0&sort=name`. The command uses this bounded first collection and has no `--paginate` flag. Apple response envelopes are preserved for JSON output, including `links` and `meta.paging` when present. A warning on stderr identifies an incomplete collection when Apple supplies a continuation link or a paging total larger than the returned rows; the CLI does not invent or follow a next-page contract.
+- Resource rows expose Apple's observed `identifier`, `hidden`, `prefix`, `canEdit`, `name`, `canDelete`, and `responseId` attributes along with the opaque resource `id` and `type`. No detail or create/rename/delete contract is assumed from this list response.
+
 ## Web-session Resolution Center
 
 - Resolution Center has no official App Store Connect API surface; the OpenAPI snapshot contains no `resolutionCenter*` or `reviewRejection*` path. Every reader below is a web-session (`/iris/v1`) call and needs Apple ID auth, not an API key.

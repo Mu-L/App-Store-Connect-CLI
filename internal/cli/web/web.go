@@ -53,6 +53,7 @@ Examples:
 			WebBundleIDsCommand(),
 			WebServiceIDsCommand(),
 			WebWebsitePushIDsCommand(),
+			WebICloudContainersCommand(),
 			WebAppGroupsCommand(),
 			WebPrivacyCommand(),
 			WebReviewCommand(),

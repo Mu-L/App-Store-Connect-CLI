@@ -493,6 +493,34 @@ asc web auth logout --apple-id "user@example.com"
 asc web auth login --apple-id "user@example.com"
 ```
 
+### `asc web icloud-containers`
+
+Read iCloud container registrations through the selected Apple Developer team.
+The public App Store Connect API does not expose this Developer Portal
+collection.
+
+Available commands:
+
+* `asc web icloud-containers list` - list visible containers
+
+Pass `--hidden` to request Apple's hidden-container collection. The web-session
+request asks for up to 1,000 resources (`limit=1000`, `offset=0`, sorted by name)
+and this command does not expose `--paginate`. JSON output preserves the full
+Apple response envelope, including any links and paging metadata; table and
+Markdown output show the resource ID, name, identifier, prefix, hidden state,
+permissions, and response ID.
+
+This read-only slice does not create, rename, delete, or inspect an individual
+container. Use the opaque IDs and identifiers only as input to a future command
+once Apple request contracts for those operations are captured.
+
+Examples:
+
+```bash  theme={null}
+asc web icloud-containers list --output table
+asc web icloud-containers list --hidden --output json
+```
+
 ### `asc web privacy`
 
 App privacy declaration workflows over Apple web-session `/iris` endpoints.
