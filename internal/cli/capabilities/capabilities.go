@@ -292,9 +292,9 @@ func capabilityRows() []Capability {
 			Area:       "app-management",
 			Capability: "Regulated medical device declaration",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web apps medical-device"},
-			Notes:      []string{"App Store Regulations and Permits medical-device declarations are not present in the embedded public OpenAPI snapshot. The command currently supports the common undeclared (No) path."},
-			NextAction: "Use App Store Connect web UI, or asc web apps medical-device set --declared false.",
+			Commands:   []string{"asc web apps medical-device", "asc web apps medical-device region set"},
+			Notes:      []string{"App Store Regulations and Permits medical-device declarations are not present in the embedded public OpenAPI snapshot. The web command supports the captured app-level No path, affirmative EEA/GBR/USA selection, and a detailed regional setter that preserves contacts and verifies exact readback; personal-service and any unsupported medical fields remain website-only. The captured No paths preserve existing regional rows."},
+			NextAction: "Use asc web apps medical-device set --declared false, set --declared true --confirm, or medical-device region set --region REGION --input PATH --confirm; complete unsupported detailed fields in App Store Connect.",
 		},
 		{
 			Area:       "app-management",
@@ -317,9 +317,9 @@ func capabilityRows() []Capability {
 			Area:       "app-management",
 			Capability: "App distribution method inspection",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web apps distribution view"},
-			Notes:      []string{"The public apps API does not expose distributionType or educationDiscountType. This command is read-only."},
-			NextAction: "Use App Store Connect web UI, or asc web apps distribution view.",
+			Commands:   []string{"asc web apps distribution view", "asc web apps distribution set"},
+			Notes:      []string{"The public apps API does not expose distributionType or educationDiscountType. The web commands inspect or update the app-level distribution pair: public (APP_STORE) or private (CUSTOM), with public education discount DISCOUNTED or NOT_DISCOUNTED and private NOT_APPLICABLE. The setter preserves existing custom organization and user rows and does not cover DIRECT_URL or unlisted distribution requests, which remain unavailable."},
+			NextAction: "Use App Store Connect web UI, or inspect with asc web apps distribution view and update with asc web apps distribution set --app APP_ID --method public|private [--education-discount discounted|not-discounted] --confirm.",
 		},
 		{
 			Area:       "app-management",
@@ -399,7 +399,7 @@ func capabilityRows() []Capability {
 			Status:     statusWebSession,
 			Commands:   []string{"asc web apps declarations list"},
 			Notes: []string{
-				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; writes other than medical-device --declared false remain website-only. EU DSA trader status is account-level and is not part of this listing.",
+				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; the web command supports captured medical-device app-level declarations and the detailed regional setter, while personal-service and unsupported detailed medical fields remain website-only. EU DSA trader status is account-level and is not part of this listing.",
 			},
 			NextAction: "Use App Store Connect web UI, or asc web apps declarations list.",
 		},
@@ -450,12 +450,17 @@ func capabilityRows() []Capability {
 		{
 			Area:       "monetization",
 			Capability: "App and In-App Purchase tax category",
-			Status:     statusNotPublicAPI,
-			Notes: []string{
-				"Apple's published App Store Connect OpenAPI spec has no tax-category endpoint, and no tax-category attribute on apps, appInfos, or inAppPurchases.",
-				"The App Store Connect web endpoints behind the App Information and In-App Purchase tax category pickers have not been captured, so no web-session command is exposed either.",
+			Status:     statusPartial,
+			Commands: []string{
+				"asc web apps tax-category list",
+				"asc web apps tax-category view",
+				"asc web apps tax-category set",
 			},
-			NextAction: "Set the tax category in App Store Connect under App Information, or in the In-App Purchase settings.",
+			Notes: []string{
+				"App Information tax category is available through web-session commands; the public OpenAPI snapshot has no tax-category resource.",
+				"In-App Purchase tax category remains unimplemented because its web-session read/write contract is not captured. The application setter validates the captured catalog, requires --confirm, clears conditions when --condition is omitted, and does not automatically retry an ambiguous write; a disposable-app canary verified explicit application tax configuration and readback, while PATCH, condition changes, and account-specific errors remain unverified.",
+			},
+			NextAction: "Use asc web apps tax-category list/view/set for App Information; use App Store Connect web UI for In-App Purchase tax category.",
 		},
 		{
 			Area:       "testflight",
@@ -473,12 +478,15 @@ func capabilityRows() []Capability {
 			Area:       "testflight",
 			Capability: "Sandbox tester lifecycle",
 			Status:     statusPartial,
-			Commands:   []string{"asc sandbox", "asc web sandbox create"},
+			Commands:   []string{"asc sandbox", "asc web sandbox create", "asc web sandbox delete"},
 			APIResources: []string{
 				"sandboxTesters",
 				"sandboxTestersClearPurchaseHistoryRequest",
 			},
-			Notes: []string{"Public API support varies by operation and account; web-session creation exists as a fallback."},
+			Notes: []string{
+				"Public API support varies by operation and account; web-session creation exists as a fallback.",
+				"Web-session deletion uses a private endpoint, requires --confirm, refuses family members or incomplete account-list snapshots, and verifies absence after the request; Apple's delete response contract remains unverified.",
+			},
 		},
 		{
 			Area:       "analytics",
@@ -503,9 +511,13 @@ func capabilityRows() []Capability {
 		{
 			Area:       "analytics",
 			Capability: "Transaction tax reports",
-			Status:     statusNotPublicAPI,
-			Notes:      []string{"Apple does not expose Transaction Tax reports through the public App Store Connect API."},
-			NextAction: "Download manually from App Store Connect.",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web finance transaction-tax download"},
+			Notes: []string{
+				"Apple does not expose Transaction Tax reports through the public App Store Connect API.",
+				"The experimental command uses the captured App Store Connect finance web session to generate, poll, and download one eligible period; report history and generated job IDs are not exposed.",
+			},
+			NextAction: "Use asc web finance transaction-tax download, or download manually from App Store Connect.",
 		},
 		{
 			Area:       "signing",
@@ -542,6 +554,26 @@ func capabilityRows() []Capability {
 			NextAction: "Use asc web bundle-ids list, then asc web bundle-ids view --bundle-id BUNDLE_RESOURCE_ID.",
 		},
 		{
+			Area:         "signing",
+			Capability:   "Developer Portal Services ID lifecycle",
+			Status:       statusWebSession,
+			Commands:     []string{"asc web service-ids"},
+			APIResources: []string{"bundleIds"},
+			Notes:        []string{"Services ID list, view, create, rename, and delete use the captured private Developer Portal web-session bundleIds contract filtered to platform=SERVICES. This entry does not cover public Bundle ID lifecycle or Service ID capability and Sign in with Apple configuration workflows."},
+			NextAction:   "Use asc web service-ids list, view, create, rename, or delete; configure Service ID capabilities and Sign in with Apple settings separately in the Developer Portal.",
+		},
+		{
+			Area:       "signing",
+			Capability: "Developer Portal iCloud container reads",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web icloud-containers list"},
+			APIResources: []string{
+				"cloudContainers",
+			},
+			Notes:      []string{"Read-only iCloud container collection reads use the captured Developer Portal web-session endpoint; this surface does not expose container create, update, delete, or detail commands."},
+			NextAction: "Use asc web icloud-containers list.",
+		},
+		{
 			Area:       "signing",
 			Capability: "App Clip Bundle ID capability sync",
 			Status:     statusWebSession,
@@ -556,6 +588,22 @@ func capabilityRows() []Capability {
 			Commands:   []string{"asc web app-groups"},
 			Notes:      []string{"App Groups list, create, and assign operations use Developer Portal web-session endpoints and are not in the public App Store Connect API."},
 			NextAction: "Use Apple Developer Portal, or asc web app-groups.",
+		},
+		{
+			Area:       "signing",
+			Capability: "Developer Portal Website Push ID reads",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web website-push-ids list", "asc web website-push-ids view"},
+			Notes:      []string{"Website Push ID collection reads preserve Apple's legacy websitePushIdList envelope and request the first page only. Detail reads use the captured modern web-session endpoint and preserve the complete JSON:API envelope."},
+			NextAction: "Use asc web website-push-ids list, or view with an opaque Website Push resource ID.",
+		},
+		{
+			Area:       "signing",
+			Capability: "Developer Portal Website Push ID lifecycle",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web website-push-ids create", "asc web website-push-ids delete"},
+			Notes:      []string{"Confirmed create and delete use captured Developer Portal web-session contracts, require an empty capability graph, and verify the resulting state without retrying uncertain writes. Rename and capability configuration remain unsupported."},
+			NextAction: "Use asc web website-push-ids create or delete with --confirm.",
 		},
 		{
 			Area:       "automation",
@@ -641,8 +689,15 @@ func capabilityRows() []Capability {
 			Area:       "review",
 			Capability: "Web-only review rejection inspection",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web review"},
-			Notes:      []string{"Reviewer-message and rejection-detail surfaces, plus next-version subscription and IAP attachment, are richer or only available in App Store Connect web-session flows."},
+			Commands: []string{
+				"asc web review",
+				"asc web review drafts",
+				"asc web review drafts create",
+				"asc web review drafts update",
+				"asc web review drafts delete",
+				"asc web review reply",
+			},
+			Notes: []string{"Reviewer-message and rejection-detail surfaces, plus next-version subscription and IAP attachment, are richer or only available in App Store Connect web-session flows. The experimental reply path requires --confirm, has no attachment, and does not automatically retry an ambiguous send; the experimental draft path provides unsent create/update/delete without attachments or automatic retries. Source capture has not proven provider acceptance."},
 		},
 	}
 }

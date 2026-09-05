@@ -589,38 +589,42 @@ func TestDisableDeveloperBundleIDCapabilityAmbiguousWriteUsesDisabledRead(t *tes
 }
 
 func TestDisableDeveloperBundleIDCapabilityServerErrorUsesDisabledRead(t *testing.T) {
-	requestCount := 0
-	client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
-		requestCount++
-		switch requestCount {
-		case 1:
-			return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
-		case 2:
-			return developerPortalTestResponse(http.StatusOK, developerCapabilityMetadata(true), http.Header{"csrf": []string{"token"}, "csrf_ts": []string{"time"}}), nil
-		case 3:
-			return developerPortalTestResponse(http.StatusOK, developerBundleResponse(true), nil), nil
-		case 4:
-			return developerPortalTestResponse(http.StatusInternalServerError, `{"errors":[{"code":"TEMPORARY_FAILURE"}]}`, nil), nil
-		case 5:
-			return developerPortalTestResponse(http.StatusOK, developerBundleResponseWithPCCAttributes(`{"enabled":false,"settings":[]}`), nil), nil
-		default:
-			t.Fatalf("unexpected request %d: %s %s", requestCount, r.Method, r.URL.String())
-			return nil, nil
-		}
-	})
+	for _, status := range []int{http.StatusInternalServerError, http.StatusRequestTimeout} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			requestCount := 0
+			client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
+				requestCount++
+				switch requestCount {
+				case 1:
+					return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerCapabilityMetadata(true), http.Header{"csrf": []string{"token"}, "csrf_ts": []string{"time"}}), nil
+				case 3:
+					return developerPortalTestResponse(http.StatusOK, developerBundleResponse(true), nil), nil
+				case 4:
+					return developerPortalTestResponse(status, `{"errors":[{"code":"TEMPORARY_FAILURE"}]}`, nil), nil
+				case 5:
+					return developerPortalTestResponse(http.StatusOK, developerBundleResponseWithPCCAttributes(`{"enabled":false,"settings":[]}`), nil), nil
+				default:
+					t.Fatalf("unexpected request %d: %s %s", requestCount, r.Method, r.URL.String())
+					return nil, nil
+				}
+			})
 
-	result, err := client.DisableDeveloperBundleIDCapability(context.Background(), DeveloperBundleIDCapabilityDisableRequest{
-		BundleID:   "bundle-1",
-		Capability: "PRIVATE_CLOUD_COMPUTE",
-	})
-	if err != nil {
-		t.Fatalf("DisableDeveloperBundleIDCapability() error: %v", err)
-	}
-	if result == nil || !result.Changed || result.Status != "disabled" {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	if requestCount != 5 {
-		t.Fatalf("request count = %d, want 5 (one server error plus one settling read)", requestCount)
+			result, err := client.DisableDeveloperBundleIDCapability(context.Background(), DeveloperBundleIDCapabilityDisableRequest{
+				BundleID:   "bundle-1",
+				Capability: "PRIVATE_CLOUD_COMPUTE",
+			})
+			if err != nil {
+				t.Fatalf("DisableDeveloperBundleIDCapability() error: %v", err)
+			}
+			if result == nil || !result.Changed || result.Status != "disabled" {
+				t.Fatalf("unexpected result: %+v", result)
+			}
+			if requestCount != 5 {
+				t.Fatalf("request count = %d, want 5 (one server error plus one settling read)", requestCount)
+			}
+		})
 	}
 }
 
@@ -1349,4 +1353,49 @@ func developerBundleResponseWithICloudOnly() string {
 
 func developerBundleResponseWithPCCAndICloud(pccEnabled bool) string {
 	return fmt.Sprintf(`{"data":{"id":"bundle-1","type":"bundleIds","attributes":{"name":"Example","identifier":"com.example.app","platform":"IOS","seedId":"TEAMID"},"relationships":{"bundleIdCapabilities":{"data":[{"type":"bundleIdCapabilities","id":"pcc-1"},{"type":"bundleIdCapabilities","id":"icloud-1"}]}}},"included":[{"type":"bundleIdCapabilities","id":"pcc-1","attributes":{"enabled":%t,"settings":[]},"relationships":{"capability":{"data":{"type":"capabilities","id":"PRIVATE_CLOUD_COMPUTE"}}}},{"type":"bundleIdCapabilities","id":"icloud-1","attributes":{"enabled":true,"settings":[{"key":"ICLOUD_VERSION"}]},"relationships":{"capability":{"data":{"type":"capabilities","id":"ICLOUD"}},"cloudContainers":{"data":[{"type":"cloudContainers","id":"cloud-1"}]}}}]}`, pccEnabled)
+}
+
+func TestDisableDeveloperBundleIDCapabilityRejectsContradictoryIncludedGraph(t *testing.T) {
+	for _, scenario := range []string{"conflicting duplicate", "explicit empty relationship", "unreferenced capability"} {
+		t.Run(scenario, func(t *testing.T) {
+			var response developerBundleIDResponse
+			if err := json.Unmarshal([]byte(developerBundleResponse(true)), &response); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "conflicting duplicate":
+				duplicate := response.Included[0]
+				duplicate.Attributes = json.RawMessage(`{"enabled":false,"settings":[]}`)
+				response.Included = append(response.Included, duplicate)
+			case "explicit empty relationship":
+				response.Data.Relationships["bundleIdCapabilities"] = json.RawMessage(`{"data":[]}`)
+			case "unreferenced capability":
+				extra := response.Included[0]
+				extra.ID = "unreferenced-pcc"
+				response.Included = append(response.Included, extra)
+			}
+			encoded, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := 0
+			client := developerPortalTestClient(t, func(r *http.Request) (*http.Response, error) {
+				requests++
+				switch requests {
+				case 1:
+					return developerPortalTestResponse(http.StatusOK, developerPortalTeamsFixture(), nil), nil
+				case 2:
+					return developerPortalTestResponse(http.StatusOK, developerCapabilityMetadata(true), http.Header{"csrf": {"token"}, "csrf_ts": {"time"}}), nil
+				case 3:
+					return developerPortalTestResponse(http.StatusOK, string(encoded), nil), nil
+				default:
+					return nil, fmt.Errorf("unexpected request after contradictory preflight: %s %s", r.Method, r.URL.Path)
+				}
+			})
+			result, err := client.DisableDeveloperBundleIDCapability(context.Background(), DeveloperBundleIDCapabilityDisableRequest{BundleID: "bundle-1", Capability: "PRIVATE_CLOUD_COMPUTE"})
+			if err == nil || result != nil || requests != 3 {
+				t.Fatalf("expected preflight refusal without write: result=%+v error=%v requests=%d", result, err, requests)
+			}
+		})
+	}
 }

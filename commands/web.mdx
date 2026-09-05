@@ -11,10 +11,12 @@ The `asc web` command family automates App Store Connect workflows through Apple
 asc web auth login --apple-id "user@example.com"
 asc web auth status
 
-# List and inspect API keys, then create a team key and save its one-time P8
+# List and inspect API keys, then create a team or individual key
 asc web api-keys list --output json
 asc web api-keys view --key-id KEY_ID
 asc web api-keys create --name "Release automation" --output-dir ~/.asc/keys
+asc web api-keys create-individual --user-id USER_UUID --output-dir ~/.asc/keys --confirm
+asc web api-keys revoke --key-id KEY_ID --type team --confirm
 
 # Create an app through the web flow
 asc web apps create --name "My App" --bundle-id "com.example.app" --sku "MYAPP123"
@@ -30,6 +32,12 @@ asc web app-groups list --output table
 asc web bundle-ids list --output table
 asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
 
+# [experimental] List Developer Portal Website Push IDs unavailable through the public API
+asc web website-push-ids list --output table
+
+# [experimental] Generate and download a Transaction Tax Report through the web session
+asc web finance transaction-tax download --date 2026-07 --output-path ./transaction-tax-2026-07.zip --output json
+
 # Bootstrap app availability where the public API falls short
 asc web apps availability create --app "123456789" --territory "USA,GBR" --available-in-new-territories false
 
@@ -43,6 +51,10 @@ asc web apps declarations list --app "123456789" --output table
 asc web apps medical-device view --app "123456789"
 # Declare that an app is not a regulated medical device
 asc web apps medical-device set --app "123456789" --declared false
+# Declare the selected regions for a regulated medical device
+asc web apps medical-device set --app "123456789" --declared true --countries-or-regions "EEA,GBR" --confirm
+# Set one detailed regional answer from a rootfs-anchored JSON file
+asc web apps medical-device region set --app "123456789" --region "USA" --input "./medical-usa.json" --confirm
 
 # Plan and apply privacy declaration changes
 asc web privacy plan --app "123456789" --file ./privacy.json
@@ -108,6 +120,8 @@ reuse a session created elsewhere.
 asc web auth export --output-path ./web-session.json --apple-id "user@example.com"
 asc web auth import --file ./web-session.json
 asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
+ASC_WEB_SESSION="$(cat ./web-session.json)" asc web auth import --from-env --validate
+asc web auth import --file ./web-session.json --validate
 asc web auth status
 ```
 
@@ -124,7 +138,26 @@ Pass `--apple-id` to refuse a bundle that belongs to a different Apple Account.
 Pass `--overwrite` to replace a cached session that already exists for that
 account. The imported session becomes the last cached session.
 
-Import does not contact Apple. Run `asc web auth status` afterwards, when
+Use `--from-env` to read the same versioned `asc-web-session` JSON bundle from
+the fixed `ASC_WEB_SESSION` variable when a CI secret store provides
+environment input. The flag is explicit and mutually exclusive with `--file`;
+an environment value is ignored by other commands and by import unless the
+flag is present. Raw cookie headers, opaque tokens, provider values, CSRF
+values, and other environment variables are not accepted. The import receipt's
+`path` is the fixed `ASC_WEB_SESSION` source marker in this mode. Environment
+values use the same versioned bundle schema and 1 MiB parser ceiling. Process
+launchers and operating systems can impose lower per-value or total-environment
+limits before `asc` starts; use `--file` when the CI environment cannot carry
+the bundle. The source document is never echoed or staged as an extra file; the
+decoded session is persisted through the configured cache just as with
+`--file`. CI jobs should mask the secret and disable shell tracing. File-backed
+handoff remains preferable when the CI system supports secret files.
+
+Import does not contact Apple unless `--validate` is provided. With
+`--validate`, `asc` sends a temporary cookie jar to Apple's existing session
+endpoint before reading or writing the cache and requires the returned Apple
+Account to match the bundle. A failed live validation leaves the cache
+unchanged. Without `--validate`, run `asc web auth status` afterwards, when
 network access is available, to validate that the resumed credentials are still
 live. A successful local import is therefore not proof that the copied session
 belongs to the named account or remains accepted by Apple.
@@ -178,15 +211,46 @@ explicitly. After the write, `accept` re-reads the team's agreement history and
 exits non-zero when any requested agreement is still pending or missing. The
 receipt reflects that re-read state and includes `verified: true`.
 
+### `asc web finance`
+
+Private finance report workflows that use the authenticated App Store Connect
+web session. The public App Store Connect API still does not expose Transaction
+Tax report generation.
+
+Available commands:
+
+* `asc web finance transaction-tax download` - [experimental] generate and download one eligible Transaction Tax Report archive
+
+The command reads the selected month and the finance page's region-currency
+model, then makes one generation request, polls the generated job until Apple
+reports `readyForDownload`, and fetches the ready archive once. It requires
+`--date YYYY-MM` and `--output-path PATH`; the destination must not already
+exist. The archive is checked and atomically published with mode `0600`.
+Only the local save receipt is printed. Generated job IDs, signed download
+URLs, provider and vendor identifiers, and finance values are omitted from
+output and errors. A generation or download failure is not retried
+automatically. There is no report-history or caller-supplied report-ID
+command in this slice.
+
+Example:
+
+```bash  theme={null}
+asc web finance transaction-tax download \
+  --date 2026-07 \
+  --output-path ./transaction-tax-2026-07.zip \
+  --output json
+```
+
 ### `asc web api-keys`
 
-List team and individual API keys, inspect and create team keys, and revoke either key type through an Apple Account web session.
+List team and individual API keys, inspect team keys, create either key type, and revoke either key type through an Apple Account web session.
 
 Available commands:
 
 * `asc web api-keys list` - list team and individual keys visible to the cached web session
 * `asc web api-keys view` - inspect one team API key by `--key-id`
 * `asc web api-keys create` - create an all-apps team key and save its one-time P8 as `AuthKey_<KEY_ID>.p8`
+* `asc web api-keys create-individual` - create an individual key for `--user-id`, save its generated P8 under required `--output-dir`, and require `--confirm`
 * `asc web api-keys revoke` - revoke one team or individual key after a type-specific preflight
 
 Example:
@@ -199,6 +263,14 @@ asc web api-keys create \
   --role APP_MANAGER \
   --output-dir ~/.asc/keys \
   --output json
+
+asc web api-keys create-individual \
+  --user-id USER_UUID \
+  --output-dir ~/.asc/keys \
+  --confirm \
+  --output json
+
+asc web api-keys revoke --key-id KEY_ID --type team --confirm --output json
 ```
 
 `list` and `view` print key ID, name, roles, and active state. They omit creation date because the existing web-session key readers do not expose it. Key material is never printed. `list` follows every page internally, so it does not accept `--paginate`. `view` uses the iris v1 team-key resource; individual keys appear in `list` but are not loaded by `view`.
@@ -207,6 +279,7 @@ The create role defaults to `ADMIN`. The output file is created with mode `0600`
 
 Role requirement: creating a team API key requires an Account Holder or Admin web session. The `--role` value must be one of Apple's selectable team-key roles. Matching is case-insensitive, so `--role app_manager` is sent as `APP_MANAGER`.
 
+Individual-key creation verifies that `--user-id` belongs to the authenticated session, refuses to create when an active individual key is already present, generates the P-256 private key locally, and registers only its public key with Apple. Apple’s empty create response is followed by an actor-filtered list; the command requires exactly one newly active key absent from the preflight snapshot and refuses ambiguous results or a key that already has a public key. The private P8 is written with mode `0600`; `--output-dir` is required so the operator chooses its destination. Existing files are preserved, and uncertain remote results retain the local artifact for recovery.
 `asc web api-keys revoke --key-id KEY_ID --type team --confirm` revokes a team key; use `--type individual` for an individual key. The command verifies exactly one matching key, treats an inactive key as a no-op, and re-reads inactive state after revocation. Unknown outcomes are not retried automatically.
 
 ### `asc web apps`
@@ -219,11 +292,16 @@ Available commands:
 * `asc web apps delete` - remove an app after preflighting observable eligibility; use `--dry-run` to check without mutating
 * `asc web apps availability create` - bootstrap initial territory availability
 * `asc web apps compatibility view|edit` - inspect or change the Mac and Apple Vision Pro App Store opt-in settings
-* `asc web apps distribution view` - read the app distribution method (`APP_STORE` or `CUSTOM`)
+* `asc web apps distribution view|set` - inspect or update the app distribution method (`APP_STORE` or `CUSTOM`)
 * `asc web apps history` - view App Store version status history, optionally scoped with `--version-id`
 * `asc web apps declarations list` - list the App Store Regulations & Permits declarations tracked for an app
 * `asc web apps medical-device view` - read the stored regulated medical device declaration
 * `asc web apps medical-device set` - manage the regulated medical device declaration
+* `asc web apps medical-device region set` - manage one detailed regulated medical device region answer
+
+* `asc web apps tax-category list` - list application tax categories and compatible conditions
+* `asc web apps tax-category view` - view an app's explicit and effective tax category
+* `asc web apps tax-category set` - set an app's tax category and complete condition set
 
 Notes:
 
@@ -231,18 +309,42 @@ Notes:
 * `asc web apps delete` preflights observable eligibility and re-reads the app before reporting success; `--confirm` is required unless `--dry-run`
 * `asc web apps create --access full|limited [--user USER_ID]...` applies team access after create through the public users API. Limited access requires at least one `--user` with limited app visibility (not all-apps access). Omitting `--access` keeps the historical create request body.
 * `asc web apps declarations list` is read-only and reports each app-scoped requirement with its status; a required requirement still at `PENDING_COLLECTION` blocks App Store submission
-* `asc web apps medical-device set` currently supports only `--declared false`, reads the stored declaration first, and reports `changed: false` when no write was needed
-* Writes other than `medical-device set --declared false` remain website-only. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
+* `asc web apps medical-device set` supports `--declared true|false`. Affirmative writes require `--confirm` and accept `EEA`, `GBR`, and `USA`; omitting `--countries-or-regions` selects all three. The command re-reads the declaration and reports `changed: false` when it already matches.
+* `asc web apps medical-device region set` requires `--app`, `--region`, `--input`, and `--confirm`. The rootfs-anchored JSON input contains `declaration`; an affirmative input also contains explicit `supportInfo` locale rows and a `registrationNumber` for USA or EEA. The app-level declaration must already be `yes`. The command reads and preserves contacts and opaque form fields, validates source-backed contact coverage, and fails closed when a selected-region contact candidate is materialized by form constraints but is absent from the stored contacts; configure that contact in App Store Connect before retrying. It sends one full-form web-session PUT and verifies the exact regional readback. It never accepts or prints contact values. `declaration: false` preserves existing regional details while changing only that region's declaration.
+* Other app-regulation declaration forms remain managed in the App Store Connect website. `asc web apps declarations list` shows app-scoped requirements Apple returns, including personal-service if present. EU DSA trader status is account-level and is not included in that listing.
+* `asc web apps distribution set --app APP_ID --method public|private --confirm` updates the app-level method through the web session; public may also take `--education-discount discounted|not-discounted`, while private always uses `NOT_APPLICABLE`. The setter preserves existing custom organization and user rows, verifies the result with a follow-up read, and reports an uncertain receipt when Apple's write outcome is ambiguous.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
-* `asc web apps distribution view` is read-only. Apple prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. Changing the distribution method and requesting unlisted distribution have Apple-side eligibility restrictions whose write contracts are not captured, so both stay in the App Store Connect web UI
+* `asc web apps distribution view` prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. `distribution set` covers only the captured app-level public/private transition and paired education value. `DIRECT_URL`/unlisted distribution remains a separate Apple flow with no captured request contract and stays in the App Store Connect web UI
+
+`asc web apps tax-category set` requires `--app`, `--category`, and `--confirm`. Repeat `--condition` for compatible conditions or omit it to clear them. The command validates the catalog before writing and re-reads the result. Transaction Tax reports remain outside this workflow.
 
 ### `asc web sandbox`
 
-Sandbox tester creation via the App Store Connect web UI contract.
+Sandbox tester creation and deletion via the App Store Connect web UI contract.
 
 Available commands:
 
 * `asc web sandbox create` - create a sandbox tester
+* `asc web sandbox delete` - delete sandbox testers after a private list preflight and fresh-list verification
+
+`delete` requires `--id ID[,ID...]` and `--confirm`. It refuses requested IDs
+that are missing or duplicated in the account list, family members, rows with
+an omitted `isInFamily` flag, or account-list snapshots whose reported total is
+larger than the returned rows. The captured list request asks for 50 accounts;
+no continuation contract was captured, so an incomplete response is refused.
+
+After the delete request, the command reports success only when a fresh list
+omits every requested ID. The delete response body and status contract remain
+unverified; a transport or server error during deletion or verification is
+reported as an unknown outcome, so do not retry until a fresh list confirms the
+state.
+
+Example:
+
+```bash
+asc web sandbox delete --id "SANDBOX_ACCOUNT_ID" --confirm
+asc web sandbox delete --id "ACCOUNT_ID_1,ACCOUNT_ID_2" --confirm --output json
+```
 
 ### `asc web removed-apps`
 
@@ -343,6 +445,67 @@ asc web bundle-ids capabilities sync-app-clip \
   --confirm
 ```
 
+### `asc web service-ids`
+
+[experimental] Manage Services IDs through a Developer Portal web session. These resources use `platform=SERVICES` and are distinct from public App Store Connect Bundle IDs.
+
+Available commands:
+
+* `asc web service-ids list` - list Services IDs
+* `asc web service-ids view` - inspect one Services ID and its capability graph
+* `asc web service-ids create` - register a minimal Services ID
+* `asc web service-ids rename` - rename a Services ID while preserving capabilities
+* `asc web service-ids delete` - delete a Services ID with preflight and follow-up verification
+
+Use `--service-id SERVICE_RESOURCE_ID` for `view`, `rename`, and `delete`. Creation requires `--identifier`, `--name`, and `--confirm`; rename requires `--name` and `--confirm`, and deletion requires `--confirm`. Rename refuses incomplete capability linkage. Capability configuration and Sign in with Apple settings remain separate Developer Portal workflows.
+
+### `asc web website-push-ids`
+
+Read and manage Website Push IDs through the Developer Portal web session. The
+current slice is experimental and uses the captured legacy list plus the
+modern JSON:API view/create/delete operations.
+
+Available commands:
+
+* `asc web website-push-ids list` - [experimental] list the first captured
+  Website Push ID page for the selected Developer team
+* `asc web website-push-ids view` - [experimental] inspect one modern Website
+  Push ID resource and its capability relationship
+* `asc web website-push-ids create` - [experimental] register a Website Push
+  ID with an explicitly empty capability relationship; requires `--confirm`
+* `asc web website-push-ids delete` - [experimental] delete one resource after
+  empty-capability and postcondition checks; requires `--confirm`
+
+`list` posts to Apple's legacy
+`/services-account/QH65B2/account/ios/identifiers/listWebsitePushIds.action`
+endpoint with `onlyCountLists=true`, `pageSize=1000`, `pageNumber=1`,
+`sort=name=asc`, and the selected `teamId`. The live response is a root object
+whose collection is `websitePushIdList`; JSON output preserves the complete
+Apple envelope, while table and Markdown output show a small scalar projection.
+No continuation contract was captured, so the command does not accept
+`--paginate` and reads only the first fixed page.
+
+`view` uses a physical POST with `X-HTTP-Method-Override: GET` and a JSON body
+containing only `teamId`. `create` uses the modern `websitepushIds` JSON:API
+POST and sends `name`, `identifier`, `teamId`, and an explicitly empty
+`websitepushIdCapabilities` relationship. It requires an empty legacy-list
+collision preflight and an empty capability catalog, expects HTTP 201, and
+re-reads the created resource. `delete` uses a physical POST with
+`X-HTTP-Method-Override: DELETE`, a team-only JSON body, expects HTTP 204, and
+verifies both canonical detail absence and legacy-list absence. Write outcomes
+that cannot be verified are reported without an automatic retry.
+
+Rename is unavailable because the captured Website Push UI has no rename or
+Save control. Capability configuration and non-empty capability graphs are
+fail-closed until Apple exposes a writable contract for them.
+
+Example:
+
+```bash  theme={null}
+asc web website-push-ids list --output table
+asc web website-push-ids list --developer-team "TEAM_ID" --output json
+```
+
 ### `asc web app-groups`
 
 App Group registration and Bundle ID assignment through Apple Developer Portal.
@@ -421,6 +584,34 @@ asc web auth logout --apple-id "user@example.com"
 asc web auth login --apple-id "user@example.com"
 ```
 
+### `asc web icloud-containers`
+
+Read iCloud container registrations through the selected Apple Developer team.
+The public App Store Connect API does not expose this Developer Portal
+collection.
+
+Available commands:
+
+* `asc web icloud-containers list` - list visible containers
+
+Pass `--hidden` to request Apple's hidden-container collection. The web-session
+request asks for up to 1,000 resources (`limit=1000`, `offset=0`, sorted by name)
+and this command does not expose `--paginate`. JSON output preserves the full
+Apple response envelope, including any links and paging metadata; table and
+Markdown output show the resource ID, name, identifier, prefix, hidden state,
+permissions, and response ID.
+
+This read-only slice does not create, rename, delete, or inspect an individual
+container. Use the opaque IDs and identifiers only as input to a future command
+once Apple request contracts for those operations are captured.
+
+Examples:
+
+```bash  theme={null}
+asc web icloud-containers list --output table
+asc web icloud-containers list --hidden --output json
+```
+
 ### `asc web privacy`
 
 App privacy declaration workflows over Apple web-session `/iris` endpoints.
@@ -444,15 +635,17 @@ asc web privacy publish --app "123456789" --confirm
 
 ### `asc web review`
 
-App-centric review, rejection, and subscription-selection inspection.
+Inspect app review and rejection information, send Resolution Center text replies, and manage subscription review selection.
 
 Available commands:
 
 * `asc web review list` - list review submissions for an app
 * `asc web review show` - inspect one submission and related messages/screenshots, including app-scoped Resolution Center threads the selected submission does not cover
 * `asc web review threads` - list every Resolution Center thread on an app, including binary, metadata, and informational threads; `--drafts` reads each unsent draft (`--plain-text` projects HTML to plain text)
+* [experimental] `asc web review drafts` - create, update, or delete one unsent Resolution Center draft
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
+* [experimental] `asc web review reply` - send one confirmed Resolution Center text reply
 
 Subscription JSON includes both `submitWithNextAppStoreVersion` and
 `submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
@@ -464,6 +657,25 @@ omitted the attachment attribute and the boolean value is not authoritative.
 ```bash  theme={null}
 asc web review iaps attach --app "123456789" --iap-id "PRODUCT_ID" --confirm
 ```
+
+`asc web review reply --thread-id THREAD_ID --message MESSAGE --confirm` creates a draft, sends it, and re-reads the thread to verify the resulting message. Attachments are unsupported, and an uncertain send is never retried automatically.
+
+The experimental draft commands keep a draft unsent:
+
+```bash  theme={null}
+asc web review drafts create --app "123456789" --thread-id "THREAD_ID" --message "We updated the demo account." --confirm
+asc web review drafts update --app "123456789" --thread-id "THREAD_ID" --draft-id "DRAFT_ID" --body-file ./reply.txt --confirm
+asc web review drafts delete --app "123456789" --thread-id "THREAD_ID" --draft-id "DRAFT_ID" --confirm
+```
+
+`create` and `update` require exactly one of `--message` or `--body-file`; the
+body is preserved verbatim, including surrounding whitespace and newlines,
+after blank-body validation. Each mutation verifies that the thread belongs to
+the selected app and that the draft state matches the requested operation.
+These commands never send messages or upload attachments, and an uncertain
+mutation or verification failure is never retried automatically. Apple draft
+write acceptance remains unverified because no disposable live thread/draft
+fixture was available.
 
 ### `asc web subscriptions`
 
@@ -574,7 +786,7 @@ Available command groups:
 * `asc web xcode-cloud products` - list Xcode Cloud products
 * `asc web xcode-cloud workflows` - list, describe, create, edit, enable, and disable workflows
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
-* `asc web xcode-cloud settings` - inspect product settings and change the next build number
+* `asc web xcode-cloud settings` - inspect product settings, change the next build number, and manage custom version aliases
 
 TestFlight post-actions in a web workflow use beta-group or tester IDs. Resolve the
 Xcode Cloud product to its App Store Connect app, then use the public TestFlight
@@ -603,11 +815,15 @@ asc web xcode-cloud workflows create --product-id "UUID" --file ./workflow.json 
 asc web xcode-cloud settings next-build-number show --product-id "UUID" --apple-id "user@example.com"
 asc web xcode-cloud settings next-build-number set --product-id "UUID" --value 102 --confirm --apple-id "user@example.com"
 asc web xcode-cloud settings version-aliases list --product-id "UUID" --apple-id "user@example.com"
+asc web xcode-cloud settings version-aliases view --product-id "UUID" --id "ALIAS_UUID"
+asc web xcode-cloud settings version-aliases create --product-id "UUID" --type xcode_version --name "Stable" --build "APPLE_BUILD_ID" --confirm
+asc web xcode-cloud settings version-aliases update --product-id "UUID" --id "ALIAS_UUID" --name "Stable" --confirm
+asc web xcode-cloud settings version-aliases delete --product-id "UUID" --id "ALIAS_UUID" --confirm
 ```
 
 Changing the persistent next build number requires the App Store Connect Admin or App Manager role. The set command reads the value before and after the update, and reports an unverified outcome instead of inviting an unsafe retry when a transport failure leaves Apple's result unclear.
 
-The version-alias list command uses Apple's live-captured list response, returns at most 100 aliases, and omits nested build and workflow payloads that may contain sensitive data. Single-alias lookup and alias mutations remain unavailable until those private contracts are captured.
+`version-aliases list` returns at most 100 aliases without continuation metadata. `view` preserves Apple's raw detail response in JSON. `create` requires `--product-id`, `--name`, `--type macos_version|xcode_version`, `--build`, and `--confirm`; use a supported Apple build value. `update` requires `--product-id`, `--id`, at least one of `--name`, `--type`, `--build`, or `--locked`, and `--confirm`, preserving omitted fields. `delete` requires `--product-id`, `--id`, and `--confirm` and verifies absence afterward. Apple may restrict locked aliases or aliases used by workflows; ambiguous writes are not retried automatically.
 
 ## Session upkeep
 
@@ -622,9 +838,13 @@ asc web --help
 asc web auth --help
 asc web agreements --help
 asc web api-keys --help
+asc web finance --help
+asc web finance transaction-tax download --help
 asc web apps --help
 asc web removed-apps --help
 asc web bundle-ids --help
+asc web service-ids --help
+asc web website-push-ids --help
 asc web privacy --help
 asc web review --help
 asc web analytics --help

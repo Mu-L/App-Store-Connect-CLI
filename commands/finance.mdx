@@ -106,9 +106,18 @@ asc finance reports \
 
 ### Transaction Tax Reports
 
-**Transaction Tax reports are NOT available via API.**
+**Transaction Tax reports are not available through the public API.** An
+experimental authenticated web-session command is available for the captured
+App Store Connect finance flow:
 
-To download these reports:
+```bash  theme={null}
+asc web finance transaction-tax download \
+  --date "2026-07" \
+  --output-path ./transaction-tax-2026-07.zip \
+  --output json
+```
+
+The manual App Store Connect flow remains available:
 
 1. Sign in to App Store Connect
 2. Go to **Payments and Financial Reports**

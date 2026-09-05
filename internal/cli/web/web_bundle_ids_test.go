@@ -502,7 +502,6 @@ func TestWebBundleIDCapabilitiesDisableValidatesBeforeSession(t *testing.T) {
 		{name: "missing capability", args: []string{"--bundle-id", "bundle-1", "--confirm"}, want: "--capability is required"},
 		{name: "missing confirm", args: []string{"--bundle-id", "bundle-1", "--capability", "PRIVATE_CLOUD_COMPUTE"}, want: "--confirm is required"},
 		{name: "unsupported capability", args: []string{"--bundle-id", "bundle-1", "--capability", "ICLOUD", "--confirm"}, want: "unsupported Developer Portal capability"},
-		{name: "invalid output", args: []string{"--bundle-id", "bundle-1", "--capability", "PRIVATE_CLOUD_COMPUTE", "--confirm", "--output", "yaml"}, want: "--output must be one of"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

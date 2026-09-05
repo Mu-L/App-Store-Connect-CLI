@@ -39,6 +39,7 @@ Use ` + "`asc web apps create`" + ` as the canonical app-creation command.
 			WebAppsHistoryCommand(),
 			WebAppsDeclarationsCommand(),
 			WebAppsMedicalDeviceCommand(),
+			WebAppsTaxCategoryCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp

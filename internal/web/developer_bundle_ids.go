@@ -419,7 +419,7 @@ func newDeveloperBundleIDUnverifiedError(format string, args ...any) error {
 func isAmbiguousDeveloperBundleIDCapabilityWriteFailure(err error) bool {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Status >= http.StatusInternalServerError
+		return apiErr.Status == http.StatusRequestTimeout || apiErr.Status >= http.StatusInternalServerError
 	}
 	return isAmbiguousDeveloperPortalWriteFailure(err) || errors.Is(err, io.ErrUnexpectedEOF)
 }
@@ -704,7 +704,8 @@ func developerBundleIDCapabilitiesForDisable(current developerBundleIDResponse) 
 	}
 
 	var relationshipReferences []developerResource
-	if rawRelationship, ok := current.Data.Relationships["bundleIdCapabilities"]; ok {
+	rawRelationship, hasRelationship := current.Data.Relationships["bundleIdCapabilities"]
+	if hasRelationship {
 		var relationship struct {
 			Data json.RawMessage `json:"data"`
 		}
@@ -727,6 +728,24 @@ func developerBundleIDCapabilitiesForDisable(current developerBundleIDResponse) 
 	for _, resource := range current.Included {
 		if resource.Type == "bundleIdCapabilities" && strings.TrimSpace(resource.ID) == "" {
 			return nil, fmt.Errorf("cannot safely verify Bundle ID capability graph: included resource has no id")
+		}
+	}
+
+	if _, err := indexDeveloperCapabilityResources(current.Included); err != nil {
+		return nil, fmt.Errorf("cannot safely verify Bundle ID capability graph: %w", err)
+	}
+	if hasRelationship {
+		referenced := make(map[string]struct{}, len(relationshipReferences))
+		for _, reference := range relationshipReferences {
+			referenced[reference.ID] = struct{}{}
+		}
+		for _, resource := range current.Included {
+			if resource.Type != "bundleIdCapabilities" {
+				continue
+			}
+			if _, ok := referenced[resource.ID]; !ok {
+				return nil, fmt.Errorf("cannot safely verify Bundle ID capability graph: included capability %q is not referenced", resource.ID)
+			}
 		}
 	}
 

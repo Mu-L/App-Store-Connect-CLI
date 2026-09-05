@@ -45,7 +45,7 @@ When the issue is actionable, provide:
 5. Safe live verification and cleanup plan.
 6. Compatibility or deprecation requirements.
 
-If the user asks to implement the issue, hand the validated contract to `$develop-asc-change` in an isolated branch or worktree. Do not close the issue or claim completion before the implementation is merged and verified.
+If implementation is requested, continue with `$develop-asc-change` in an isolated branch or worktree. Report the requested implementation and validation as complete when finished, with PR and merge gates separately. Do not close the issue or claim it resolved until merged and verified; closure still requires authority.
 
 ## Automation contract
 

@@ -310,9 +310,6 @@ Authentication:
 			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
 				return err
 			}
-			if _, err := shared.ValidateOutputFormat(*output.Output, *output.Pretty); err != nil {
-				return shared.UsageError(err.Error())
-			}
 
 			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
 			defer cancel()

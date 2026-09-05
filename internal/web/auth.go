@@ -317,9 +317,20 @@ func logWebAuthHTTP(stage string, req *http.Request, resp *http.Response, body [
 		}
 	}
 	if err != nil {
-		fields = append(fields, "error", err.Error())
+		errorText := err.Error()
+		if req != nil && isTransactionTaxFinanceRequestURL(req.URL) {
+			errorText = sanitizeTransactionTaxTransportError(err)
+		}
+		fields = append(fields, "error", errorText)
 	}
 	webDebugLogger.Info("web auth http", fields...)
+}
+
+func sanitizeTransactionTaxTransportError(err error) string {
+	if class := urlsanitize.ClassifyTransportFailure(err); class != "" {
+		return "transaction tax request failed (" + class + ")"
+	}
+	return "transaction tax request failed"
 }
 
 func extractAppleRequestID(headers http.Header) string {
@@ -330,7 +341,45 @@ func extractAppleRequestID(headers http.Header) string {
 }
 
 func sanitizeWebAuthURLForLog(rawURL string) string {
-	return urlsanitize.SanitizeURLForLog(rawURL, webAuthSignedQueryKeys, webAuthSensitiveQueryKeys)
+	sanitized := urlsanitize.SanitizeURLForLog(rawURL, webAuthSignedQueryKeys, webAuthSensitiveQueryKeys)
+	return sanitizeWebAuthFinanceJobPath(sanitized)
+}
+
+// sanitizeWebAuthFinanceJobPath removes opaque finance identifiers from debug
+// request paths and query values. These identifiers are not useful in a
+// diagnostic log; unlike signed query values, they cannot be removed by the
+// generic URL sanitizer.
+func sanitizeWebAuthFinanceJobPath(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) < 4 ||
+		segments[0] != "WebObjects" ||
+		segments[1] != "iTunesConnect.woa" ||
+		segments[2] != "ra" ||
+		segments[3] != "paymentConsolidation" {
+		return rawURL
+	}
+	for index := 4; index+1 < len(segments); index++ {
+		switch segments[index] {
+		case "providers", "sapVendorNumbers", "reports":
+			if strings.TrimSpace(segments[index+1]) != "" {
+				segments[index+1] = "[REDACTED]"
+			}
+		}
+	}
+	parsed.Path = "/" + strings.Join(segments, "/")
+	parsed.RawPath = ""
+	query := parsed.Query()
+	for key := range query {
+		if strings.EqualFold(key, "regionCurrencyIds") {
+			query.Set(key, "[REDACTED]")
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 type signinInitResponse struct {
@@ -1631,6 +1680,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 }
 
 func (c *Client) doRequestBase(ctx context.Context, baseURL, method, path string, body any, headers http.Header) ([]byte, error) {
+	return c.doRequestBaseWithHTTPClient(c.httpClient, ctx, baseURL, method, path, body, headers)
+}
+
+func (c *Client) doRequestBaseWithHTTPClient(client *http.Client, ctx context.Context, baseURL, method, path string, body any, headers http.Header) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1662,9 +1715,9 @@ func (c *Client) doRequestBase(ctx context.Context, baseURL, method, path string
 	if strings.TrimSpace(req.Header.Get("Accept")) == "" {
 		req.Header.Set("Accept", "application/json")
 	}
-	setModifiedCookieHeader(c.httpClient, req)
+	setModifiedCookieHeader(client, req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		logWebAuthHTTP("iris_request", req, nil, nil, err)
 		return nil, fmt.Errorf("request failed: %w", err)
