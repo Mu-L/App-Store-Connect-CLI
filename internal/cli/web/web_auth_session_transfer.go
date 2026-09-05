@@ -23,6 +23,7 @@ const (
 	webSessionBundleTempPattern   = ".asc-web-session-*"
 	webSessionBundleBackupPattern = ".asc-web-session-backup-*"
 	webSessionBundleFileMode      = 0o600
+	webSessionBundleEnvName       = "ASC_WEB_SESSION"
 )
 
 // sessionTransferWarning writes the reminders that an exported bundle is a
@@ -179,7 +180,8 @@ func writeWebSessionBundle(path string, payload []byte, overwrite bool) (bool, e
 func WebAuthImportCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web auth import", flag.ExitOnError)
 
-	filePath := fs.String("file", "", "[experimental] Path to a session bundle produced by \"asc web auth export\" (required)")
+	filePath := fs.String("file", "", "[experimental] Path to a session bundle produced by \"asc web auth export\" (mutually exclusive with --from-env)")
+	fromEnv := fs.Bool("from-env", false, "[experimental] Read the canonical session bundle from ASC_WEB_SESSION")
 	appleID := fs.String("apple-id", "", "[experimental] Require the bundle to belong to this Apple Account email")
 	overwrite := fs.Bool("overwrite", false, "[experimental] Replace an existing cached session for the bundle Apple Account")
 	validate := fs.Bool("validate", false, "[experimental] Validate the bundle with Apple before importing it")
@@ -187,7 +189,7 @@ func WebAuthImportCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "import",
-		ShortUsage: "asc web auth import --file FILE [--apple-id EMAIL] [--overwrite] [--validate]",
+		ShortUsage: "asc web auth import (--file FILE | --from-env) [--apple-id EMAIL] [--overwrite] [--validate]",
 		ShortHelp:  "[experimental] Import a web session bundle into the session cache.",
 		LongHelp: `WEB SESSION WORKFLOWS
 
@@ -196,6 +198,20 @@ This session-transfer command is [experimental].
 Load a session bundle written by "asc web auth export" into the same cache
 "asc web auth login" writes, so CI can reuse an existing Apple web session
 instead of repeating two-factor verification.
+
+Use --from-env to read the same versioned JSON bundle from ASC_WEB_SESSION when
+a CI secret store provides environment input. The environment value is
+accepted only with this explicit flag; it is never treated as a global session
+mode. --file and --from-env are mutually exclusive. Raw cookie headers,
+opaque tokens, and other environment variables are not accepted. The same
+versioned bundle schema and 1 MiB parser ceiling are used. Process launchers
+and operating systems can impose lower per-value or total-environment limits
+before asc starts; use --file when the CI environment cannot carry the bundle.
+For an environment import, the JSON receipt's path is the fixed
+ASC_WEB_SESSION source marker; the value itself is never echoed or staged as an
+extra source file. The decoded session is persisted through the configured
+cache, just as with --file. Mask the CI secret and disable shell tracing when
+using this source.
 
 The bundle is checked before anything is stored: the document kind and version
 must match, cookies must belong to Apple's supported session origins, cookie
@@ -218,6 +234,7 @@ access is available.
 
 Examples:
   asc web auth import --file ./web-session.json
+  ASC_WEB_SESSION="$(cat ./web-session.json)" asc web auth import --from-env --validate
   asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
   asc web auth import --file ./web-session.json --validate
   asc web auth import --file ./web-session.json --output json`,
@@ -229,16 +246,42 @@ Examples:
 			}
 
 			filePathValue := *filePath
-			if strings.TrimSpace(filePathValue) == "" {
-				return shared.UsageError("--file is required")
+			fileFlagProvided := false
+			fs.Visit(func(flagDef *flag.Flag) {
+				fileFlagProvided = fileFlagProvided || flagDef.Name == "file"
+			})
+			if *fromEnv && fileFlagProvided {
+				return shared.UsageError("--file and --from-env are mutually exclusive")
 			}
 
-			payload, err := readWebSessionBundleFile(filePathValue)
+			var sourceLabel string
+			var payload []byte
+			var err error
+			if *fromEnv {
+				sourceLabel = webSessionBundleEnvName
+				value, ok := os.LookupEnv(webSessionBundleEnvName)
+				if !ok || strings.TrimSpace(value) == "" {
+					return shared.UsageError(webSessionBundleEnvName + " is unset or empty when --from-env is used")
+				}
+				if len(value) > webcore.MaxSessionBundleSize {
+					return fmt.Errorf("web auth import failed: %s exceeds %d-byte limit", webSessionBundleEnvName, webcore.MaxSessionBundleSize)
+				}
+				payload = []byte(value)
+			} else {
+				if strings.TrimSpace(filePathValue) == "" {
+					return shared.UsageError("one of --file or --from-env is required")
+				}
+				sourceLabel = filePathValue
+				payload, err = readWebSessionBundleFile(filePathValue)
+			}
 			if err != nil {
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
 			bundle, err := webcore.DecodeSessionBundle(payload)
 			if err != nil {
+				if *fromEnv {
+					return fmt.Errorf("web auth import failed: invalid session bundle from %s", webSessionBundleEnvName)
+				}
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
 			trimmedAppleID := strings.TrimSpace(*appleID)
@@ -265,17 +308,21 @@ Examples:
 				return fmt.Errorf("web auth import failed: %w", err)
 			}
 
+			sourceNote := ""
+			if *fromEnv {
+				sourceNote = " from " + webSessionBundleEnvName
+			}
 			if *validate {
-				sessionTransferWarning("Imported web session for %s after Apple validation.\n", summary.AppleID)
+				sessionTransferWarning("Imported web session for %s%s after Apple validation.\n", summary.AppleID, sourceNote)
 			} else {
 				sessionTransferWarning(
-					"Imported web session for %s after local bundle validation. Run \"asc web auth status\" to validate it with Apple.\n",
-					summary.AppleID,
+					"Imported web session for %s%s after local bundle validation. Run \"asc web auth status\" to validate it with Apple.\n",
+					summary.AppleID, sourceNote,
 				)
 			}
 
 			return shared.PrintOutput(&asc.WebSessionImportResult{
-				Path:                  filePathValue,
+				Path:                  sourceLabel,
 				AppleID:               summary.AppleID,
 				CookieCount:           summary.CookieCount,
 				SkippedExpiredCookies: summary.SkippedExpired,

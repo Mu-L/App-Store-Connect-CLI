@@ -108,6 +108,7 @@ reuse a session created elsewhere.
 asc web auth export --output-path ./web-session.json --apple-id "user@example.com"
 asc web auth import --file ./web-session.json
 asc web auth import --file ./web-session.json --apple-id "user@example.com" --overwrite
+ASC_WEB_SESSION="$(cat ./web-session.json)" asc web auth import --from-env --validate
 asc web auth import --file ./web-session.json --validate
 asc web auth status
 ```
@@ -124,6 +125,21 @@ dropped. A bundle with no usable cookie is refused without touching the cache.
 Pass `--apple-id` to refuse a bundle that belongs to a different Apple Account.
 Pass `--overwrite` to replace a cached session that already exists for that
 account. The imported session becomes the last cached session.
+
+Use `--from-env` to read the same versioned `asc-web-session` JSON bundle from
+the fixed `ASC_WEB_SESSION` variable when a CI secret store provides
+environment input. The flag is explicit and mutually exclusive with `--file`;
+an environment value is ignored by other commands and by import unless the
+flag is present. Raw cookie headers, opaque tokens, provider values, CSRF
+values, and other environment variables are not accepted. The import receipt's
+`path` is the fixed `ASC_WEB_SESSION` source marker in this mode. Environment
+values use the same versioned bundle schema and 1 MiB parser ceiling. Process
+launchers and operating systems can impose lower per-value or total-environment
+limits before `asc` starts; use `--file` when the CI environment cannot carry
+the bundle. The source document is never echoed or staged as an extra file; the
+decoded session is persisted through the configured cache just as with
+`--file`. CI jobs should mask the secret and disable shell tracing. File-backed
+handoff remains preferable when the CI system supports secret files.
 
 Import does not contact Apple unless `--validate` is provided. With
 `--validate`, `asc` sends a temporary cookie jar to Apple's existing session
