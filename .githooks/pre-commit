@@ -13,6 +13,7 @@ fi
 
 needs_code=0
 needs_repo_docs=0
+needs_agent_skills=0
 needs_website_docs=0
 needs_command_docs=0
 needs_wall_of_apps=0
@@ -27,6 +28,14 @@ while IFS= read -r path; do
     needs_wall_of_apps=1
     continue
   fi
+
+  case "$path" in
+    AGENTS.md|.agents/skills/*.md|.agents/skills/*/agents/openai.yaml)
+      needs_repo_docs=1
+      needs_agent_skills=1
+      continue
+      ;;
+  esac
 
   case "$path" in
     docs.json|.mintignore|.mintlify/*|*.mdx|cicd/*|commands/*|concepts/*|configuration/*|guides/*|resources/*)
@@ -70,6 +79,11 @@ fi
 if [ "$needs_repo_docs" -eq 1 ]; then
   echo "Running repository docs checks..."
   make check-repo-docs
+fi
+
+if [ "$needs_agent_skills" -eq 1 ]; then
+  echo "Running agent skill checks..."
+  make check-agent-skills
 fi
 
 if [ "$needs_website_docs" -eq 1 ]; then
