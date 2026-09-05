@@ -382,6 +382,11 @@ func (c *Client) openTransactionTaxDownload(ctx context.Context, origin *url.URL
 	request.Header.Set("Referer", origin.String()+"/itc/payments_and_financial_reports/")
 	request.Header.Set("X-Requested-With", "XMLHttpRequest")
 	client := transactionTaxNoRetryHTTPClient(c.httpClient)
+	// A bounded workflow context governs archive streaming, including the body.
+	// Lower-level callers without a deadline retain their configured timeout.
+	if _, bounded := ctx.Deadline(); bounded {
+		client.Timeout = 0
+	}
 	setModifiedCookieHeader(client, request)
 
 	previousCheckRedirect := client.CheckRedirect
