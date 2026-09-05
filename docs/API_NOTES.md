@@ -140,20 +140,31 @@ the App Store Connect web-client source captured for issue #2299:
 - The app-scoped relationship is sent with the review center's captured `filter[threadType]` set rather than a narrowed one. Unsupported include or filter shapes on these surfaces answer 400 (for example `include=fromActor,rejections,resolutionCenterThread` on `resolutionCenterMessages`), so the known-good query shapes are sent verbatim.
 - A thread's unsent draft reply lives at `GET /iris/v1/resolutionCenterThreads/{threadId}/resolutionCenterDraftMessage?include=resolutionCenterMessageAttachments,fromActor&limit[resolutionCenterMessageAttachments]=1000`. It is a single-resource document: a thread with no draft answers with a null `data` member, and the relationship can also answer 404. Both mean "no draft" rather than an error. `asc web review threads --drafts` reads it read-only, keeps Apple's raw HTML body, and never returns the attachments' signed download URLs.
 - All of these readers follow `links.next` internally, so the commands have no `--paginate` flag.
-- The loaded App Store Connect web-client source defines draft writes as
-  `POST /iris/v1/resolutionCenterDraftMessages` with a `messageBody` and
-  `resolutionCenterThread` relationship, draft update as `PATCH` on the draft
-  resource with `messageBody`, draft deletion as `DELETE` on that resource,
-  and sending as `POST /iris/v1/resolutionCenterMessages` with a
-  `createFromDraftMessage` relationship. The source capture is not proof that
-  Apple will accept a write for every account.
+- The draft client contract uses `POST /iris/v1/resolutionCenterDraftMessages`
+  with a `messageBody` and `resolutionCenterThread` relationship, `PATCH` on
+  the draft resource with `messageBody`, and `DELETE` on that resource. Sending
+  is a separate `POST /iris/v1/resolutionCenterMessages` with a
+  `createFromDraftMessage` relationship. These private web-session request
+  shapes may change, and they do not prove that Apple will accept a write for
+  every account.
 - `asc web review reply --thread-id THREAD_ID --message MESSAGE --confirm` is
   an experimental one-shot path: it creates one draft, sends it, and re-reads
   the thread to verify the returned message ID. The receipt omits the body and
   the client never retries an ambiguous send. Attachments are unsupported
-  because their write encoding was not captured, and there is no CLI resume,
-  edit, or delete-draft workflow. Inspect App Store Connect before retrying a
-  failed or ambiguous operation.
+  because their write encoding is not implemented, and the command has no CLI
+  resume, edit, or delete-draft workflow. Inspect App Store Connect before
+  retrying a failed or ambiguous operation.
+- The experimental `asc web review drafts create|update|delete` commands are
+  the unsent draft CRUD path. `create` requires an app ID, thread ID, exactly
+  one `--message` or `--body-file`, and `--confirm`; `update` adds the draft
+  ID, while `delete` takes the app, thread, and draft IDs. Each command first
+  verifies the thread under the selected app and checks the existing draft so
+  create cannot replace one and update/delete cannot target another thread's
+  draft. `--body-file` is limited to a regular local file and preserves the
+  body byte-for-byte after rejecting blank input. These commands never send or
+  upload attachments and never retry an uncertain mutation or post-read
+  verification. No disposable live thread/draft fixture was available, so
+  Apple provider acceptance of these writes remains unverified.
 
 ## Web-session app distribution method
 

@@ -605,6 +605,7 @@ Available commands:
 * `asc web review list` - list review submissions for an app
 * `asc web review show` - inspect one submission and related messages/screenshots, including app-scoped Resolution Center threads the selected submission does not cover
 * `asc web review threads` - list every Resolution Center thread on an app, including binary, metadata, and informational threads; `--drafts` reads each unsent draft (`--plain-text` projects HTML to plain text)
+* [experimental] `asc web review drafts` - create, update, or delete one unsent Resolution Center draft
 * `asc web review subscriptions` - inspect and mutate next-version subscription review selection
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
 * [experimental] `asc web review reply` - send one confirmed Resolution Center text reply
@@ -621,6 +622,23 @@ asc web review iaps attach --app "123456789" --iap-id "PRODUCT_ID" --confirm
 ```
 
 `asc web review reply --thread-id THREAD_ID --message MESSAGE --confirm` creates a draft, sends it, and re-reads the thread to verify the resulting message. Attachments are unsupported, and an uncertain send is never retried automatically.
+
+The experimental draft commands keep a draft unsent:
+
+```bash  theme={null}
+asc web review drafts create --app "123456789" --thread-id "THREAD_ID" --message "We updated the demo account." --confirm
+asc web review drafts update --app "123456789" --thread-id "THREAD_ID" --draft-id "DRAFT_ID" --body-file ./reply.txt --confirm
+asc web review drafts delete --app "123456789" --thread-id "THREAD_ID" --draft-id "DRAFT_ID" --confirm
+```
+
+`create` and `update` require exactly one of `--message` or `--body-file`; the
+body is preserved verbatim, including surrounding whitespace and newlines,
+after blank-body validation. Each mutation verifies that the thread belongs to
+the selected app and that the draft state matches the requested operation.
+These commands never send messages or upload attachments, and an uncertain
+mutation or verification failure is never retried automatically. Apple draft
+write acceptance remains unverified because no disposable live thread/draft
+fixture was available.
 
 ### `asc web subscriptions`
 
