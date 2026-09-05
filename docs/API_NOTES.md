@@ -106,7 +106,20 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 - The app-scoped relationship is sent with the review center's captured `filter[threadType]` set rather than a narrowed one. Unsupported include or filter shapes on these surfaces answer 400 (for example `include=fromActor,rejections,resolutionCenterThread` on `resolutionCenterMessages`), so the known-good query shapes are sent verbatim.
 - A thread's unsent draft reply lives at `GET /iris/v1/resolutionCenterThreads/{threadId}/resolutionCenterDraftMessage?include=resolutionCenterMessageAttachments,fromActor&limit[resolutionCenterMessageAttachments]=1000`. It is a single-resource document: a thread with no draft answers with a null `data` member, and the relationship can also answer 404. Both mean "no draft" rather than an error. `asc web review threads --drafts` reads it read-only, keeps Apple's raw HTML body, and never returns the attachments' signed download URLs.
 - All of these readers follow `links.next` internally, so the commands have no `--paginate` flag.
-- Sending a reply or a draft is not implemented; only reads are supported.
+- The loaded App Store Connect web-client source defines draft writes as
+  `POST /iris/v1/resolutionCenterDraftMessages` with a `messageBody` and
+  `resolutionCenterThread` relationship, draft update as `PATCH` on the draft
+  resource with `messageBody`, draft deletion as `DELETE` on that resource,
+  and sending as `POST /iris/v1/resolutionCenterMessages` with a
+  `createFromDraftMessage` relationship. The source capture is not proof that
+  Apple will accept a write for every account.
+- `asc web review reply --thread-id THREAD_ID --message MESSAGE --confirm` is
+  an experimental one-shot path: it creates one draft, sends it, and re-reads
+  the thread to verify the returned message ID. The receipt omits the body and
+  the client never retries an ambiguous send. Attachments are unsupported
+  because their write encoding was not captured, and there is no CLI resume,
+  edit, or delete-draft workflow. Inspect App Store Connect before retrying a
+  failed or ambiguous operation.
 
 ## Web-session app distribution method
 
