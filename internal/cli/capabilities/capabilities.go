@@ -457,8 +457,8 @@ func capabilityRows() []Capability {
 				"asc web apps tax-category set",
 			},
 			Notes: []string{
-				"App Information tax category is available through experimental web-session commands; the public OpenAPI snapshot has no tax-category resource.",
-				"In-App Purchase tax category remains unimplemented because its web-session read/write contract is not captured. The application setter validates the captured catalog, requires --confirm, clears conditions when --condition is omitted, and does not automatically retry an ambiguous write; provider acceptance has not been live-verified.",
+				"App Information tax category is available through web-session commands; the public OpenAPI snapshot has no tax-category resource.",
+				"In-App Purchase tax category remains unimplemented because its web-session read/write contract is not captured. The application setter validates the captured catalog, requires --confirm, clears conditions when --condition is omitted, and does not automatically retry an ambiguous write; a disposable-app canary verified explicit application tax configuration and readback, while PATCH, condition changes, and account-specific errors remain unverified.",
 			},
 			NextAction: "Use asc web apps tax-category list/view/set for App Information; use App Store Connect web UI for In-App Purchase tax category.",
 		},
@@ -511,9 +511,13 @@ func capabilityRows() []Capability {
 		{
 			Area:       "analytics",
 			Capability: "Transaction tax reports",
-			Status:     statusNotPublicAPI,
-			Notes:      []string{"Apple does not expose Transaction Tax reports through the public App Store Connect API."},
-			NextAction: "Download manually from App Store Connect.",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web finance transaction-tax download"},
+			Notes: []string{
+				"Apple does not expose Transaction Tax reports through the public App Store Connect API.",
+				"The experimental command uses the captured App Store Connect finance web session to generate, poll, and download one eligible period; report history and generated job IDs are not exposed.",
+			},
+			NextAction: "Use asc web finance transaction-tax download, or download manually from App Store Connect.",
 		},
 		{
 			Area:       "signing",

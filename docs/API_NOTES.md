@@ -44,7 +44,7 @@ Finance reports use Apple fiscal months (`YYYY-MM`), not calendar months.
 
 **Important:**
 - `FINANCE_DETAIL` reports require region code `Z1` (the only valid region for detailed reports)
-- Transaction Tax reports are NOT available via API; download manually from App Store Connect
+- Transaction Tax reports are not available through the public App Store Connect API; use the experimental `asc web finance transaction-tax download` web-session workflow or App Store Connect.
 - Region codes reference: https://developer.apple.com/help/app-store-connect/reference/financial-report-regions-and-currencies/
 - Use `asc finance regions` to see all available region codes
 
@@ -55,7 +55,7 @@ the App Store Connect web-client source captured for issue #2299:
 
 - The public API still has no tax-category resource or tax-category attribute
   on `apps`, `appInfos`, or `inAppPurchases`.
-- App Information tax categories are available through the experimental
+- App Information tax categories are available through the
   web-session commands `asc web apps tax-category list`,
   `asc web apps tax-category view --app APP_ID`, and
   `asc web apps tax-category set --app APP_ID --category CATEGORY_ID
@@ -68,14 +68,18 @@ the App Store Connect web-client source captured for issue #2299:
   and re-reads the result. Omitting `--condition` sends
   `enabledConditions.data=[]` to clear stale conditions. The command requires
   `--confirm` and does not automatically retry an ambiguous write.
-- The request and response shapes are source-backed, but no live tax write was
-  performed in this audit. Provider acceptance and the legal correctness of a
-  selected classification remain operator responsibilities.
+- The request and response shapes are source-backed. A disposable-app canary
+  verified explicit application tax configuration and readback. PATCH,
+  condition changes, and account-specific errors remain unverified; selecting
+  the legally correct classification remains the operator's responsibility.
 - In-App Purchase tax-category read/write is still unavailable because its
   web-session contract has not been captured. `GET /v1/financeReports` accepts
   only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and
   `GET /v1/salesReports` has no tax report type, so Transaction Tax reports
-  cannot be generated or downloaded through the public API or this CLI.
+  cannot be generated or downloaded through the public API. The captured
+  finance workflow is available through the experimental
+  `asc web finance transaction-tax download` command; provider and period
+  eligibility remain account-specific.
 - `asc capabilities --area monetization` reports the application tax path as
   partial coverage and keeps In-App Purchase tax selection in the remaining
   web-only gap.
@@ -406,6 +410,13 @@ the App Store Connect web-client source captured for issue #2299:
 - Each history record includes `agreementDownloadUrl`, observed as a root-relative Developer Portal path such as `/services-account/agreement/{agreementId}/content/pdf`. `asc web agreements download` resolves it against the Developer Portal origin and only follows HTTPS, same-origin targets and redirects, and rejects empty or HTML responses. The URL is treated as potentially signed: the `download` receipt and its error text never include it. `asc web agreements status` and the verified `accept` receipt still expose it as `downloadUrl` in JSON, so treat those outputs accordingly.
 - `acceptAgreements` returns the updated history, but the CLI re-reads `getAgreementHistory` after the write and reports the re-read state (`dateAccepted >= dateEffective`) instead of trusting the mutation response.
 
+## Transaction Tax reports (web session)
+
+- The public App Store Connect API and OpenAPI snapshot do not expose Transaction Tax report generation. The experimental `asc web finance transaction-tax download` command uses the authenticated finance web session instead.
+- The captured finance page reads the selected month from `/WebObjects/iTunesConnect.woa/ra/paymentConsolidation/providers/{providerId}/sapVendorNumbers/{sapVendorNumber}?year={YYYY}&month={M}` and requires `hasVendorTaxReport=true` before generation. It derives the complete vendor-tax region-currency list from the transformed `reportSummaries[].proceedsByRegion[]` model, then issues exactly one GET to `/WebObjects/iTunesConnect.woa/ra/paymentConsolidation/providers/{providerId}/sapVendorNumbers/{sapVendorNumber}/reports?year={YYYY}&month={M}&regionCurrencyIds={ids}&reportTypes=&isVendorTaxReportReq=true`.
+- The generated UUID is retained only in memory for bounded GET polling at `/reports/{uuid}/status`; readiness requires the captured literal `readyForDownload` status and a download URL. The command fetches the ready artifact once, accepts only an HTTPS same-origin URL and redirects, checks the ZIP signature, and publishes a complete `0600` file without replacing an existing destination.
+- Receipts and errors omit generated job IDs, signed URLs, provider/vendor identifiers, and finance values. Generation, polling, and download failures do not trigger an automatic regeneration or retry. No report-history or caller-supplied report-ID contract was observed.
+
 ## Pass Type IDs
 
 - Live API rejects `include=passTypeId` and `fields[passTypeIds]` on `/v1/passTypeIds/{id}/certificates` despite the OpenAPI spec allowing them.
@@ -460,3 +471,5 @@ Observed 2026-09-02 against a live App Store Connect team. The CLI does not add 
 - `/v1/ad-accounts` is method-dependent: `POST /v1/ad-accounts` creates an account without `X-AP-Context`; `GET /v1/ad-accounts/{id}` and `PUT /v1/ad-accounts/{id}` require `X-AP-Context: adAccountId=<id>;`, and the header account must match the path ID.
 - Authentication validation and discovery use Platform API v1. `asc ads auth login --network` and `asc ads auth status --validate` exchange an OAuth client-credentials token when needed and call `GET /v1/me` without an ad-account context. `asc ads auth discover` calls Platform API v1 `GET /v1/me` and `GET /v1/acls` without an ad-account context. A supplied `ASC_ADS_ACCESS_TOKEN` skips token exchange.
 - The deprecated `asc ads v5 reports preset` warning follows `--level`: campaigns, ad groups, ads, keywords, and search terms point to their matching `asc ads reports apps` command; the two ad-group-specific keyword levels point to v1's consolidated `keywords` or `search-terms` report.
+
+Transaction Tax archive streaming uses a bounded workflow context instead of inheriting the web client's shorter per-request timeout. Lower-level callers without a context deadline retain the configured client timeout. Caller cancellation still bounds the download, and the shared client timeout remains unchanged.

@@ -35,6 +35,9 @@ asc web bundle-ids view --bundle-id "BUNDLE_RESOURCE_ID" --output json
 # [experimental] List Developer Portal Website Push IDs unavailable through the public API
 asc web website-push-ids list --output table
 
+# [experimental] Generate and download a Transaction Tax Report through the web session
+asc web finance transaction-tax download --date 2026-07 --output-path ./transaction-tax-2026-07.zip --output json
+
 # Bootstrap app availability where the public API falls short
 asc web apps availability create --app "123456789" --territory "USA,GBR" --available-in-new-territories false
 
@@ -205,6 +208,36 @@ request; there is no `--all` flag because each agreement must be named
 explicitly. After the write, `accept` re-reads the team's agreement history and
 exits non-zero when any requested agreement is still pending or missing. The
 receipt reflects that re-read state and includes `verified: true`.
+
+### `asc web finance`
+
+Private finance report workflows that use the authenticated App Store Connect
+web session. The public App Store Connect API still does not expose Transaction
+Tax report generation.
+
+Available commands:
+
+* `asc web finance transaction-tax download` - [experimental] generate and download one eligible Transaction Tax Report archive
+
+The command reads the selected month and the finance page's region-currency
+model, then makes one generation request, polls the generated job until Apple
+reports `readyForDownload`, and fetches the ready archive once. It requires
+`--date YYYY-MM` and `--output-path PATH`; the destination must not already
+exist. The archive is checked and atomically published with mode `0600`.
+Only the local save receipt is printed. Generated job IDs, signed download
+URLs, provider and vendor identifiers, and finance values are omitted from
+output and errors. A generation or download failure is not retried
+automatically. There is no report-history or caller-supplied report-ID
+command in this slice.
+
+Example:
+
+```bash  theme={null}
+asc web finance transaction-tax download \
+  --date 2026-07 \
+  --output-path ./transaction-tax-2026-07.zip \
+  --output json
+```
 
 ### `asc web api-keys`
 
@@ -750,6 +783,8 @@ asc web --help
 asc web auth --help
 asc web agreements --help
 asc web api-keys --help
+asc web finance --help
+asc web finance transaction-tax download --help
 asc web apps --help
 asc web removed-apps --help
 asc web bundle-ids --help
