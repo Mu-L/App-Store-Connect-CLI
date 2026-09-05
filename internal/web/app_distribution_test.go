@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetAppDistributionBuildsExpectedRequest(t *testing.T) {
@@ -380,6 +381,9 @@ func TestSetAppDistributionDoesNotRetryAfterContextCancellation(t *testing.T) {
 
 func TestSetAppDistributionMarksVerificationMismatchUncertain(t *testing.T) {
 	var requestCount int
+	setAppDistributionVerificationWait(t, func(context.Context, time.Duration) error {
+		return context.Canceled
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		switch r.Method {
@@ -412,4 +416,230 @@ func TestSetAppDistributionMarksVerificationMismatchUncertain(t *testing.T) {
 	if result == nil || result.Status != "uncertain" || result.Verified {
 		t.Fatalf("unexpected mismatch receipt: %+v", result)
 	}
+}
+
+func TestSetAppDistributionEventuallyVerifiesAfterStaleRead(t *testing.T) {
+	var requestCount int
+	var getCount int
+	var patchCount int
+	var patchAttributes map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.URL.Path != "/apps/app-123" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			getCount++
+			w.Header().Set("Content-Type", "application/json")
+			var body string
+			switch getCount {
+			case 1:
+				body = `{"data":{"type":"apps","id":"app-123","attributes":{"distributionType":"APP_STORE","educationDiscountType":"DISCOUNTED"}}}`
+			case 2:
+				// Model Apple's eventually consistent read immediately after the
+				// accepted PATCH: the old education value is still visible.
+				body = `{"data":{"type":"apps","id":"app-123","attributes":{"distributionType":"APP_STORE","educationDiscountType":"DISCOUNTED"}}}`
+			case 3:
+				body = `{"data":{"type":"apps","id":"app-123","attributes":{"distributionType":"APP_STORE","educationDiscountType":"NOT_DISCOUNTED"}}}`
+			default:
+				t.Fatalf("unexpected GET request %d", requestCount)
+			}
+			_, _ = w.Write([]byte(body))
+		case http.MethodPatch:
+			patchCount++
+			var payload struct {
+				Data struct {
+					Attributes map[string]string `json:"attributes"`
+				} `json:"data"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode PATCH: %v", err)
+			}
+			patchAttributes = payload.Data.Attributes
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	result, err := testWebClient(server).SetAppDistribution(context.Background(), AppDistributionSetRequest{
+		AppID:                 "app-123",
+		DistributionType:      AppDistributionTypeAppStore,
+		EducationDiscountType: AppDistributionEducationNotDiscounted,
+	})
+	if err != nil {
+		t.Fatalf("SetAppDistribution() error = %v", err)
+	}
+	if requestCount != 4 {
+		t.Fatalf("request count = %d, want preflight GET, PATCH, stale GET, and matching GET", requestCount)
+	}
+	if patchCount != 1 {
+		t.Fatalf("PATCH count = %d, want exactly one mutation", patchCount)
+	}
+	if _, ok := patchAttributes["distributionType"]; ok {
+		t.Fatalf("education-only PATCH must not resend distributionType: %+v", patchAttributes)
+	}
+	if patchAttributes["educationDiscountType"] != AppDistributionEducationNotDiscounted {
+		t.Fatalf("unexpected PATCH attributes: %+v", patchAttributes)
+	}
+	if result == nil || !result.Changed || !result.Verified || result.Status != "verified" {
+		t.Fatalf("unexpected verified receipt: %+v", result)
+	}
+}
+
+func TestSetAppDistributionVerificationWindowIsBounded(t *testing.T) {
+	var requestCount int
+	var patchCount int
+	var waits []time.Duration
+	setAppDistributionVerificationWait(t, func(_ context.Context, delay time.Duration) error {
+		waits = append(waits, delay)
+		return nil
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"apps","id":"app-123","attributes":{"distributionType":"APP_STORE","educationDiscountType":"DISCOUNTED"}}}`))
+		case http.MethodPatch:
+			patchCount++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	result, err := testWebClient(server).SetAppDistribution(context.Background(), AppDistributionSetRequest{
+		AppID:                 "app-123",
+		DistributionType:      AppDistributionTypeAppStore,
+		EducationDiscountType: AppDistributionEducationNotDiscounted,
+	})
+	var uncertainErr *AppDistributionUnverifiedError
+	if !errors.As(err, &uncertainErr) {
+		t.Fatalf("error = %v, want AppDistributionUnverifiedError", err)
+	}
+	if !strings.Contains(err.Error(), "verification window expired") {
+		t.Fatalf("error = %v, want bounded-window diagnostic", err)
+	}
+	if requestCount != 7 {
+		t.Fatalf("request count = %d, want preflight GET, PATCH, and five bounded verification GETs", requestCount)
+	}
+	if patchCount != 1 {
+		t.Fatalf("PATCH count = %d, want exactly one mutation", patchCount)
+	}
+	wantWaits := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	if len(waits) != len(wantWaits) {
+		t.Fatalf("wait count = %d, want %d (%v)", len(waits), len(wantWaits), wantWaits)
+	}
+	for i := range wantWaits {
+		if waits[i] != wantWaits[i] {
+			t.Fatalf("waits = %v, want %v", waits, wantWaits)
+		}
+	}
+	if result == nil || result.Status != "uncertain" || result.Verified {
+		t.Fatalf("unexpected uncertain receipt: %+v", result)
+	}
+}
+
+func TestSetAppDistributionVerificationStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	setAppDistributionVerificationWait(t, func(_ context.Context, _ time.Duration) error {
+		cancel()
+		return context.Canceled
+	})
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"type":"apps","id":"app-123","attributes":{"distributionType":"APP_STORE","educationDiscountType":"DISCOUNTED"}}}`))
+		case http.MethodPatch:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	result, err := testWebClient(server).SetAppDistribution(ctx, AppDistributionSetRequest{
+		AppID:                 "app-123",
+		DistributionType:      AppDistributionTypeAppStore,
+		EducationDiscountType: AppDistributionEducationNotDiscounted,
+	})
+	var uncertainErr *AppDistributionUnverifiedError
+	if !errors.As(err, &uncertainErr) {
+		t.Fatalf("error = %v, want AppDistributionUnverifiedError", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if requestCount != 3 {
+		t.Fatalf("request count = %d, want preflight GET, PATCH, and immediate verification GET", requestCount)
+	}
+	if result == nil || result.Status != "uncertain" || result.Verified {
+		t.Fatalf("unexpected uncertain receipt: %+v", result)
+	}
+}
+
+func TestSetAppDistributionVerificationReadErrorStopsPolling(t *testing.T) {
+	var requestCount int
+	var getCount int
+	var patchCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch r.Method {
+		case http.MethodGet:
+			getCount++
+			if getCount == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":{"type":"apps","id":"app-123","attributes":{"distributionType":"APP_STORE","educationDiscountType":"DISCOUNTED"}}}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"errors":[{"status":"503","code":"SERVICE_UNAVAILABLE","title":"temporary"}]}`))
+		case http.MethodPatch:
+			patchCount++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	result, err := testWebClient(server).SetAppDistribution(context.Background(), AppDistributionSetRequest{
+		AppID:                 "app-123",
+		DistributionType:      AppDistributionTypeAppStore,
+		EducationDiscountType: AppDistributionEducationNotDiscounted,
+	})
+	var uncertainErr *AppDistributionUnverifiedError
+	if !errors.As(err, &uncertainErr) {
+		t.Fatalf("error = %v, want AppDistributionUnverifiedError", err)
+	}
+	if !strings.Contains(err.Error(), "verification failed") {
+		t.Fatalf("error = %v, want verification failure diagnostic", err)
+	}
+	if requestCount != 3 || getCount != 2 {
+		t.Fatalf("requests = %d total, %d GET, want preflight GET, PATCH, and one immediate read error", requestCount, getCount)
+	}
+	if patchCount != 1 {
+		t.Fatalf("PATCH count = %d, want exactly one mutation", patchCount)
+	}
+	if result == nil || !result.Changed || result.Verified || result.Status != "uncertain" {
+		t.Fatalf("unexpected uncertain receipt: %+v", result)
+	}
+}
+
+func setAppDistributionVerificationWait(t *testing.T, wait func(context.Context, time.Duration) error) {
+	t.Helper()
+	previous := appDistributionVerificationWaitFn
+	appDistributionVerificationWaitFn = wait
+	t.Cleanup(func() {
+		appDistributionVerificationWaitFn = previous
+	})
 }

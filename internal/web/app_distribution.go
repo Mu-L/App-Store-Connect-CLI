@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
@@ -226,16 +227,87 @@ func (c *Client) SetAppDistribution(ctx context.Context, request AppDistribution
 	if ctx != nil && ctx.Err() != nil {
 		return result, &AppDistributionUnverifiedError{Err: fmt.Errorf("app distribution update was accepted by Apple; verification unavailable because command context expired/canceled; inspect state before retry: %w", ctx.Err())}
 	}
-	observed, verifyErr := c.getAppDistribution(ctx, appID, true)
-	if verifyErr != nil {
-		return result, &AppDistributionUnverifiedError{Err: fmt.Errorf("app distribution update was accepted by Apple but verification failed: %w", verifyErr)}
-	}
-	if !appDistributionMatches(observed, distributionType, educationDiscountType) {
-		return result, &AppDistributionUnverifiedError{Err: fmt.Errorf("app distribution update was accepted by Apple but app %q does not report the requested distribution state", appID)}
+	if verifyErr := c.verifyAppDistributionAfterWrite(ctx, appID, distributionType, educationDiscountType); verifyErr != nil {
+		return result, &AppDistributionUnverifiedError{Err: verifyErr}
 	}
 	result.Verified = true
 	result.Status = "verified"
 	return result, nil
+}
+
+// verifyAppDistributionAfterWrite gives Apple's eventually consistent app
+// resource a bounded amount of time to expose an accepted PATCH. The PATCH is
+// deliberately outside this loop: verification may retry reads, never the
+// mutation itself.
+func (c *Client) verifyAppDistributionAfterWrite(ctx context.Context, appID, distributionType, educationDiscountType string) error {
+	var lastReadErr error
+	delays := appDistributionVerificationDelays()
+	for attempt := 0; attempt <= len(delays); attempt++ {
+		if attempt > 0 {
+			if waitErr := appDistributionVerificationWaitFn(ctx, delays[attempt-1]); waitErr != nil {
+				return appDistributionVerificationStoppedError(appID, lastReadErr, waitErr)
+			}
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return appDistributionVerificationStoppedError(appID, lastReadErr, ctx.Err())
+		}
+
+		observed, readErr := c.getAppDistribution(ctx, appID, true)
+		if readErr != nil {
+			if ctx != nil && ctx.Err() != nil {
+				return appDistributionVerificationStoppedError(appID, lastReadErr, ctx.Err())
+			}
+			return fmt.Errorf("app distribution update was accepted by Apple but verification failed: %w", readErr)
+		}
+		if appDistributionMatches(observed, distributionType, educationDiscountType) {
+			return nil
+		}
+		lastReadErr = fmt.Errorf("app distribution update was accepted by Apple but app %q does not report the requested distribution state", appID)
+	}
+
+	if lastReadErr == nil {
+		return fmt.Errorf("app distribution update was accepted by Apple but verification window expired before the requested state was reported")
+	}
+	return fmt.Errorf("%w; verification window expired before Apple reported the requested state", lastReadErr)
+}
+
+func appDistributionVerificationDelays() []time.Duration {
+	// Keep the complete poll inside the default 30-second request budget while
+	// leaving room for the preflight, write, and ordinary request handling.
+	return []time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+	}
+}
+
+// This seam keeps polling tests deterministic without changing production
+// timing or allowing a second mutation.
+var appDistributionVerificationWaitFn = waitForAppDistributionVerification
+
+func waitForAppDistributionVerification(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func appDistributionVerificationStoppedError(appID string, lastReadErr, stopErr error) error {
+	if lastReadErr == nil {
+		lastReadErr = fmt.Errorf("app distribution update was accepted by Apple but app %q does not report the requested distribution state", appID)
+	}
+	return fmt.Errorf("%w; verification polling stopped: %w", lastReadErr, stopErr)
 }
 
 func appDistributionMatches(observed *AppDistribution, distributionType, educationDiscountType string) bool {
