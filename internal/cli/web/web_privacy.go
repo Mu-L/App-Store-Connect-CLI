@@ -1660,7 +1660,8 @@ Subcommands:
   catalog  List category/purpose/data-protection tokens for declaration authoring
   pull     Fetch current app data usage declarations as canonical JSON
   plan     Diff local declaration file against remote state
-  apply    Apply planned changes (never publishes automatically)
+  apply    Apply planned changes (does not call Apple's publish endpoint;
+          usage mutations may update published-state metadata)
   publish  Explicitly publish app data usage declarations
 
 `,
