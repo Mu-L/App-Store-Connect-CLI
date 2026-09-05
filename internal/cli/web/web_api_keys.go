@@ -73,6 +73,7 @@ Examples:
   asc web api-keys list --output json
   asc web api-keys view --key-id KEY_ID
   asc web api-keys create --name "Release automation"
+  asc web api-keys create-individual --user-id USER_UUID --output-dir ~/.asc/keys --confirm
   asc web api-keys revoke --key-id KEY_ID --type team --confirm
 
 `,
@@ -82,6 +83,7 @@ Examples:
 			WebAPIKeysListCommand(),
 			WebAPIKeysViewCommand(),
 			WebAPIKeysCreateCommand(),
+			WebAPIKeysCreateIndividualCommand(),
 			WebAPIKeysRevokeCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
