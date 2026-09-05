@@ -27,14 +27,19 @@ func TestRun_CapabilitiesReportsTaxCategoryGap(t *testing.T) {
 		t.Fatalf("expected JSON output, got error %v and stdout %s", err, stdout)
 	}
 
-	assertCapability(t, resp, "App and In-App Purchase tax category", "not-public-api", "")
+	assertCapability(t, resp, "App and In-App Purchase tax category", "partial", "asc web apps tax-category list")
 
 	for _, entry := range resp.Capabilities {
 		if entry.Capability != "App and In-App Purchase tax category" {
 			continue
 		}
-		if len(entry.Commands) != 0 {
-			t.Fatalf("expected no commands for the tax category gap, got %v", entry.Commands)
+		wantCommands := []string{
+			"asc web apps tax-category list",
+			"asc web apps tax-category view",
+			"asc web apps tax-category set",
+		}
+		if strings.Join(entry.Commands, "\n") != strings.Join(wantCommands, "\n") {
+			t.Fatalf("expected tax category commands %v, got %v", wantCommands, entry.Commands)
 		}
 		return
 	}
