@@ -228,7 +228,7 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## Developer Portal session (web session)
 
-- Bundle IDs, Services IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then every later portal request carries the selected `teamId`. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
+- Bundle IDs, Services IDs, App Groups, and agreements share one Developer Portal session helper: `POST /services-account/QH65B2/account/listTeams.action` bootstraps CSRF and the team list, then later portal requests carry the selected `teamId` through each endpoint's captured body or session context. Same-origin redirects are enforced; cookies and CSRF tokens are never written to stdout, stderr, or debug logs.
 - `--developer-team` (ID, or exact team name) is accepted only on Developer Portal-backed commands (`web bundle-ids list`, `web bundle-ids view`, `web bundle-ids capabilities enable`, every `web service-ids` and `web app-groups` subcommand, and `web agreements`). It is not a global web-session flag. There is no `ASC_DEVELOPER_TEAM` env fallback; `--apple-id` / `--provider-id` likewise have none.
 - Team resolution: an explicit `--developer-team` wins (case-insensitive ID, then exact name) and fails closed with the available IDs and names if nothing matches. Without a selector, a previously persisted team ID is reused when it is still in the list; otherwise the selected App Store Connect provider is matched by public provider ID, then exact name, then a name-prefix heuristic only when exactly one team matches. A single remaining team is used. Multiple unmatched teams fail closed and ask for `--developer-team`. The resolved team ID is stored in the web session cache next to the provider selection; a new `--developer-team` value overrides and re-persists. `asc web auth status` reports it as additive `developerTeamId`.
 - App Groups mutations still refresh CSRF from `listApplicationGroups.action` in that endpoint's scope after the shared bootstrap. Bundle ID capability and App Group assign/set/unassign paths still read the complete relationship graph, skip already-satisfied writes, and abort rather than rewrite from incomplete data.
@@ -289,10 +289,13 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
   NAME --confirm` uses logical `POST /services-account/v1/bundleIds` with a
   JSON:API `data.type=bundleIds` resource whose attributes are
   `identifier`, `name`, `platform=SERVICES`, `seedId`, and `teamId`, plus an
-  empty `bundleIdCapabilities.data` array. The captured frontend transport
-  also carries the selected `teamId` at the top level. The CLI does not invent
-  capability, Sign in with Apple domain, or app-consent settings; it reads the
-  created resource back before returning a receipt.
+  empty `bundleIdCapabilities.data` array. The create request must omit a
+  root-level `teamId`: the captured frontend helper removes its injected team
+  field when no method override is used, and Apple's live endpoint rejects that
+  root member as an invalid JSON:API document. The selected team remains in
+  `data.attributes.teamId`. The CLI does not invent capability, Sign in with
+  Apple domain, or app-consent settings; it reads the created resource back
+  before returning a receipt.
 - `[experimental] asc web service-ids rename --service-id ID --name NAME
   --confirm` reads and validates the current Services ID, then sends logical
   `PATCH /services-account/v1/bundleIds/{id}`. The PATCH preserves the complete
@@ -301,11 +304,15 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
   post-write detail read must match the requested name and identifier.
 - `[experimental] asc web service-ids delete --service-id ID --confirm` sends
   logical `DELETE /services-account/v1/bundleIds/{id}` as the captured actual
-  `POST` plus `X-HTTP-Method-Override: DELETE` and an empty JSON object. The
-  preflight rejects native iOS/Mac or otherwise non-`SERVICES` resources. The
-  command reports success only after the detail read returns HTTP 404. A 5xx,
-  transport failure, malformed success body, or failed post-read is an
-  unverified outcome; no Services ID mutation is retried automatically.
+  `POST` plus `X-HTTP-Method-Override: DELETE` and a JSON body containing the
+  selected root-level `teamId`. The captured frontend helper retains its
+  injected team field for method-override requests; Apple's live endpoint
+  returns HTTP 204 when it is present and HTTP 403 (`Please select a team.`)
+  when it is omitted. The preflight rejects native iOS/Mac or otherwise
+  non-`SERVICES` resources. The command reports success only after the detail
+  read returns HTTP 404. A 5xx, transport failure, malformed success body, or
+  failed post-read is an unverified outcome; no Services ID mutation is
+  retried automatically.
 - Services ID lifecycle support is private-only because the public OpenAPI
   `BundleIdPlatform` enum does not include `SERVICES`. Capability graph
   mutation, Sign in with Apple domain configuration, Website Push IDs, and

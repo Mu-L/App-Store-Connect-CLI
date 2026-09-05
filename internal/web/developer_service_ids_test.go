@@ -91,11 +91,17 @@ func TestCreateDeveloperServiceIDUsesPrivatePayloadAndVerifies(t *testing.T) {
 			if r.Method != http.MethodPost || r.URL.Path != "/services-account/v1/bundleIds" || r.Header.Get("X-HTTP-Method-Override") != "" {
 				t.Fatalf("create transport = %s %s override=%q", r.Method, r.URL.String(), r.Header.Get("X-HTTP-Method-Override"))
 			}
-			var payload developerServiceIDCreatePayload
+			var payload struct {
+				Data   developerServiceIDCreateData `json:"data"`
+				TeamID *string                      `json:"teamId"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode create payload: %v", err)
 			}
-			if payload.TeamID != "TEAM123456" || payload.Data.Type != "bundleIds" {
+			if payload.TeamID != nil {
+				return developerPortalTestResponse(http.StatusUnprocessableEntity, `{"errors":[{"status":"422","code":"ENTITY_UNPROCESSABLE","title":"Entity is valid json but is not a valid json:api document","detail":"Unrecognized field 'teamId'"}]}`, nil), nil
+			}
+			if payload.Data.Type != "bundleIds" {
 				t.Fatalf("create envelope = %+v", payload)
 			}
 			want := map[string]string{
@@ -467,12 +473,14 @@ func TestDeleteDeveloperServiceIDUsesLogicalDeleteAndVerifies404(t *testing.T) {
 			if r.Method != http.MethodPost || r.URL.Path != "/services-account/v1/bundleIds/service-1" || r.Header.Get("X-HTTP-Method-Override") != http.MethodDelete {
 				t.Fatalf("delete transport = %s %s override=%q", r.Method, r.URL.String(), r.Header.Get("X-HTTP-Method-Override"))
 			}
-			var body map[string]any
+			var body struct {
+				TeamID string `json:"teamId"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatalf("decode delete body: %v", err)
 			}
-			if len(body) != 0 {
-				t.Fatalf("delete body = %#v, want empty JSON object", body)
+			if body.TeamID != "TEAM123456" {
+				return developerPortalTestResponse(http.StatusForbidden, `{"errors":[{"status":"403","code":"FORBIDDEN","detail":"Please select a team."}]}`, nil), nil
 			}
 			return developerPortalTestResponse(http.StatusOK, `{}`, nil), nil
 		case 4:

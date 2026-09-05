@@ -75,8 +75,7 @@ func (e *DeveloperServiceIDUnverifiedError) Unwrap() error {
 }
 
 type developerServiceIDCreatePayload struct {
-	Data   developerServiceIDCreateData `json:"data"`
-	TeamID string                       `json:"teamId"`
+	Data developerServiceIDCreateData `json:"data"`
 }
 
 type developerServiceIDCreateData struct {
@@ -184,7 +183,6 @@ func (c *Client) CreateDeveloperServiceID(ctx context.Context, request Developer
 	}
 
 	payload := developerServiceIDCreatePayload{
-		TeamID: teamID,
 		Data: developerServiceIDCreateData{
 			Type: "bundleIds",
 			Attributes: map[string]string{
@@ -322,7 +320,7 @@ func (c *Client) DeleteDeveloperServiceID(ctx context.Context, request Developer
 	name := developerServiceIDRawAttribute(current.Data.Attributes, "name")
 	headers := developerPortalHeaders(request.ServiceID)
 	headers.Set("X-HTTP-Method-Override", http.MethodDelete)
-	if _, err := c.doDeveloperPortalRequest(ctx, http.MethodPost, "/bundleIds/"+url.PathEscape(request.ServiceID), map[string]any{}, headers, true); err != nil {
+	if _, err := c.doDeveloperPortalRequest(ctx, http.MethodPost, "/bundleIds/"+url.PathEscape(request.ServiceID), map[string]string{"teamId": c.developerPortalTeamID()}, headers, true); err != nil {
 		return nil, developerServiceIDWriteError("delete", err)
 	}
 
