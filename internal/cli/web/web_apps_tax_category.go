@@ -291,14 +291,22 @@ Examples:
 				return fmt.Errorf("web apps tax-category set failed: Apple did not confirm category %q and the requested condition set; do not retry automatically", resolvedCategoryID)
 			}
 
-			return shared.PrintOutput(&asc.WebAppTaxCategorySetResult{
+			receipt := &asc.WebAppTaxCategorySetResult{
 				AppID:        resolvedAppID,
 				CategoryID:   resolvedCategoryID,
 				CategoryName: strings.TrimSpace(selectedCategory.Name),
 				ConditionIDs: desiredConditions,
 				Changed:      changed,
 				Verified:     true,
-			}, *output.Output, *output.Pretty)
+			}
+			if err := shared.PrintOutput(receipt, *output.Output, *output.Pretty); err != nil {
+				conditionSummary := strings.Join(receipt.ConditionIDs, ",")
+				if receipt.Changed {
+					return fmt.Errorf("web apps tax-category set app %q category %q condition set %q was written and verified, but receipt output failed; do not retry automatically: %w", receipt.AppID, receipt.CategoryID, conditionSummary, err)
+				}
+				return fmt.Errorf("web apps tax-category set app %q category %q condition set %q already matched and was verified; no write occurred, but receipt output failed; do not retry automatically: %w", receipt.AppID, receipt.CategoryID, conditionSummary, err)
+			}
+			return nil
 		},
 	}
 }
@@ -377,18 +385,26 @@ func normalizedWebTaxConditionIDsForComparison(conditionIDs []string) []string {
 	return result
 }
 
-func validateWebTaxConditions(categories []webcore.TaxCategory, category *webcore.TaxCategory, conditionIDs []string) error {
+func effectiveWebTaxConditions(categories []webcore.TaxCategory, category *webcore.TaxCategory) []webcore.TaxCategoryReference {
 	if category == nil {
-		return fmt.Errorf("web apps tax-category set: selected category is missing")
+		return nil
 	}
-	compatible := make(map[string]struct{}, len(category.Conditions))
-	addConditions := func(conditions []webcore.TaxCategoryReference) {
-		for _, condition := range conditions {
-			if id := strings.TrimSpace(condition.ID); id != "" {
-				compatible[id] = struct{}{}
+	conditions := make([]webcore.TaxCategoryReference, 0, len(category.Conditions))
+	seen := make(map[string]struct{}, len(category.Conditions))
+	addConditions := func(candidates []webcore.TaxCategoryReference) {
+		for _, condition := range candidates {
+			id := strings.TrimSpace(condition.ID)
+			if id == "" {
+				continue
 			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			conditions = append(conditions, condition)
 		}
 	}
+
 	addConditions(category.Conditions)
 	selectedID := strings.TrimSpace(category.ID)
 	for _, parent := range categories {
@@ -397,6 +413,19 @@ func validateWebTaxConditions(categories []webcore.TaxCategory, category *webcor
 				addConditions(parent.Conditions)
 				break
 			}
+		}
+	}
+	return conditions
+}
+
+func validateWebTaxConditions(categories []webcore.TaxCategory, category *webcore.TaxCategory, conditionIDs []string) error {
+	if category == nil {
+		return fmt.Errorf("web apps tax-category set: selected category is missing")
+	}
+	compatible := make(map[string]struct{}, len(category.Conditions))
+	for _, condition := range effectiveWebTaxConditions(categories, category) {
+		if id := strings.TrimSpace(condition.ID); id != "" {
+			compatible[id] = struct{}{}
 		}
 	}
 	for _, conditionID := range conditionIDs {
@@ -430,8 +459,9 @@ func printWebAppTaxCategoryCatalog(result webcore.TaxCategoryCatalog, output str
 		pretty,
 		func() error {
 			rows := make([][]string, 0, len(result.Categories)+len(result.Conditions))
-			for _, category := range result.Categories {
-				rows = append(rows, []string{"category", category.ID, category.Name, category.ProductType, fmt.Sprintf("%t", category.SubcategoryRequired), taxCategoryConditionIDs(category.Conditions)})
+			for index := range result.Categories {
+				category := &result.Categories[index]
+				rows = append(rows, []string{"category", category.ID, category.Name, category.ProductType, fmt.Sprintf("%t", category.SubcategoryRequired), taxCategoryConditionIDs(effectiveWebTaxConditions(result.Categories, category))})
 			}
 			for _, condition := range result.Conditions {
 				rows = append(rows, []string{"condition", condition.ID, condition.Name, "", "", ""})
@@ -441,8 +471,9 @@ func printWebAppTaxCategoryCatalog(result webcore.TaxCategoryCatalog, output str
 		},
 		func() error {
 			rows := make([][]string, 0, len(result.Categories)+len(result.Conditions))
-			for _, category := range result.Categories {
-				rows = append(rows, []string{"category", category.ID, category.Name, category.ProductType, fmt.Sprintf("%t", category.SubcategoryRequired), taxCategoryConditionIDs(category.Conditions)})
+			for index := range result.Categories {
+				category := &result.Categories[index]
+				rows = append(rows, []string{"category", category.ID, category.Name, category.ProductType, fmt.Sprintf("%t", category.SubcategoryRequired), taxCategoryConditionIDs(effectiveWebTaxConditions(result.Categories, category))})
 			}
 			for _, condition := range result.Conditions {
 				rows = append(rows, []string{"condition", condition.ID, condition.Name, "", "", ""})
