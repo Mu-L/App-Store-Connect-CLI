@@ -478,12 +478,15 @@ func capabilityRows() []Capability {
 			Area:       "testflight",
 			Capability: "Sandbox tester lifecycle",
 			Status:     statusPartial,
-			Commands:   []string{"asc sandbox", "asc web sandbox create"},
+			Commands:   []string{"asc sandbox", "asc web sandbox create", "asc web sandbox delete"},
 			APIResources: []string{
 				"sandboxTesters",
 				"sandboxTestersClearPurchaseHistoryRequest",
 			},
-			Notes: []string{"Public API support varies by operation and account; web-session creation exists as a fallback."},
+			Notes: []string{
+				"Public API support varies by operation and account; web-session creation exists as a fallback.",
+				"Web-session deletion uses a private endpoint, requires --confirm, refuses family members or incomplete account-list snapshots, and verifies absence after the request; Apple's delete response contract remains unverified.",
+			},
 		},
 		{
 			Area:       "analytics",
