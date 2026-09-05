@@ -547,6 +547,15 @@ func capabilityRows() []Capability {
 			NextAction: "Use asc web bundle-ids list, then asc web bundle-ids view --bundle-id BUNDLE_RESOURCE_ID.",
 		},
 		{
+			Area:         "signing",
+			Capability:   "Developer Portal Services ID lifecycle",
+			Status:       statusWebSession,
+			Commands:     []string{"asc web service-ids"},
+			APIResources: []string{"bundleIds"},
+			Notes:        []string{"Services ID list, view, create, rename, and delete use the captured private Developer Portal web-session bundleIds contract filtered to platform=SERVICES. This entry does not cover public Bundle ID lifecycle or Service ID capability and Sign in with Apple configuration workflows."},
+			NextAction:   "Use asc web service-ids list, view, create, rename, or delete; configure Service ID capabilities and Sign in with Apple settings separately in the Developer Portal.",
+		},
+		{
 			Area:       "signing",
 			Capability: "App Clip Bundle ID capability sync",
 			Status:     statusWebSession,
