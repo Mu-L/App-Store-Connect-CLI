@@ -77,3 +77,42 @@ func TestPrintWebXcodeCloudVersionAliasesUsesRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintWebXcodeCloudVersionAliasUsesRegistry(t *testing.T) {
+	result := &WebXcodeCloudVersionAliasResult{
+		ProductID:      "prod-1",
+		Action:         "updated",
+		ID:             "alias-1",
+		Name:           "Release",
+		Type:           "xcode_version",
+		Locked:         true,
+		BuildName:      "42",
+		BuildSupported: true,
+	}
+	outputs := map[string]string{
+		"table":    captureStdout(t, func() error { return PrintTable(result) }),
+		"markdown": captureStdout(t, func() error { return PrintMarkdown(result) }),
+	}
+	for name, output := range outputs {
+		for _, want := range []string{"Product ID", "Action", "ID", "Name", "Type", "Locked", "Build name", "Build supported", "prod-1", "updated", "alias-1", "Release", "xcode_version", "42", "true"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("%s output missing %q: %q", name, want, output)
+			}
+		}
+	}
+}
+
+func TestPrintWebXcodeCloudVersionAliasDeleteUsesRegistry(t *testing.T) {
+	result := &WebXcodeCloudVersionAliasDeleteResult{ProductID: "prod-1", ID: "alias-1", Deleted: true}
+	outputs := map[string]string{
+		"table":    captureStdout(t, func() error { return PrintTable(result) }),
+		"markdown": captureStdout(t, func() error { return PrintMarkdown(result) }),
+	}
+	for name, output := range outputs {
+		for _, want := range []string{"Product ID", "ID", "Deleted", "prod-1", "alias-1", "true"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("%s output missing %q: %q", name, want, output)
+			}
+		}
+	}
+}

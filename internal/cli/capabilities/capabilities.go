@@ -293,8 +293,8 @@ func capabilityRows() []Capability {
 			Capability: "Regulated medical device declaration",
 			Status:     statusWebSession,
 			Commands:   []string{"asc web apps medical-device"},
-			Notes:      []string{"App Store Regulations and Permits medical-device declarations are not present in the embedded public OpenAPI snapshot. The command currently supports the common undeclared (No) path."},
-			NextAction: "Use App Store Connect web UI, or asc web apps medical-device set --declared false.",
+			Notes:      []string{"App Store Regulations and Permits medical-device declarations are not present in the embedded public OpenAPI snapshot. The web command supports the captured app-level No path and affirmative EEA/GBR/USA selection; detailed registration, support, and contact fields remain website-only. The captured No path preserves existing regional rows."},
+			NextAction: "Use asc web apps medical-device set --declared false, or set --declared true --confirm for the captured app-level path; complete detailed fields in App Store Connect.",
 		},
 		{
 			Area:       "app-management",
@@ -399,7 +399,7 @@ func capabilityRows() []Capability {
 			Status:     statusWebSession,
 			Commands:   []string{"asc web apps declarations list"},
 			Notes: []string{
-				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; writes other than medical-device --declared false remain website-only. EU DSA trader status is account-level and is not part of this listing.",
+				"App Store Regulations and Permits requirements are not present in the embedded public OpenAPI snapshot. Listing reports each app-scoped requirement Apple returns; the web command supports captured medical-device app-level declarations, while personal-service and detailed medical fields remain website-only. EU DSA trader status is account-level and is not part of this listing.",
 			},
 			NextAction: "Use App Store Connect web UI, or asc web apps declarations list.",
 		},
@@ -646,8 +646,8 @@ func capabilityRows() []Capability {
 			Area:       "review",
 			Capability: "Web-only review rejection inspection",
 			Status:     statusWebSession,
-			Commands:   []string{"asc web review"},
-			Notes:      []string{"Reviewer-message and rejection-detail surfaces, plus next-version subscription and IAP attachment, are richer or only available in App Store Connect web-session flows."},
+			Commands:   []string{"asc web review", "asc web review reply"},
+			Notes:      []string{"Reviewer-message and rejection-detail surfaces, plus next-version subscription and IAP attachment, are richer or only available in App Store Connect web-session flows. The experimental reply path requires --confirm, has no attachment or CLI draft-lifecycle support, and does not automatically retry an ambiguous send; source capture has not proven provider acceptance."},
 		},
 	}
 }
