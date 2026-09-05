@@ -5,10 +5,10 @@ Quirks and tips for specific App Store Connect API endpoints.
 ## Web App Privacy Data Usage Updates
 
 - Live canary on 2026-09-04 using a disposable app and a redacted web session verified the private `PATCH /iris/v1/appDataUsages/{usageID}` contract for a same-category, same-purpose `DATA_LINKED_TO_YOU` to `DATA_NOT_LINKED_TO_YOU` identity flip. The request uses the existing `appDataUsages` JSON:API resource and its `dataProtection` relationship; Apple returned `200`, and a fresh GET showed the same usage ID with the new protection.
-- The reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition was not exercised by this canary and remains unverified; do not infer it from this note.
+- A second live canary on 2026-09-05 using the same disposable app verified the reverse `DATA_NOT_LINKED_TO_YOU` to `DATA_LINKED_TO_YOU` transition. The temporary `EMAIL_ADDRESS`/`APP_FUNCTIONALITY` tuple returned `200`, and a fresh GET retained the same usage ID with the new protection. The exact pre-canary `DATA_NOT_COLLECTED` baseline was restored and matched on a fresh GET.
 - The canary seeded the tuple with `POST` (`201`), confirmed it by GET, then restored the semantic baseline by deleting it (`204`) and creating the `DATA_NOT_COLLECTED` declaration (`201`). Direct restore attempts via `POST` or `PATCH` to `DATA_NOT_COLLECTED` returned `409 STATE_ERROR`.
 - The direct mutations advanced the remote `lastPublished` value while `published` remained `true`, despite no publish endpoint being called. Treat this path as a published-state mutation; do not describe the canary or `asc web privacy apply` as unpublished-only.
-- For the verified transition, the planner must pair only the same-category, same-purpose identity flip into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations; other identity-transition directions are not covered by this live contract.
+- For these verified transitions, the planner must pair only a same-category, same-purpose identity flip in either direction into a PATCH update. Tracking, `DATA_NOT_COLLECTED`, and scope changes remain delete/create operations.
 
 ## Apple Ads Profile Context Isolation
 
@@ -81,10 +81,12 @@ Verified against the App Store Connect OpenAPI snapshot in `docs/openapi/` (spec
 
 ## Web-session API keys
 
-- `asc web api-keys list` reuses the iris v1 team-key list (`GET /iris/v1/apiKeys?include=createdBy,revokedBy,provider`) and the iris v2 individual-key list (`GET /iris/v2/apiKeys?include=visibleApps,createdByActor,revokedByActor`) already used by `asc web auth capabilities`. Both readers follow `links.next` internally, so the command has no `--paginate` flag. Individual keys sometimes carry an empty `roles` array on that list payload; list does not issue per-key actor lookups. Use `asc web auth capabilities --key-id` to resolve actor-backed roles for one key.
+- `asc web api-keys list` reuses the iris v1 team-key list (`GET /iris/v1/apiKeys?include=createdBy,revokedBy,provider&sort=-isActive,-revokingDate&limit=2000`) and the iris v2 individual-key list (`GET /iris/v2/apiKeys?include=visibleApps,createdByActor,revokedByActor&limit[visibleApps]=3&limit=2000`) already used by `asc web auth capabilities`. Both readers follow `links.next` internally, so the command has no `--paginate` flag. Individual keys sometimes carry an empty `roles` array on that list payload; list does not issue per-key actor lookups. Use `asc web auth capabilities --key-id` to resolve actor-backed roles for one key.
 - `asc web api-keys view --key-id` uses the existing iris v1 team-key resource (`GET /iris/v1/apiKeys/{id}?include=provider`). Individual keys appear in `list` but are not loaded by `view`. The issue proposed `get`; current CLI taxonomy uses `view` for this leaf.
 - Those payloads expose key ID, nickname, roles, `isActive`, key type, and last-used. They do not include a creation date, so list/view omit that column rather than inventing one. Private key material is never copied into command output.
-- Revoke and `--individual` create still need a live web-session endpoint capture.
+- Current App Store Connect frontend source identifies the revoke contract, but it is **live-unverified** because no revoke was performed: both key families use `PATCH /iris/{v1|v2}/apiKeys/{id}` with a JSON:API body of `{"data":{"id":"<id>","type":"apiKeys","attributes":{"isActive":false}}}`. Team uses Iris v1 and the team list query above; individual uses Iris v2 and the individual list query above. The scoped CLI command is `asc web api-keys revoke --key-id KEY_ID --type team|individual --confirm`; it lists only the requested family before the write, skips an already inactive key, sends one PATCH, then re-lists that family and requires the key to be inactive.
+- A 5xx/transport failure from the PATCH or any post-list/verification failure reports the revoke outcome as unknown and sends no automatic retry. Only a verified inactive post-state produces the `revoked` receipt; an already inactive pre-state produces an `already_inactive` no-op receipt. Neither receipt contains key material.
+- Individual-key creation remains unimplemented. No current request body, response/P8 delivery contract, or live acceptance evidence has been captured, so `--individual` is not accepted on `create`.
 
 ## Web app availability (iris)
 

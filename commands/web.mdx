@@ -180,13 +180,14 @@ receipt reflects that re-read state and includes `verified: true`.
 
 ### `asc web api-keys`
 
-Team and individual API key listing, team-key inspection, and team API key creation through an Apple Account web session.
+List team and individual API keys, inspect and create team keys, and revoke either key type through an Apple Account web session.
 
 Available commands:
 
 * `asc web api-keys list` - list team and individual keys visible to the cached web session
 * `asc web api-keys view` - inspect one team API key by `--key-id`
 * `asc web api-keys create` - create an all-apps team key and save its one-time P8 as `AuthKey_<KEY_ID>.p8`
+* `asc web api-keys revoke` - revoke one team or individual key after a type-specific preflight
 
 Example:
 
@@ -205,6 +206,8 @@ asc web api-keys create \
 The create role defaults to `ADMIN`. The output file is created with mode `0600`, existing files are not replaced, and key contents are not printed to command output.
 
 Role requirement: creating a team API key requires an Account Holder or Admin web session. The `--role` value must be one of Apple's selectable team-key roles. Matching is case-insensitive, so `--role app_manager` is sent as `APP_MANAGER`.
+
+`asc web api-keys revoke --key-id KEY_ID --type team --confirm` revokes a team key; use `--type individual` for an individual key. The command verifies exactly one matching key, treats an inactive key as a no-op, and re-reads inactive state after revocation. Unknown outcomes are not retried automatically.
 
 ### `asc web apps`
 
@@ -411,7 +414,7 @@ Available commands:
 * `asc web privacy catalog` - list valid privacy declaration tokens
 * `asc web privacy pull` - fetch the current declaration state
 * `asc web privacy plan` - diff a local declaration file against remote state
-* `asc web privacy apply` - apply declaration changes without publishing
+* `asc web privacy apply` - apply declaration changes without calling Apple's publish endpoint; usage mutations may update published-state metadata
 * `asc web privacy publish` - explicitly publish the declaration
 
 Recommended flow:

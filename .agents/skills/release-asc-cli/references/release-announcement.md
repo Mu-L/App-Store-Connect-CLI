@@ -13,9 +13,11 @@ Keep the complete text under Bluesky's 300-character limit. Use one post, not a 
 
 ## Typefully workflow
 
+Use this section only when an external draft is authorized. Otherwise include the finished copy in the local handoff without creating a remote draft.
+
 1. Inspect the most recent ASC CLI release draft to preserve the established voice without copying stale claims.
 2. Resolve the user's social set and enable all five platforms.
 3. Create the post as an unscheduled draft only.
 4. Verify the returned state is `draft` and return its review URL.
 
-If the Typefully connector is unavailable, preserve the finished copy in the handoff and report the connector as the only incomplete release step. Never silently publish through another tool.
+If the Typefully connector is unavailable, preserve the finished copy in the handoff and report the external draft as incomplete, separately from artifact and distribution verification. Never silently publish through another tool.
