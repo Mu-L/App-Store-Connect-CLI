@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,10 @@ var syncAppClipBundleIDCapabilityFn = func(ctx context.Context, client *webcore.
 
 var enableDeveloperBundleIDCapabilityFn = func(ctx context.Context, client *webcore.Client, req webcore.DeveloperBundleIDCapabilityEnableRequest) (*webcore.DeveloperBundleIDCapabilityEnableResult, error) {
 	return client.EnableDeveloperBundleIDCapability(ctx, req)
+}
+
+var disableDeveloperBundleIDCapabilityFn = func(ctx context.Context, client *webcore.Client, req webcore.DeveloperBundleIDCapabilityDisableRequest) (*asc.DeveloperBundleIDCapabilityDisableResult, error) {
+	return client.DisableDeveloperBundleIDCapability(ctx, req)
 }
 
 var listDeveloperBundleIDsFn = func(ctx context.Context, client *webcore.Client) (*webcore.DeveloperBundleIDsListResult, error) {
@@ -229,10 +234,117 @@ Portal web-session endpoints.
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			WebBundleIDCapabilitiesEnableCommand(),
+			WebBundleIDCapabilitiesDisableCommand(),
 			WebBundleIDCapabilitiesSyncAppClipCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
+		},
+	}
+}
+
+// WebBundleIDCapabilitiesDisableCommand disables a Developer Portal-only
+// Bundle ID capability while preserving all existing capability relationships.
+func WebBundleIDCapabilitiesDisableCommand() *ffcli.Command {
+	fs := flag.NewFlagSet("web bundle-ids capabilities disable", flag.ExitOnError)
+
+	bundleID := fs.String("bundle-id", "", "Opaque Developer Portal Bundle ID resource ID")
+	capability := fs.String("capability", "", "Developer Portal capability ID (supported: PRIVATE_CLOUD_COMPUTE)")
+	confirm := fs.Bool("confirm", false, "Confirm disabling this Bundle ID capability")
+	authFlags := bindWebSessionFlags(fs)
+	portalFlags := bindDeveloperPortalFlags(fs)
+	output := shared.BindOutputFlags(fs)
+
+	return &ffcli.Command{
+		Name:       "disable",
+		ShortUsage: "asc web bundle-ids capabilities disable --bundle-id BUNDLE_RESOURCE_ID --capability PRIVATE_CLOUD_COMPUTE --confirm [flags]",
+		ShortHelp:  "Disable a Developer Portal-only Bundle ID capability.",
+		LongHelp: `WEB SESSION WORKFLOWS
+
+Disable a Bundle ID capability that is exposed by Apple Developer Portal but is
+absent from the public App Store Connect capability enum.
+
+The command loads capability metadata and the complete current Bundle ID
+capability graph before saving. Existing settings and relationships are
+preserved. A fresh read must prove the same Bundle ID and a complete included
+capability graph, retain every pre-existing unrelated capability resource, and
+either keep the same target resource IDs with every target disabled or show
+that Apple removed all target resources before the command returns a success
+receipt. Missing or partial target graphs remain unverified. If the capability
+is already disabled, the command returns an already-disabled result without a
+PATCH.
+
+Currently supported capability IDs:
+  PRIVATE_CLOUD_COMPUTE
+
+Example:
+  asc web bundle-ids capabilities disable --bundle-id "BUNDLE_RESOURCE_ID" --capability "PRIVATE_CLOUD_COMPUTE" --confirm
+
+Authentication:
+  This command needs Developer Portal cookies and CSRF headers derived from the
+  user-owned Apple web session. If a cached App Store Connect-only session cannot
+  be promoted, clear only its cached session and log in again with the same binary:
+  asc web auth logout --apple-id "user@example.com"
+  asc web auth login --apple-id "user@example.com"
+
+`,
+		FlagSet:   fs,
+		UsageFunc: shared.DefaultUsageFunc,
+		Exec: func(ctx context.Context, args []string) error {
+			if len(args) > 0 {
+				return shared.UsageError("web bundle-ids capabilities disable does not accept positional arguments")
+			}
+
+			resolvedBundleID := strings.TrimSpace(*bundleID)
+			resolvedCapability := strings.ToUpper(strings.TrimSpace(*capability))
+			switch {
+			case resolvedBundleID == "":
+				return shared.UsageError("--bundle-id is required")
+			case resolvedCapability == "":
+				return shared.UsageError("--capability is required")
+			case !*confirm:
+				return shared.UsageError("--confirm is required")
+			case resolvedCapability != "PRIVATE_CLOUD_COMPUTE":
+				return shared.UsageErrorf("unsupported Developer Portal capability %q (supported: PRIVATE_CLOUD_COMPUTE)", resolvedCapability)
+			}
+			if err := validateDeveloperPortalFlags(portalFlags); err != nil {
+				return err
+			}
+
+			session, requestCtx, cancel, err := resolveWebSessionForCommand(ctx, authFlags)
+			defer cancel()
+			if err != nil {
+				return err
+			}
+			client := newDeveloperPortalClient(session, portalFlags)
+
+			var result *asc.DeveloperBundleIDCapabilityDisableResult
+			err = withWebSpinner("Disabling Developer Portal Bundle ID capability", func() error {
+				var disableErr error
+				result, disableErr = disableDeveloperBundleIDCapabilityFn(requestCtx, client, webcore.DeveloperBundleIDCapabilityDisableRequest{
+					BundleID:   resolvedBundleID,
+					Capability: resolvedCapability,
+				})
+				return disableErr
+			})
+			// Persist after every PATCH attempt so a later inspection uses any
+			// refreshed cookies and the same selected Developer Portal team.
+			persistDeveloperPortalSession(session)
+			if err != nil {
+				var unverified *webcore.DeveloperBundleIDCapabilityUnverifiedError
+				if errors.As(err, &unverified) {
+					fmt.Fprintf(os.Stderr, "Warning: disabling %s on Bundle ID %s may have changed the App ID, which can invalidate existing provisioning profiles. Inspect the Bundle ID before retrying.\n", resolvedCapability, resolvedBundleID)
+				}
+				return withWebAuthHint(err, "web bundle-ids capabilities disable")
+			}
+			if result == nil {
+				return fmt.Errorf("web bundle-ids capabilities disable failed: missing disable result")
+			}
+			if result.Changed {
+				fmt.Fprintf(os.Stderr, "Warning: disabling %s on Bundle ID %s changed the App ID, which invalidates existing provisioning profiles that contain it. Regenerate affected profiles before the next signed build.\n", result.Capability, result.BundleID)
+			}
+
+			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
 	}
 }
