@@ -294,6 +294,7 @@ Available commands:
 * `asc web apps compatibility view|edit` - inspect or change the Mac and Apple Vision Pro App Store opt-in settings
 * `asc web apps distribution view|set` - inspect or update the app distribution method (`APP_STORE` or `CUSTOM`)
 * `asc web apps history` - view App Store version status history, optionally scoped with `--version-id`
+* `asc web apps transfer status` - read the app-attached transfer request without performing transfer actions
 * `asc web apps declarations list` - list the App Store Regulations & Permits declarations tracked for an app
 * `asc web apps medical-device view` - read the stored regulated medical device declaration
 * `asc web apps medical-device set` - manage the regulated medical device declaration
@@ -317,6 +318,32 @@ Notes:
 * `asc web apps distribution view` prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. `distribution set` covers only the captured app-level public/private transition and paired education value. `DIRECT_URL`/unlisted distribution remains a separate Apple flow with no captured request contract and stays in the App Store Connect web UI
 
 `asc web apps tax-category set` requires `--app`, `--category`, and `--confirm`. Repeat `--condition` for compatible conditions or omit it to clear them. The command validates the catalog before writing and re-reads the result. Transaction Tax reports remain outside this workflow.
+
+### `asc web apps transfer`
+
+Read the transfer request attached to an app through an authenticated web session:
+
+```bash
+asc web apps transfer status --app APP_ID
+asc web apps transfer status --app APP_ID --output json
+```
+
+This experimental command uses `GET /iris/v1/apps/{appId}?include=appTransferRequest`.
+JSON preserves Apple's complete app response, including the relationship, any
+included transfer resource, links, and unknown fields. Table and Markdown output
+show request presence (`none`, `present`, or `unknown`), the transfer ID, and the
+state Apple returned. Explicit `data: null` means no request was returned;
+omitted linkage or state remains unknown. No eligibility or completion is inferred.
+
+A read on the disposable app verified HTTP 200 with an explicit null relationship.
+A nonempty pending transfer has not yet been captured; its state rendering is
+covered by HTTP fixtures using Apple's source-defined `id` and `state` fields.
+
+The manual prerequisite page is
+`https://appstoreconnect.apple.com/WebObjects/iTunesConnect.woa/wa/LCAppPage/transferApp?adamId=APP_ID`.
+The command does not open or scrape it, or list recipient-side transfers.
+Initiate, accept, cancel, and decline are intentionally deferred until the
+maintainer performs those workflows and captures their requests and responses.
 
 ### `asc web sandbox`
 
