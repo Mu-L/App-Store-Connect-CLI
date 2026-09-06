@@ -65,6 +65,7 @@ Examples:
 			webXcodeCloudWorkflowsCommand(),
 			webXcodeCloudEnvVarsCommand(),
 			webXcodeCloudNextBuildNumberCommand(),
+			webXcodeCloudScmCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp

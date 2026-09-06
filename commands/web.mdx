@@ -883,6 +883,32 @@ Available command groups:
 * `asc web xcode-cloud env-vars` - manage shared and workflow-scoped environment variables
 * `asc web xcode-cloud settings` - inspect product settings, change the next build number, and manage custom version aliases
 
+The experimental SCM commands inspect provider connections through the web session:
+
+```bash
+asc web xcode-cloud scm providers list --output json
+asc web xcode-cloud scm providers list --output table
+asc web xcode-cloud scm connection-status --scm-provider-id "PROVIDER_ID" --output json
+```
+
+Use a private provider ID returned by `providers list` for `connection-status`.
+The public `asc xcode-cloud scm providers list` reads a separate public API.
+The private list returns Apple's raw JSON array, and status returns Apple's raw
+object. JSON preserves snake_case keys, optional fields, and unknown fields.
+The list has no pagination mode.
+
+Table and Markdown show provider ID, provider, name, registered, and connected;
+omitted booleans display `unknown`. Status output shows the selected provider ID
+and Apple's status string. A successful read exits successfully for
+`connection_issue`, `auth_issue`, and future nonempty status values as well as
+`success`. Opaque provider error details remain available in JSON.
+
+Provider registration, OAuth/PAT linking, repository assignment, disconnect, and
+product onboarding still require the App Store Connect web UI. The CLI commands
+perform only the two reads above. A 2026-09-06 authenticated browser check returned
+six provider records and one `success` status with zero mutations; final CLI live
+execution remains unverified.
+
 TestFlight post-actions in a web workflow use beta-group or tester IDs. Resolve the
 Xcode Cloud product to its App Store Connect app, then use the public TestFlight
 commands to find the IDs before editing the workflow:
