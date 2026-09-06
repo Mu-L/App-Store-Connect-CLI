@@ -38,6 +38,7 @@ func registerAllOutputRenderers() {
 	registerRows(webAppGroupSetRows)
 	registerRows(webServiceIDMutationRows)
 	registerRows(webAppDistributionSetRows)
+	registerRows(webAppDistributionUserMutationRows)
 	registerRows(webAppTaxCategoryViewResultRows)
 	registerRows(webAppTaxCategorySetResultRows)
 	registerRows(webIAPTaxCategorySetResultRows)
