@@ -282,6 +282,14 @@ func capabilityRows() []Capability {
 		},
 		{
 			Area:       "app-management",
+			Capability: "App transfer status",
+			Status:     statusWebSession,
+			Commands:   []string{"asc web apps transfer status"},
+			Notes:      []string{"Reads the app-attached transfer relationship through a web session and preserves Apple's raw state. It does not check eligibility or list recipient transfers; initiate, accept, cancel, and decline remain manual workflows."},
+			NextAction: "Use asc web apps transfer status --app APP_ID for the app-attached request, or App Store Connect for transfer actions.",
+		},
+		{
+			Area:       "app-management",
 			Capability: "App Store Mac and Vision Pro compatibility opt-ins",
 			Status:     statusWebSession,
 			Commands:   []string{"asc web apps compatibility"},
