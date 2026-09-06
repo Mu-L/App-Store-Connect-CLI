@@ -361,6 +361,9 @@ Available commands:
 * `asc web apps availability create` - bootstrap initial territory availability
 * `asc web apps compatibility view|edit` - inspect or change the Mac and Apple Vision Pro App Store opt-in settings
 * `asc web apps distribution view|set` - inspect or update the app distribution method (`APP_STORE` or `CUSTOM`)
+* `asc web apps distribution users list` - list Apple Account recipients for an app
+* `asc web apps distribution users create` - add one Apple Account recipient to an app
+* `asc web apps distribution users delete` - remove one app recipient
 * `asc web apps history` - view App Store version status history, optionally scoped with `--version-id`
 * `asc web apps transfer status` - read the app-attached transfer request without performing transfer actions
 * `asc web apps declarations list` - list the App Store Regulations & Permits declarations tracked for an app
@@ -384,6 +387,43 @@ Notes:
 * `asc web apps distribution set --app APP_ID --method public|private --confirm` updates the app-level method through the web session; public may also take `--education-discount discounted|not-discounted`, while private always uses `NOT_APPLICABLE`. The setter preserves existing custom organization and user rows, verifies the result with a follow-up read, and reports an uncertain receipt when Apple's write outcome is ambiguous.
 * `asc web apps history` records live per app store version; without `--version-id` the command lists the app's versions and reads each version's status changes. `--version-id` is rejected when that version does not belong to `--app`. Both reads follow Apple's pagination links internally, so there is no `--paginate` flag. Viewing history is gated by the App Status History role capability
 * `asc web apps distribution view` prints `distributionType` as `APP_STORE` (public) or `CUSTOM` (private distribution through Apple Business Manager or Apple School Manager); attributes Apple omits are reported as `unknown`. `distribution set` covers only the captured app-level public/private transition and paired education value. `DIRECT_URL`/unlisted distribution remains a separate Apple flow with no captured request contract and stays in the App Store Connect web UI
+
+List, create, and delete custom-distribution Apple Account recipients with:
+
+```bash
+asc web apps distribution users list --app APP_ID [--paginate] [--output json|table|markdown]
+asc web apps distribution users create --app APP_ID --recipient-apple-id APPLE_ACCOUNT --confirm
+asc web apps distribution users delete --app APP_ID --id RECIPIENT_ID --confirm
+```
+
+`--recipient-apple-id` identifies the Apple Account being added. The ordinary
+web authentication flag `--apple-id` selects the account used for the web
+session and is never used as the recipient input. `list` is available for any
+app distribution mode. `create` and `delete` require the selected app to
+already be `CUSTOM`; they do not change the app distribution. If that
+precondition fails, use `asc web apps distribution set --app APP_ID --method
+private --confirm` as a separate, explicit step.
+
+List JSON preserves Apple's raw JSON:API envelope, including `data`, top-level
+`links`, `meta.paging`, unknown resource members, unknown attributes, and
+resource links. It does not add a `pages` wrapper. With `--paginate`, the
+command follows the collection's `links.next` values while retaining raw
+resource members and the first envelope's other fields. Human output shows
+the recipient ID and Apple Account.
+
+Recipient ownership comes from the complete collection selected by `--app`;
+returned `customAppUsers` resources need not contain a `relationships.app`.
+The command does not prove ownership with a top-level recipient read.
+Mutations validate the app identity and resource type, read the complete
+selected-app collection before writing, and verify the created member or
+deleted absence afterward. A matching existing account or confirmed absent
+ID may be reported as an unchanged result only after that complete read.
+
+Create and delete require `--confirm`, perform at most one write, and do not
+retry automatically. Network, timeout, or malformed accepted responses remain
+explicitly uncertain; a readback may establish observed state without
+turning the original ambiguous outcome into a success or a safe-to-retry
+claim. Mutation receipts contain no authentication secrets.
 
 `asc web apps tax-category set` requires `--app`, `--category`, and `--confirm`. Repeat `--condition` for compatible conditions or omit it to clear them. The command validates the catalog before writing and re-reads the result. Transaction Tax reports remain outside this workflow.
 

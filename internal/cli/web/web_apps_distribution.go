@@ -48,6 +48,7 @@ separate Apple flow and is not inferred or changed by this command.
 		Subcommands: []*ffcli.Command{
 			WebAppsDistributionViewCommand(),
 			WebAppsDistributionSetCommand(),
+			WebAppsDistributionUsersCommand(),
 		},
 		Exec: func(ctx context.Context, args []string) error {
 			return flag.ErrHelp
