@@ -62,6 +62,12 @@ func TestExperimentalCommandsHaveStabilityLabel(t *testing.T) {
 		{[]string{"web", "finance"}},
 		{[]string{"web", "finance", "transaction-tax"}},
 		{[]string{"web", "finance", "transaction-tax", "download"}},
+		{[]string{"web", "iap"}},
+		{[]string{"web", "iap", "tax-category"}},
+		{[]string{"web", "iap", "tax-category", "list"}},
+		{[]string{"web", "iap", "tax-category", "view"}},
+		{[]string{"web", "iap", "tax-category", "set"}},
+		{[]string{"web", "iap", "tax-category", "reset"}},
 	}
 
 	for _, tc := range cases {
@@ -121,6 +127,12 @@ func TestWebCommandsDoNotHaveExperimentalStabilityLabel(t *testing.T) {
 		"web finance":                          {},
 		"web finance transaction-tax":          {},
 		"web finance transaction-tax download": {},
+		"web iap":                              {},
+		"web iap tax-category":                 {},
+		"web iap tax-category list":            {},
+		"web iap tax-category view":            {},
+		"web iap tax-category set":             {},
+		"web iap tax-category reset":           {},
 	}
 	for _, sub := range webCmd.Subcommands {
 		if sub.Name == "agreements" {

@@ -458,17 +458,21 @@ func capabilityRows() []Capability {
 		{
 			Area:       "monetization",
 			Capability: "App and In-App Purchase tax category",
-			Status:     statusPartial,
+			Status:     statusWebSession,
 			Commands: []string{
 				"asc web apps tax-category list",
 				"asc web apps tax-category view",
 				"asc web apps tax-category set",
+				"asc web iap tax-category list",
+				"asc web iap tax-category view",
+				"asc web iap tax-category set",
+				"asc web iap tax-category reset",
 			},
 			Notes: []string{
-				"App Information tax category is available through web-session commands; the public OpenAPI snapshot has no tax-category resource.",
-				"In-App Purchase tax category remains unimplemented because its web-session read/write contract is not captured. The application setter validates the captured catalog, requires --confirm, clears conditions when --condition is omitted, and does not automatically retry an ambiguous write; a disposable-app canary verified explicit application tax configuration and readback, while PATCH, condition changes, and account-specific errors remain unverified.",
+				"Tax categories use private web-session endpoints; the public OpenAPI snapshot has no tax-category resource. App Information uses the APPLICATION catalog, while In-App Purchases use ADDON.",
+				"IAP reads preserve Apple's response. Explicit null means inheritance from the parent app without identifying its effective category. set requires --confirm, validates the catalog, replaces the complete condition set (omitting --condition clears it), and verifies the result. reset removes only the discovered IAP tax override and verifies explicit null. Neither mutation retries automatically after an uncertain outcome.",
 			},
-			NextAction: "Use asc web apps tax-category list/view/set for App Information; use App Store Connect web UI for In-App Purchase tax category.",
+			NextAction: "Use asc web apps tax-category list/view/set for App Information, or asc web iap tax-category list/view/set/reset for In-App Purchases.",
 		},
 		{
 			Area:       "testflight",

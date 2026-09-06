@@ -72,17 +72,55 @@ the App Store Connect web-client source captured for issue #2299:
   verified explicit application tax configuration and readback. PATCH,
   condition changes, and account-specific errors remain unverified; selecting
   the legally correct classification remains the operator's responsibility.
-- In-App Purchase tax-category read/write is still unavailable because its
-  web-session contract has not been captured. `GET /v1/financeReports` accepts
-  only `FINANCIAL` and `FINANCE_DETAIL` in `filter[reportType]`, and
-  `GET /v1/salesReports` has no tax report type, so Transaction Tax reports
-  cannot be generated or downloaded through the public API. The captured
-  finance workflow is available through the experimental
+- In-App Purchase tax categories are available through the experimental
+  web-session commands `asc web iap tax-category list`,
+  `asc web iap tax-category view --iap IAP_ID`,
+  `asc web iap tax-category set --iap IAP_ID --category CATEGORY_ID
+  [--condition CONDITION_ID ...] --confirm`, and
+  `asc web iap tax-category reset --iap IAP_ID --confirm`. The IAP catalog is
+  distinct from the application catalog: it uses
+  `GET /iris/v1/taxCategories?filter[productType]=ADDON&include=subcategories,conditions&limit[subcategories]=100&limit[conditions]=100`,
+  while App Information uses `filter[productType]=APPLICATION`. `list` keeps
+  the raw JSON:API catalog envelope, including `data`, `included`, `links`,
+  `meta`, and unknown top-level members, for JSON output.
+- `view` first reads
+  `GET /iris/v2/inAppPurchases/{iapId}?include=inAppPurchaseTaxCategoryInfo`.
+  An explicit `inAppPurchaseTaxCategoryInfo.data: null` means that the IAP
+  inherits the parent app's selection; the CLI does not guess the inherited
+  category. Inherited JSON output preserves this raw `inAppPurchases` discovery
+  envelope. For a configured relationship, the CLI follows the returned
+  opaque tax-info ID and reads
+  `GET /iris/v1/inAppPurchaseTaxCategoryInfos/{taxInfoId}?include=category,enabledConditions,inAppPurchaseV2&limit[enabledConditions]=100`;
+  configured JSON output preserves that raw `inAppPurchaseTaxCategoryInfos`
+  detail envelope. The selected IAP is checked against the tax-info owner
+  before the result is accepted.
+- `set` validates the category and every condition against the ADDON catalog,
+  then sends the complete desired category and condition set. Omitting
+  `--condition` sends `enabledConditions.data=[]` and clears stale conditions.
+  It creates the tax-info resource when the IAP is inherited or patches the
+  discovered opaque tax-info ID when configured, performs at most one write and
+  one post-read verification, and does not automatically retry an ambiguous
+  outcome. If the requested state already matches, it reports a verified
+  no-op.
+- `reset` deletes only the discovered
+  `inAppPurchaseTaxCategoryInfos` override and verifies a fresh explicit-null
+  relationship; it never deletes the IAP. When the IAP is already inherited,
+  it skips DELETE and reports a verified no-op. These private endpoints and
+  their request shapes are absent from the public OpenAPI snapshot.
+- A browser canary on 2026-09-06 against disposable app `6759231657` and IAP
+  `6760268101` verified ADDON catalog discovery, create, update, explicit
+  condition clearing, and delete/readback; the disposable IAP was restored and
+  no resources were left behind. This is browser evidence only: final CLI live
+  execution remains unverified.
+- `GET /v1/financeReports` accepts only `FINANCIAL` and `FINANCE_DETAIL` in
+  `filter[reportType]`, and `GET /v1/salesReports` has no tax report type, so
+  Transaction Tax reports cannot be generated or downloaded through the public
+  API. The captured finance workflow is available through the experimental
   `asc web finance transaction-tax download` command; provider and period
   eligibility remain account-specific.
-- `asc capabilities --area monetization` reports the application tax path as
-  partial coverage and keeps In-App Purchase tax selection in the remaining
-  web-only gap.
+- `asc capabilities --area monetization` reports App Information and
+  In-App Purchase tax-category paths as web-session coverage; Transaction Tax
+  reports remain a separate web-session capability.
 
 ## Sandbox Testers
 
