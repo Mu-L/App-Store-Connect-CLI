@@ -575,6 +575,7 @@ var knownFailureParameters = map[string]struct{}{
 	"schedule":                          {},
 	"schedule-id":                       {},
 	"scheme":                            {},
+	"scm-provider-id":                   {},
 	"sdk":                               {},
 	"scoped-player-id":                  {},
 	"score":                             {},

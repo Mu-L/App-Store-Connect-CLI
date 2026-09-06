@@ -634,7 +634,7 @@ func capabilityRows() []Capability {
 			Capability: "Xcode Cloud usage and web workflow management",
 			Status:     statusWebSession,
 			Commands:   []string{"asc web xcode-cloud"},
-			Notes:      []string{"Compute usage, environment variables, and some workflow option and edit surfaces require Apple CI web-session endpoints. Public asc xcode-cloud covers run, status, and documented workflow CRUD."},
+			Notes:      []string{"Compute usage, environment variables, and some workflow option and edit surfaces require Apple CI web-session endpoints. Public asc xcode-cloud covers run, status, and documented workflow CRUD. Experimental asc web xcode-cloud scm providers list and scm connection-status read private provider connection metadata; registration, linking, repository assignment, and onboarding remain unavailable."},
 			NextAction: "Use asc xcode-cloud for public operations, or asc web xcode-cloud for usage and web-only workflow surfaces.",
 		},
 		{
