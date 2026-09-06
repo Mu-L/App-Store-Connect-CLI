@@ -181,6 +181,13 @@ the App Store Connect web-client source captured for issue #2299:
 - These writes are based on the captured frontend constructor and local HTTP tests; no live Apple mutation or live eligibility/success proof was performed. Apple-side role and eligibility restrictions can still reject a validly serialized request.
 - Unlisted App Store distribution is a request form reviewed by Apple, not an attribute value on this resource. There is no captured endpoint for it, so no flag is offered.
 
+## App transfer status (web session)
+
+- The captured App Information frontend includes `appTransferRequest` and models its `id` and `state`. The narrowed read is `GET /iris/v1/apps/{appId}?include=appTransferRequest`, with no body. This relationship is absent from the embedded public OpenAPI app schema.
+- On 2026-09-06, an authenticated read of disposable app `6759231657` returned HTTP 200, the expected `apps` resource ID, `relationships.appTransferRequest.data: null`, and an empty `included` array. The related URL `/iris/v1/apps/{appId}/appTransferRequest` returned HTTP 409 with `ENTITY_ERROR.RELATIONSHIP.INVALID` for that fixture. The CLI uses the successful app read and does not follow the related link.
+- `asc web apps transfer status --app APP_ID` preserves the original JSON envelope. Human output distinguishes explicit null (`none`), a resource reference (`present`), and omitted linkage (`unknown`). It matches an included transfer resource by both type and ID, preserves state strings, and leaves missing state unknown. App identity must match before any output. It does not normalize states into eligibility, success, or failure; no pending-transfer response was observed live.
+- The legacy navigation URL `/WebObjects/iTunesConnect.woa/wa/LCAppPage/transferApp?adamId={appId}` leads to a prerequisite page. It is not a captured initiate API. No recipient list, initiate, accept, cancel, or decline action contract has been captured. Those operations are deferred to maintainer-run transfers and subsequent request/response captures.
+
 ## Last-compatible version settings (`downloadable`)
 
 - App Store Connect's Last-Compatible Version Settings screen has no dedicated resource and no `lastCompatibleVersion` attribute. The feature is carried by the boolean `downloadable` attribute on the existing `appStoreVersions` resource; `lastCompatibleVersion` is only a client-side label App Store Connect puts on the `appStoreVersions` collection it reads back.
