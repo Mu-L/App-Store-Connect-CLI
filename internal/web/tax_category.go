@@ -117,10 +117,14 @@ func decodeTaxCategoryResource(resource jsonAPIResource, included map[string]jso
 }
 
 func decodeTaxConditionResource(resource jsonAPIResource) TaxCondition {
+	name := stringAttr(resource.Attributes, "description")
+	if name == "" {
+		name = stringAttr(resource.Attributes, "name")
+	}
 	return TaxCondition{
 		ID:   strings.TrimSpace(resource.ID),
 		Type: strings.TrimSpace(resource.Type),
-		Name: stringAttr(resource.Attributes, "name"),
+		Name: name,
 	}
 }
 
@@ -176,13 +180,17 @@ func decodeTaxCategoryCatalog(payload jsonAPIListPayload) TaxCategoryCatalog {
 // App Information tax UI. This is an internal web-session endpoint; it is not
 // part of Apple's public App Store Connect API.
 func (c *Client) ListTaxCategories(ctx context.Context) (TaxCategoryCatalog, error) {
+	return c.listTaxCategoriesForProduct(ctx, "APPLICATION")
+}
+
+func (c *Client) listTaxCategoriesForProduct(ctx context.Context, productType string) (TaxCategoryCatalog, error) {
 	query := url.Values{}
-	query.Set("filter[productType]", "APPLICATION")
+	query.Set("filter[productType]", productType)
 	query.Set("include", taxCategoryCatalogInclude)
 	query.Set("limit[subcategories]", "100")
 	query.Set("limit[conditions]", "100")
 	path := queryPath("/taxCategories", query)
-	responseBody, err := c.doJSONAPIRequest(ctx, c.baseURL, http.MethodGet, path)
+	responseBody, err := c.doJSONAPIRequest(ctx, c.baseURL, path)
 	if err != nil {
 		return TaxCategoryCatalog{}, err
 	}

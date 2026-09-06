@@ -47,6 +47,7 @@ Examples:
 			WebAuthCommand(),
 			WebAgreementsCommand(),
 			WebFinanceCommand(),
+			WebIAPCommand(),
 			WebAPIKeysCommand(),
 			WebSandboxCommand(),
 			WebAppsCommand(),

@@ -38,6 +38,13 @@ asc web website-push-ids list --output table
 # [experimental] Generate and download a Transaction Tax Report through the web session
 asc web finance transaction-tax download --date 2026-07 --output-path ./transaction-tax-2026-07.zip --output json
 
+# [experimental] Inspect an In-App Purchase tax category
+asc web iap tax-category list --output json
+asc web iap tax-category view --iap "IAP_ID" --output json
+asc web iap tax-category set --iap "IAP_ID" --category "CATEGORY_ID" --confirm
+# Reset an explicit selection so the purchase inherits the parent app
+asc web iap tax-category reset --iap "IAP_ID" --confirm
+
 # Bootstrap app availability where the public API falls short
 asc web apps availability create --app "123456789" --territory "USA,GBR" --available-in-new-territories false
 
@@ -240,6 +247,67 @@ asc web finance transaction-tax download \
   --output-path ./transaction-tax-2026-07.zip \
   --output json
 ```
+
+### `asc web iap`
+
+[experimental] Read and manage an In-App Purchase tax category through an
+authenticated App Store Connect web session. The public App Store Connect API
+does not expose this resource.
+
+Available commands:
+
+* `asc web iap tax-category list` - list the ADDON tax categories and compatible conditions
+* `asc web iap tax-category view` - view one In-App Purchase's explicit tax selection
+* `asc web iap tax-category set` - set a category and complete condition set
+* `asc web iap tax-category reset` - remove the explicit selection and restore parent-app inheritance
+
+`list` reads the In-App Purchase tax picker catalog with
+`filter[productType]=ADDON`. This catalog is separate from the
+`APPLICATION` catalog used by `asc web apps tax-category`; use the opaque IDs
+returned by this command with `set`.
+
+`view --iap IAP_ID` first reads the In-App Purchase and its
+`inAppPurchaseTaxCategoryInfo` relationship. An explicit `null` relationship
+means that the purchase inherits its parent app's selection. Human output
+labels that state `Inherited from parent app`; JSON output preserves Apple's
+raw In-App Purchase discovery envelope and does not guess or add the effective
+category. When the relationship is configured, the command follows the opaque
+tax-info resource ID and returns Apple's raw tax-info detail envelope instead.
+
+`set --iap IAP_ID --category CATEGORY_ID [--condition CONDITION_ID ...]
+--confirm` validates the category and every condition against the ADDON
+catalog. The conditions are a complete desired set: omitting `--condition`
+sends an explicit empty relationship and clears existing conditions. The
+command performs at most one write followed by one readback verification and
+does not retry an ambiguous outcome. It creates a tax-info resource when the
+purchase is inherited and patches the discovered tax-info resource when one
+already exists.
+
+`reset --iap IAP_ID --confirm` reads the current state, deletes only the
+discovered explicit tax-info override when present, and verifies the explicit
+`null` relationship. An already inherited purchase is reported as an
+unchanged verified result without a delete. The In-App Purchase itself is
+retained.
+
+Example:
+
+```bash  theme={null}
+asc web iap tax-category list --output table
+asc web iap tax-category view --iap "IAP_ID" --output json
+asc web iap tax-category set \
+  --iap "IAP_ID" \
+  --category "CATEGORY_ID" \
+  --condition "CONDITION_ID" \
+  --confirm \
+  --output json
+asc web iap tax-category reset --iap "IAP_ID" --confirm --output json
+```
+
+The endpoint is an experimental private web-session contract. A browser
+canary verified catalog discovery, create, update, condition clearing, and
+delete/readback against disposable app `6759231657` and IAP `6760268101` on
+2026-09-06; the disposable IAP was restored and no temporary resources were
+left behind. This canary does not verify final CLI live execution.
 
 ### `asc web api-keys`
 
@@ -840,6 +908,8 @@ asc web agreements --help
 asc web api-keys --help
 asc web finance --help
 asc web finance transaction-tax download --help
+asc web iap --help
+asc web iap tax-category --help
 asc web apps --help
 asc web removed-apps --help
 asc web bundle-ids --help
