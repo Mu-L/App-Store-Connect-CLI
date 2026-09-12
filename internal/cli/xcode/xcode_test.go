@@ -55,6 +55,166 @@ func TestXcodeExportWaitRequiresDirectUpload(t *testing.T) {
 	}
 }
 
+func TestXcodeExportAcceptsPKGPath(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	var gotOptions localxcode.ExportOptions
+	runExport = func(_ context.Context, opts localxcode.ExportOptions) (*localxcode.ExportResult, error) {
+		gotOptions = opts
+		return &localxcode.ExportResult{
+			ArchivePath: opts.ArchivePath,
+			PKGPath:     opts.PKGPath,
+			BundleID:    "com.example.mac",
+			Version:     "1.2.3",
+			BuildNumber: "42",
+		}, nil
+	}
+
+	cmd := XcodeExportCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{
+		"--archive-path", "Demo.xcarchive",
+		"--export-options", "ExportOptions.plist",
+		"--pkg-path", "Demo.pkg",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	stdout, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if runErr != nil {
+		t.Fatalf("Exec() error: %v", runErr)
+	}
+	if gotOptions.PKGPath != "Demo.pkg" || gotOptions.IPAPath != "" {
+		t.Fatalf("export options = %+v, want only PKG path", gotOptions)
+	}
+	var payload struct {
+		PKGPath string `json:"pkg_path"`
+		IPAPath string `json:"ipa_path"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nstdout=%s", err, stdout)
+	}
+	if payload.PKGPath != "Demo.pkg" || payload.IPAPath != "" {
+		t.Fatalf("export payload = %+v, want only pkg_path", payload)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
+func TestXcodeExportRejectsMultipleArtifactPaths(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	cmd := XcodeExportCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{
+		"--archive-path", "Demo.xcarchive",
+		"--export-options", "ExportOptions.plist",
+		"--ipa-path", "Demo.ipa",
+		"--pkg-path", "Demo.pkg",
+	}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	_, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("Exec() error = %v, want usage error", runErr)
+	}
+	if !strings.Contains(stderr, "Error: --ipa-path and --pkg-path are mutually exclusive") {
+		t.Fatalf("stderr = %q, want artifact conflict", stderr)
+	}
+}
+
+func TestXcodeExportRejectsGeneratedManualPKGOptions(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	runGenerateExportOptions = func(context.Context, localxcode.ExportOptionsGenerateOptions) (*localxcode.ExportOptionsGenerateResult, error) {
+		t.Fatal("generator must not run for unsupported macOS manual signing")
+		return nil, nil
+	}
+	runExport = func(context.Context, localxcode.ExportOptions) (*localxcode.ExportResult, error) {
+		t.Fatal("export must not run for unsupported macOS manual signing")
+		return nil, nil
+	}
+
+	cmd := XcodeExportCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{
+		"--archive-path", "Demo.xcarchive",
+		"--pkg-path", "Demo.pkg",
+		"--signing-style", "manual",
+	}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	_, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("Exec() error = %v, want usage error", runErr)
+	}
+	if !strings.Contains(stderr, "Error: --pkg-path with manual signing requires an explicit --export-options plist") {
+		t.Fatalf("stderr = %q, want manual-signing guidance", stderr)
+	}
+}
+
+func TestXcodeExportDirectUploadDoesNotRequireArtifactPath(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	isDirectUploadExportOptionsFn = func(string) bool { return true }
+	runExport = func(_ context.Context, opts localxcode.ExportOptions) (*localxcode.ExportResult, error) {
+		if opts.IPAPath != "" || opts.PKGPath != "" {
+			t.Fatalf("direct upload options = %+v, want no local artifact path", opts)
+		}
+		return &localxcode.ExportResult{
+			ArchivePath: opts.ArchivePath,
+			BundleID:    "com.example.mac",
+			Version:     "1.2.3",
+			BuildNumber: "42",
+		}, nil
+	}
+
+	cmd := XcodeExportCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{
+		"--archive-path", "Demo.xcarchive",
+		"--export-options", "UploadExportOptions.plist",
+		"--output", "json",
+	}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	stdout, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if runErr != nil {
+		t.Fatalf("Exec() error: %v", runErr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Fatal("expected JSON output")
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
 func TestXcodeInjectGeneratesPlistTextAndCopiesAsset(t *testing.T) {
 	dir := t.TempDir()
 	sourceAssetPath := filepath.Join(dir, "Assets", "AppIcon.appiconset", "Contents.json")

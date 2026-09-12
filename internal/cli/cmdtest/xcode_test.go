@@ -209,6 +209,9 @@ func TestXcodeExportHelpMentionsDirectUploadMode(t *testing.T) {
 	if got := exportCmd.FlagSet.Lookup("ipa-path").Usage; !strings.Contains(got, "when one is produced") {
 		t.Fatalf("expected ipa-path usage to mention produced IPA behavior, got %q", got)
 	}
+	if got := exportCmd.FlagSet.Lookup("pkg-path").Usage; !strings.Contains(got, "macOS .pkg") {
+		t.Fatalf("expected pkg-path usage to mention macOS PKG behavior, got %q", got)
+	}
 	if exportCmd.FlagSet.Lookup("timeout") == nil {
 		t.Fatal("expected xcode export to expose --timeout")
 	}
@@ -506,7 +509,7 @@ func TestXcodeValidateRequiresIPA(t *testing.T) {
 	}
 }
 
-func TestXcodeExportRequiresIPAPath(t *testing.T) {
+func TestXcodeExportRequiresArtifactPath(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
 
@@ -523,7 +526,7 @@ func TestXcodeExportRequiresIPAPath(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "Error: --ipa-path is required") {
-		t.Fatalf("expected ipa-path error, got %q", stderr)
+	if !strings.Contains(stderr, "Error: --ipa-path or --pkg-path is required for a local export") {
+		t.Fatalf("expected artifact path error, got %q", stderr)
 	}
 }
