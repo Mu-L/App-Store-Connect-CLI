@@ -50,8 +50,14 @@ func TestXcodeCommandExists(t *testing.T) {
 	if findSubcommand(root, "xcode", "export") == nil {
 		t.Fatal("expected xcode export command")
 	}
-	if findSubcommand(root, "xcode", "validate") == nil {
+	validateCmd := findSubcommand(root, "xcode", "validate")
+	if validateCmd == nil {
 		t.Fatal("expected xcode validate command")
+	}
+	for _, name := range []string{"ipa", "pkg", "api-key", "api-issuer", "output"} {
+		if validateCmd.FlagSet.Lookup(name) == nil {
+			t.Fatalf("expected xcode validate to expose --%s", name)
+		}
 	}
 	if findSubcommand(root, "xcode", "version") == nil {
 		t.Fatal("expected xcode version command")
@@ -487,7 +493,7 @@ func TestXcodeExportRejectsInvalidImplicitDestinationAsUsage(t *testing.T) {
 	}
 }
 
-func TestXcodeValidateRequiresIPA(t *testing.T) {
+func TestXcodeValidateRequiresArtifact(t *testing.T) {
 	root := RootCommand("1.2.3")
 	root.FlagSet.SetOutput(io.Discard)
 
@@ -504,8 +510,8 @@ func TestXcodeValidateRequiresIPA(t *testing.T) {
 	if stdout != "" {
 		t.Fatalf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "Error: --ipa is required") {
-		t.Fatalf("expected ipa error, got %q", stderr)
+	if !strings.Contains(stderr, "Error: --ipa or --pkg is required") {
+		t.Fatalf("expected artifact error, got %q", stderr)
 	}
 }
 

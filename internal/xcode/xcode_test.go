@@ -487,6 +487,60 @@ func TestValidateRunsAltoolWithTVOSPlatform(t *testing.T) {
 	}
 }
 
+func TestValidateRunsAltoolWithPKGAndMacOSPlatform(t *testing.T) {
+	tempDir := t.TempDir()
+	pkgPath := filepath.Join(tempDir, "Demo.pkg")
+	if err := os.WriteFile(pkgPath, []byte("pkg"), 0o600); err != nil {
+		t.Fatalf("write PKG fixture: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "commands.log")
+
+	restore := overrideTestEnvironment(t)
+	runtimeGOOS = "darwin"
+	lookPathFn = func(file string) (string, error) {
+		switch file {
+		case "xcodebuild":
+			return "/usr/bin/xcodebuild", nil
+		case "xcrun":
+			return "/usr/bin/xcrun", nil
+		default:
+			return "", exec.ErrNotFound
+		}
+	}
+	commandContextFn = helperCommandContext(t, logPath)
+	t.Cleanup(restore)
+
+	result, err := Validate(context.Background(), ValidateOptions{PKGPath: pkgPath})
+	if err != nil {
+		t.Fatalf("Validate() error: %v", err)
+	}
+	if result.PKGPath != pkgPath || result.IPAPath != "" || !result.Validated {
+		t.Fatalf("unexpected PKG validation result: %+v", result)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 logged commands, got %d: %q", len(lines), string(logData))
+	}
+	if !strings.Contains(lines[1], "xcrun|altool|--validate-app|--file|"+pkgPath+"|--type|macos") {
+		t.Fatalf("expected PKG validation with macOS type, got %q", lines[1])
+	}
+}
+
+func TestValidateRejectsMultipleArtifactPaths(t *testing.T) {
+	_, err := Validate(context.Background(), ValidateOptions{
+		IPAPath: "Demo.ipa",
+		PKGPath: "Demo.pkg",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--ipa and --pkg are mutually exclusive") {
+		t.Fatalf("expected mutually exclusive artifact error, got %v", err)
+	}
+}
+
 func TestValidateClassifiesAltoolOutputWithZeroExit(t *testing.T) {
 	tests := []struct {
 		name           string
