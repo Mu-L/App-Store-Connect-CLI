@@ -100,7 +100,7 @@ func PublishTestFlightCommand() *ffcli.Command {
 		LongHelp: `Upload or local-build a binary, then optionally distribute it to TestFlight beta groups.
 
 Steps:
-1. Build locally with Xcode or upload an IPA (unless --build-id/--build-number is provided)
+1. Build locally with Xcode or upload an IPA (unless --build-id/--build-number is provided); macOS local builds export a PKG
 2. Wait for processing when needed (--wait, --test-notes, or --submit)
 3. Stop and return the build metadata with --upload-only, or add the build to specified beta groups
 4. Optionally notify testers
@@ -111,6 +111,7 @@ Examples:
   asc publish testflight --app "123" --ipa app.ipa --upload-only --wait --output json
   asc publish testflight --app "123" --ipa app.ipa --group "GROUP_ID"
   asc publish testflight --app "123" --workspace App.xcworkspace --scheme App --version 1.2.3 --group "GROUP_ID"
+  asc publish testflight --app "123" --workspace MacApp.xcworkspace --scheme MacApp --version 1.2.3 --platform MAC_OS --pkg-path .asc/artifacts/MacApp.pkg --group "GROUP_ID"
   asc publish testflight --app "123" --workspace App.xcworkspace --scheme App --version 1.2.3 --group "GROUP_ID" --signing-style manual --team-id TEAM_ID
   asc publish testflight --app "123" --ipa app.ipa --group "External Testers"
   asc publish testflight --app "123" --ipa app.ipa --group "G1,G2" --wait --notify
@@ -231,6 +232,11 @@ Examples:
 			normalizedPlatform, err := shared.NormalizeAppStoreVersionPlatform(*platform)
 			if err != nil {
 				return shared.UsageError(err.Error())
+			}
+			if localBuildMode {
+				if err := validateLocalBuildArtifactFlags(localBuild, setFlags, normalizedPlatform); err != nil {
+					return err
+				}
 			}
 
 			var uploadFileInfo os.FileInfo
@@ -502,7 +508,7 @@ func PublishAppStoreCommand() *ffcli.Command {
 		LongHelp: `Use this as the canonical high-level App Store publish command.
 
 Workflow:
-1. Build locally with Xcode or upload an IPA
+1. Build locally with Xcode or upload an IPA; macOS local builds export a PKG
 2. Wait for build processing (if --wait)
 3. Find or create the App Store version
 4. Apply version localization metadata (if --metadata-dir)
@@ -519,6 +525,7 @@ Examples:
   asc publish appstore --app "123" --ipa app.ipa --version 1.2.3 --metadata-dir ./metadata --submit --confirm
   asc publish appstore --app "123" --ipa app.ipa --version 1.2.3 --submit --dry-run
   asc publish appstore --app "123" --workspace App.xcworkspace --scheme App --version 1.2.3
+  asc publish appstore --app "123" --workspace MacApp.xcworkspace --scheme MacApp --version 1.2.3 --platform MAC_OS --pkg-path .asc/artifacts/MacApp.pkg
   asc publish appstore --app "123" --workspace App.xcworkspace --scheme App --version 1.2.3 --signing-style manual --team-id TEAM_ID
   asc publish appstore --app "123" --ipa app.ipa --version 1.2.3 --submit --confirm`,
 		FlagSet:   fs,
@@ -580,6 +587,11 @@ Examples:
 			normalizedPlatform, err := shared.NormalizeAppStoreVersionPlatform(*platform)
 			if err != nil {
 				return shared.UsageError(err.Error())
+			}
+			if localBuildMode {
+				if err := validateLocalBuildArtifactFlags(localBuild, setFlags, normalizedPlatform); err != nil {
+					return err
+				}
 			}
 
 			var fileInfo os.FileInfo
@@ -867,7 +879,7 @@ func plannedAppStorePublishResult(mode asc.PublishMode, version, buildNumber str
 		Uploaded:     false,
 		Attached:     false,
 		Submitted:    false,
-		Plan:         plannedAppStorePublishSteps(localBuildMode, wait, submit, applyMetadata),
+		Plan:         plannedAppStorePublishSteps(localBuildMode, localBuildConfig.PKGPath != "", wait, submit, applyMetadata),
 	}
 
 	if !localBuildMode {
@@ -884,6 +896,7 @@ func plannedAppStorePublishResult(mode asc.PublishMode, version, buildNumber str
 	result.Export = &asc.PublishExportStageResult{
 		ArchivePath:       localBuildConfig.ArchivePath,
 		IPAPath:           localBuildConfig.IPAPath,
+		PKGPath:           localBuildConfig.PKGPath,
 		Version:           version,
 		BuildNumber:       buildNumber,
 		ExportOptionsPath: localBuildConfig.ExportOptionsPath,
@@ -893,17 +906,25 @@ func plannedAppStorePublishResult(mode asc.PublishMode, version, buildNumber str
 	return result
 }
 
-func plannedAppStorePublishSteps(localBuildMode, wait, submit, applyMetadata bool) []asc.PublishPlanStep {
+func plannedAppStorePublishSteps(localBuildMode, pkgLocalBuild, wait, submit, applyMetadata bool) []asc.PublishPlanStep {
 	steps := make([]asc.PublishPlanStep, 0, 8)
 	if localBuildMode {
+		artifactName := "IPA"
+		if pkgLocalBuild {
+			artifactName = "PKG"
+		}
 		steps = append(
 			steps,
 			newPublishPlanStep(publishPlanStepArchiveLocalBuild, "Archive the selected Xcode workspace or project to a local .xcarchive."),
-			newPublishPlanStep(publishPlanStepExportLocalBuild, "Export the archive to a local App Store IPA artifact."),
+			newPublishPlanStep(publishPlanStepExportLocalBuild, "Export the archive to a local App Store "+artifactName+" artifact."),
 		)
 	}
 
-	steps = append(steps, newPublishPlanStep(publishPlanStepUploadBuild, "Upload the IPA to App Store Connect and wait for the build record to appear."))
+	artifactName := "IPA"
+	if pkgLocalBuild {
+		artifactName = "PKG"
+	}
+	steps = append(steps, newPublishPlanStep(publishPlanStepUploadBuild, "Upload the "+artifactName+" to App Store Connect and wait for the build record to appear."))
 	if wait {
 		steps = append(steps, newPublishPlanStep(publishPlanStepWaitForBuildProcessing, "Wait for App Store Connect build processing to reach a terminal state."))
 	}
@@ -951,7 +972,33 @@ type publishUploadResult struct {
 }
 
 func uploadBuildAndWaitForID(ctx context.Context, client *asc.Client, appID, ipaPath string, fileInfo os.FileInfo, version, buildNumber string, platform asc.Platform, pollInterval time.Duration, uploadTimeout time.Duration, overrideUploadTimeout bool) (*publishUploadResult, error) {
-	uploadResp, fileResp, err := shared.PrepareBuildUpload(ctx, client, appID, fileInfo, version, buildNumber, platform, asc.UTIIPA)
+	return uploadBuildArtifactAndWaitForID(ctx, client, appID, ipaPath, fileInfo, version, buildNumber, platform, asc.UTIIPA, pollInterval, uploadTimeout, overrideUploadTimeout)
+}
+
+func uploadPKGBuildAndWaitForID(ctx context.Context, client *asc.Client, appID, pkgPath string, fileInfo os.FileInfo, version, buildNumber string, platform asc.Platform, pollInterval time.Duration, uploadTimeout time.Duration, overrideUploadTimeout bool) (*publishUploadResult, error) {
+	return uploadBuildArtifactAndWaitForID(ctx, client, appID, pkgPath, fileInfo, version, buildNumber, platform, asc.UTIPKG, pollInterval, uploadTimeout, overrideUploadTimeout)
+}
+
+func uploadBuildArtifactAndWaitForID(ctx context.Context, client *asc.Client, appID, artifactPath string, fileInfo os.FileInfo, version, buildNumber string, platform asc.Platform, fileUTI asc.UTI, pollInterval time.Duration, uploadTimeout time.Duration, overrideUploadTimeout bool) (*publishUploadResult, error) {
+	var (
+		artifactFile *os.File
+		openedInfo   os.FileInfo
+		err          error
+	)
+	if fileUTI == asc.UTIPKG {
+		artifactFile, openedInfo, err = shared.OpenValidatedPKGPath(artifactPath)
+	} else {
+		artifactFile, openedInfo, err = shared.OpenValidatedIPAPath(artifactPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer artifactFile.Close()
+	if fileInfo != nil && !os.SameFile(fileInfo, openedInfo) {
+		return nil, fmt.Errorf("build artifact changed before upload")
+	}
+
+	uploadResp, fileResp, err := shared.PrepareBuildUpload(ctx, client, appID, openedInfo, version, buildNumber, platform, fileUTI)
 	if err != nil {
 		return nil, err
 	}
@@ -962,7 +1009,7 @@ func uploadBuildAndWaitForID(ctx context.Context, client *asc.Client, appID, ipa
 
 	fmt.Fprintf(os.Stderr, "Uploading %s (%d bytes) to App Store Connect...\n", fileInfo.Name(), fileInfo.Size())
 	uploadCtx, uploadCancel := contextWithPublishUploadTimeout(ctx, uploadTimeout, overrideUploadTimeout)
-	err = asc.ExecuteUploadOperations(uploadCtx, ipaPath, fileResp.Data.Attributes.UploadOperations)
+	err = asc.ExecuteUploadOperationsFromFile(uploadCtx, artifactFile, fileResp.Data.Attributes.UploadOperations)
 	uploadCancel()
 	if err != nil {
 		return nil, err
