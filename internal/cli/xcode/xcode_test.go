@@ -781,6 +781,114 @@ func TestXcodeValidatePassesIPAAndAuthFlags(t *testing.T) {
 	}
 }
 
+func TestXcodeValidatePassesPKGAndRendersPKGPath(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	var gotOpts localxcode.ValidateOptions
+	runValidate = func(_ context.Context, opts localxcode.ValidateOptions) (*localxcode.ValidateResult, error) {
+		gotOpts = opts
+		return &localxcode.ValidateResult{
+			PKGPath:   opts.PKGPath,
+			Validated: true,
+		}, nil
+	}
+
+	cmd := XcodeValidateCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{"--pkg", "Demo.pkg", "--output", "json"}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	stdout, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if runErr != nil {
+		t.Fatalf("Exec() error: %v", runErr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected no stderr output, got %q", stderr)
+	}
+	if gotOpts.PKGPath != "Demo.pkg" || gotOpts.IPAPath != "" {
+		t.Fatalf("unexpected validate options: %+v", gotOpts)
+	}
+
+	var payload struct {
+		IPAPath   string `json:"ipa_path"`
+		PKGPath   string `json:"pkg_path"`
+		Validated bool   `json:"validated"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v\nstdout=%s", err, stdout)
+	}
+	if payload.PKGPath != "Demo.pkg" || payload.IPAPath != "" || !payload.Validated {
+		t.Fatalf("unexpected validate payload: %+v", payload)
+	}
+	rows := validateResultRows(&localxcode.ValidateResult{PKGPath: "Demo.pkg", Validated: true})
+	if len(rows) != 2 || rows[0][0] != "pkg_path" || rows[0][1] != "Demo.pkg" || rows[1][0] != "validated" {
+		t.Fatalf("unexpected rendered PKG rows: %v", rows)
+	}
+}
+
+func TestXcodeValidateRejectsMultipleArtifactPaths(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	cmd := XcodeValidateCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{"--ipa", "Demo.ipa", "--pkg", "Demo.pkg"}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	_, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatalf("expected usage error, got %v", runErr)
+	}
+	if !strings.Contains(stderr, "Error: --ipa and --pkg are mutually exclusive") {
+		t.Fatalf("expected mutually exclusive artifact error, got %q", stderr)
+	}
+}
+
+func TestXcodeValidateRejectsExplicitlyEmptyArtifactPath(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "empty ipa with pkg", args: []string{"--ipa=", "--pkg", "Demo.pkg"}, wantErr: "--ipa must not be empty"},
+		{name: "empty pkg with ipa", args: []string{"--ipa", "Demo.ipa", "--pkg="}, wantErr: "--pkg must not be empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := XcodeValidateCommand()
+			cmd.FlagSet.SetOutput(io.Discard)
+			if err := cmd.FlagSet.Parse(tc.args); err != nil {
+				t.Fatalf("failed to parse flags: %v", err)
+			}
+
+			var runErr error
+			_, stderr := captureCommandOutput(t, func() error {
+				runErr = cmd.Exec(context.Background(), nil)
+				return runErr
+			})
+			if !errors.Is(runErr, flag.ErrHelp) {
+				t.Fatalf("expected usage error, got %v", runErr)
+			}
+			if !strings.Contains(stderr, "Error: "+tc.wantErr) {
+				t.Fatalf("expected %q, got %q", tc.wantErr, stderr)
+			}
+		})
+	}
+}
+
 func TestXcodeArchiveRejectsExplicitlyEmptyConfiguration(t *testing.T) {
 	restore := overrideXcodeCommandTestHooks(t)
 	defer restore()
@@ -840,6 +948,29 @@ func TestXcodeValidateRejectsNonIPAPath(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "Error: --ipa must end with .ipa") {
 		t.Fatalf("expected ipa extension usage error, got %q", stderr)
+	}
+}
+
+func TestXcodeValidateRejectsNonPKGPath(t *testing.T) {
+	restore := overrideXcodeCommandTestHooks(t)
+	defer restore()
+
+	cmd := XcodeValidateCommand()
+	cmd.FlagSet.SetOutput(io.Discard)
+	if err := cmd.FlagSet.Parse([]string{"--pkg", "Demo.txt"}); err != nil {
+		t.Fatalf("failed to parse flags: %v", err)
+	}
+
+	var runErr error
+	_, stderr := captureCommandOutput(t, func() error {
+		runErr = cmd.Exec(context.Background(), nil)
+		return runErr
+	})
+	if !errors.Is(runErr, flag.ErrHelp) {
+		t.Fatal("expected flag.ErrHelp for non-.pkg path")
+	}
+	if !strings.Contains(stderr, "Error: --pkg must end with .pkg") {
+		t.Fatalf("expected pkg extension usage error, got %q", stderr)
 	}
 }
 

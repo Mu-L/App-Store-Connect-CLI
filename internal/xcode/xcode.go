@@ -113,13 +113,15 @@ type ExportResult struct {
 
 type ValidateOptions struct {
 	IPAPath   string
+	PKGPath   string
 	APIKey    string
 	APIIssuer string
 	LogWriter io.Writer
 }
 
 type ValidateResult struct {
-	IPAPath   string `json:"ipa_path"`
+	IPAPath   string `json:"ipa_path,omitempty"`
+	PKGPath   string `json:"pkg_path,omitempty"`
 	Validated bool   `json:"validated"`
 }
 
@@ -361,18 +363,30 @@ func Validate(ctx context.Context, opts ValidateOptions) (*ValidateResult, error
 		}
 		return nil, fmt.Errorf("locate xcrun: %w", err)
 	}
-	if err := validateExistingFile(opts.IPAPath, "--ipa"); err != nil {
+	artifactPath := opts.IPAPath
+	artifactFlag := "--ipa"
+	platform := ""
+	if opts.PKGPath != "" {
+		artifactPath = opts.PKGPath
+		artifactFlag = "--pkg"
+		platform = "macos"
+	}
+	if err := validateExistingFile(artifactPath, artifactFlag); err != nil {
 		return nil, err
 	}
-	platform, err := inferValidatePlatform(opts.IPAPath)
-	if err != nil {
-		return nil, err
+	if platform == "" {
+		var err error
+		platform, err = inferValidatePlatform(opts.IPAPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := runAltoolValidate(ctx, buildValidateCommand(opts, platform), opts.LogWriter); err != nil {
 		return nil, err
 	}
 	return &ValidateResult{
 		IPAPath:   opts.IPAPath,
+		PKGPath:   opts.PKGPath,
 		Validated: true,
 	}, nil
 }
@@ -533,11 +547,19 @@ func validateExportInputPaths(opts ExportOptions) error {
 }
 
 func validateValidateOptions(opts ValidateOptions) error {
-	if opts.IPAPath == "" {
-		return fmt.Errorf("--ipa is required")
+	hasIPA := opts.IPAPath != ""
+	hasPKG := opts.PKGPath != ""
+	if !hasIPA && !hasPKG {
+		return fmt.Errorf("--ipa or --pkg is required")
 	}
-	if !strings.EqualFold(filepath.Ext(opts.IPAPath), ".ipa") {
+	if hasIPA && hasPKG {
+		return fmt.Errorf("--ipa and --pkg are mutually exclusive")
+	}
+	if hasIPA && !strings.EqualFold(filepath.Ext(opts.IPAPath), ".ipa") {
 		return fmt.Errorf("--ipa must end with .ipa")
+	}
+	if hasPKG && !strings.EqualFold(filepath.Ext(opts.PKGPath), ".pkg") {
+		return fmt.Errorf("--pkg must end with .pkg")
 	}
 	if (opts.APIKey == "") != (opts.APIIssuer == "") {
 		return fmt.Errorf("--api-key and --api-issuer must be provided together")
@@ -586,6 +608,7 @@ func normalizeExportOptions(opts ExportOptions) ExportOptions {
 
 func normalizeValidateOptions(opts ValidateOptions) ValidateOptions {
 	opts.IPAPath = strings.TrimSpace(opts.IPAPath)
+	opts.PKGPath = strings.TrimSpace(opts.PKGPath)
 	opts.APIKey = strings.TrimSpace(opts.APIKey)
 	opts.APIIssuer = strings.TrimSpace(opts.APIIssuer)
 	return opts
@@ -774,10 +797,14 @@ func buildValidateCommand(opts ValidateOptions, platform string) []string {
 	if strings.TrimSpace(platform) == "" {
 		platform = "ios"
 	}
+	artifactPath := opts.IPAPath
+	if opts.PKGPath != "" {
+		artifactPath = opts.PKGPath
+	}
 	args := []string{
 		"altool",
 		"--validate-app",
-		"--file", opts.IPAPath,
+		"--file", artifactPath,
 		"--type", platform,
 	}
 	if opts.APIKey != "" {

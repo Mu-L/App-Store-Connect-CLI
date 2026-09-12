@@ -447,7 +447,8 @@ Examples:
 func XcodeValidateCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("xcode validate", flag.ExitOnError)
 
-	ipaPath := fs.String("ipa", "", "Path to the .ipa input (required)")
+	ipaPath := fs.String("ipa", "", "Path to an iOS, tvOS, or visionOS .ipa input")
+	pkgPath := fs.String("pkg", "", "Path to a macOS .pkg input")
 	apiKey := fs.String("api-key", "", "App Store Connect API key ID for altool")
 	apiIssuer := fs.String("api-issuer", "", "App Store Connect API issuer ID for altool")
 	output := shared.BindOutputFlags(fs)
@@ -455,19 +456,24 @@ func XcodeValidateCommand() *ffcli.Command {
 	return &ffcli.Command{
 		Name:       "validate",
 		ShortUsage: "asc xcode validate [flags]",
-		ShortHelp:  "Validate an IPA with Apple before upload.",
-		LongHelp: `Validate an IPA with Apple before upload.
+		ShortHelp:  "Validate an IPA or PKG with Apple before upload.",
+		LongHelp: `Validate an IPA or PKG with Apple before upload.
 
-This command wraps xcrun altool --validate-app to check whether an IPA passes
+This command wraps xcrun altool --validate-app to check whether an IPA or PKG passes
 Apple's server-side validation before you upload or submit it.
+
+Exactly one of --ipa or --pkg is required. IPA platform metadata is detected
+from the artifact; PKG validation uses the macOS platform.
 
 Examples:
   asc xcode validate --ipa .asc/artifacts/App.ipa
+  asc xcode validate --pkg .asc/artifacts/MacApp.pkg
   asc xcode validate --ipa .asc/artifacts/App.ipa --api-key KEY123ABC --api-issuer 00000000-0000-0000-0000-000000000000 --output json`,
 		FlagSet:   fs,
 		UsageFunc: shared.DefaultUsageFunc,
 		Exec: func(ctx context.Context, args []string) error {
 			trimmedIPAPath := strings.TrimSpace(*ipaPath)
+			trimmedPKGPath := strings.TrimSpace(*pkgPath)
 			trimmedAPIKey := strings.TrimSpace(*apiKey)
 			trimmedAPIIssuer := strings.TrimSpace(*apiIssuer)
 
@@ -475,12 +481,23 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: xcode validate does not accept positional arguments")
 				return flag.ErrHelp
 			}
-			if trimmedIPAPath == "" {
-				fmt.Fprintln(os.Stderr, "Error: --ipa is required")
-				return shared.MissingRequiredUsageError("--ipa")
+			if emptyFlag := firstExplicitlyEmptyFlag(fs, "ipa", "pkg"); emptyFlag != "" {
+				return shared.UsageErrorf("--%s must not be empty", emptyFlag)
 			}
-			if !strings.EqualFold(filepath.Ext(trimmedIPAPath), ".ipa") {
+			hasIPA := trimmedIPAPath != ""
+			hasPKG := trimmedPKGPath != ""
+			if !hasIPA && !hasPKG {
+				fmt.Fprintln(os.Stderr, "Error: --ipa or --pkg is required")
+				return shared.MissingRequiredUsageError("")
+			}
+			if hasIPA && hasPKG {
+				return shared.UsageError("--ipa and --pkg are mutually exclusive")
+			}
+			if hasIPA && !strings.EqualFold(filepath.Ext(trimmedIPAPath), ".ipa") {
 				return shared.UsageError("--ipa must end with .ipa")
+			}
+			if hasPKG && !strings.EqualFold(filepath.Ext(trimmedPKGPath), ".pkg") {
+				return shared.UsageError("--pkg must end with .pkg")
 			}
 			if (trimmedAPIKey == "") != (trimmedAPIIssuer == "") {
 				return shared.UsageError("--api-key and --api-issuer must be provided together")
@@ -488,6 +505,7 @@ Examples:
 
 			result, err := runValidate(ctx, localxcode.ValidateOptions{
 				IPAPath:   trimmedIPAPath,
+				PKGPath:   trimmedPKGPath,
 				APIKey:    trimmedAPIKey,
 				APIIssuer: trimmedAPIIssuer,
 				LogWriter: os.Stderr,
@@ -583,8 +601,11 @@ func exportResultRows(result xcodeExportCommandResult) [][]string {
 }
 
 func validateResultRows(result *localxcode.ValidateResult) [][]string {
-	return [][]string{
-		{"ipa_path", result.IPAPath},
-		{"validated", fmt.Sprintf("%t", result.Validated)},
+	rows := make([][]string, 0, 2)
+	if strings.TrimSpace(result.PKGPath) != "" {
+		rows = append(rows, []string{"pkg_path", result.PKGPath})
+	} else {
+		rows = append(rows, []string{"ipa_path", result.IPAPath})
 	}
+	return append(rows, []string{"validated", fmt.Sprintf("%t", result.Validated)})
 }
