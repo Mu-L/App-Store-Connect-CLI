@@ -25,6 +25,7 @@ type PublishArchiveStageResult struct {
 type PublishExportStageResult struct {
 	ArchivePath       string `json:"archivePath"`
 	IPAPath           string `json:"ipaPath,omitempty"`
+	PKGPath           string `json:"pkgPath,omitempty"`
 	BundleID          string `json:"bundleId,omitempty"`
 	Version           string `json:"version,omitempty"`
 	BuildNumber       string `json:"buildNumber,omitempty"`
