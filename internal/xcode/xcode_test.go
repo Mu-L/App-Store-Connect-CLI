@@ -951,6 +951,116 @@ func TestExportWritesIPAAtExactPathAndReturnsMetadata(t *testing.T) {
 	}
 }
 
+func TestExportWritesPKGAtExactPathAndReturnsArchiveMetadata(t *testing.T) {
+	tempDir := t.TempDir()
+	archivePath := filepath.Join(tempDir, "Demo.xcarchive")
+	if err := writeArchiveInfoPlist(archivePath); err != nil {
+		t.Fatalf("writeArchiveInfoPlist() error: %v", err)
+	}
+	exportOptionsPath := filepath.Join(tempDir, "ExportOptions.plist")
+	if err := os.WriteFile(exportOptionsPath, []byte(`<?xml version="1.0" encoding="UTF-8"?>`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+	logPath := filepath.Join(tempDir, "commands.log")
+
+	restore := overrideTestEnvironment(t)
+	runtimeGOOS = "darwin"
+	lookPathFn = func(file string) (string, error) {
+		return "/usr/bin/xcodebuild", nil
+	}
+	commandContextFn = helperCommandContext(t, logPath)
+	t.Setenv("ASC_XCODE_HELPER_EXPORT_PKG", "1")
+	t.Cleanup(restore)
+
+	pkgPath := filepath.Join(tempDir, "artifacts", "Demo.pkg")
+	result, err := Export(context.Background(), ExportOptions{
+		ArchivePath:   archivePath,
+		ExportOptions: exportOptionsPath,
+		PKGPath:       pkgPath,
+	})
+	if err != nil {
+		t.Fatalf("Export() error: %v", err)
+	}
+	if result.PKGPath != pkgPath || result.IPAPath != "" {
+		t.Fatalf("Export() result = %+v, want only PKG path", result)
+	}
+	if result.BundleID != "com.example.demo" || result.Version != "1.2.3" || result.BuildNumber != "42" {
+		t.Fatalf("Export() metadata = %+v, want archive metadata", result)
+	}
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+	if string(data) != "exported pkg" {
+		t.Fatalf("PKG contents = %q, want exported package", data)
+	}
+}
+
+func TestExportRejectsUnsafePKGWithoutReplacingDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		helperMode string
+		wantError  string
+	}{
+		{name: "missing", wantError: "did not produce a .pkg file"},
+		{name: "empty", helperMode: "empty", wantError: "exported PKG is empty"},
+		{name: "directory", helperMode: "directory", wantError: "exported PKG is not a regular file"},
+		{name: "multiple", helperMode: "multiple", wantError: "produced multiple .pkg files"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			archivePath := filepath.Join(tempDir, "Demo.xcarchive")
+			if err := writeArchiveInfoPlist(archivePath); err != nil {
+				t.Fatalf("writeArchiveInfoPlist() error: %v", err)
+			}
+			exportOptionsPath := filepath.Join(tempDir, "ExportOptions.plist")
+			if err := os.WriteFile(exportOptionsPath, []byte(`<?xml version="1.0" encoding="UTF-8"?>`), 0o644); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+
+			restore := overrideTestEnvironment(t)
+			runtimeGOOS = "darwin"
+			lookPathFn = func(string) (string, error) { return "/usr/bin/xcodebuild", nil }
+			commandContextFn = helperCommandContext(t, filepath.Join(tempDir, "commands.log"))
+			t.Setenv("ASC_XCODE_HELPER_EXPORT_PKG", tc.helperMode)
+			t.Cleanup(restore)
+
+			pkgPath := filepath.Join(tempDir, "Demo.pkg")
+			if err := os.WriteFile(pkgPath, []byte("existing pkg"), 0o644); err != nil {
+				t.Fatalf("WriteFile() error: %v", err)
+			}
+			_, err := Export(context.Background(), ExportOptions{
+				ArchivePath:   archivePath,
+				ExportOptions: exportOptionsPath,
+				PKGPath:       pkgPath,
+				Overwrite:     true,
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("Export() error = %v, want %q", err, tc.wantError)
+			}
+			data, readErr := os.ReadFile(pkgPath)
+			if readErr != nil {
+				t.Fatalf("ReadFile() error: %v", readErr)
+			}
+			if string(data) != "existing pkg" {
+				t.Fatalf("destination contents = %q, want existing package", data)
+			}
+		})
+	}
+}
+
+func TestExportRejectsMultipleArtifactPaths(t *testing.T) {
+	_, err := Export(context.Background(), ExportOptions{
+		ArchivePath:   "Demo.xcarchive",
+		ExportOptions: "ExportOptions.plist",
+		IPAPath:       "Demo.ipa",
+		PKGPath:       "Demo.pkg",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--ipa-path and --pkg-path are mutually exclusive") {
+		t.Fatalf("Export() error = %v, want artifact conflict", err)
+	}
+}
+
 func TestExportValidatesGeneratedIPABeforeReplacingDestination(t *testing.T) {
 	tempDir := t.TempDir()
 	archivePath := filepath.Join(tempDir, "Demo.xcarchive")
@@ -1080,7 +1190,7 @@ func TestExportDirectUploadPreservesExistingIPAAndReturnsArchiveMetadata(t *test
 	}
 }
 
-func TestExportDirectUploadCreatesIPAParentDirectory(t *testing.T) {
+func TestExportDirectUploadDoesNotRequireOrCreateArtifactDestination(t *testing.T) {
 	tempDir := t.TempDir()
 	archivePath := filepath.Join(tempDir, "Demo.xcarchive")
 	if err := writeArchiveInfoPlist(archivePath); err != nil {
@@ -1098,11 +1208,9 @@ func TestExportDirectUploadCreatesIPAParentDirectory(t *testing.T) {
 	commandContextFn = helperCommandContext(t, logPath)
 	t.Cleanup(restore)
 
-	ipaPath := filepath.Join(tempDir, "nested", "output", "Demo.ipa")
 	result, err := Export(context.Background(), ExportOptions{
 		ArchivePath:   archivePath,
 		ExportOptions: exportOptionsPath,
-		IPAPath:       ipaPath,
 	})
 	if err != nil {
 		t.Fatalf("Export() error: %v", err)
@@ -1110,11 +1218,8 @@ func TestExportDirectUploadCreatesIPAParentDirectory(t *testing.T) {
 	if result.IPAPath != "" {
 		t.Fatalf("expected no local ipa path for direct upload, got %q", result.IPAPath)
 	}
-	if _, err := os.Stat(filepath.Dir(ipaPath)); err != nil {
-		t.Fatalf("expected IPA parent directory to exist, got %v", err)
-	}
-	if _, err := os.Stat(ipaPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no IPA artifact to be written, got %v", err)
+	if result.PKGPath != "" {
+		t.Fatalf("expected no local pkg path for direct upload, got %q", result.PKGPath)
 	}
 }
 
@@ -2217,6 +2322,34 @@ func TestXcodeHelperProcess(t *testing.T) {
 			time.Sleep(parsed)
 		}
 		if isDirectUploadMode(exportOptionsPath) {
+			os.Exit(0)
+		}
+		switch os.Getenv("ASC_XCODE_HELPER_EXPORT_PKG") {
+		case "1":
+			if err := os.WriteFile(filepath.Join(exportPath, "Exported.pkg"), []byte("exported pkg"), 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			os.Exit(0)
+		case "empty":
+			if err := os.WriteFile(filepath.Join(exportPath, "Exported.pkg"), nil, 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			os.Exit(0)
+		case "directory":
+			if err := os.Mkdir(filepath.Join(exportPath, "Exported.pkg"), 0o700); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			os.Exit(0)
+		case "multiple":
+			for _, name := range []string{"One.pkg", "Two.pkg"} {
+				if err := os.WriteFile(filepath.Join(exportPath, name), []byte("exported pkg"), 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(2)
+				}
+			}
 			os.Exit(0)
 		}
 		switch os.Getenv("ASC_XCODE_HELPER_MALICIOUS_IPA") {
