@@ -67,7 +67,7 @@ reject it at parse time.
 
 Every other single-value `-id` flag that names an App Store Connect API
 resource is wired the same way, so the remaining deferred work is only the
-exclusions below. 398 flag declarations across 125 files in 36 command areas,
+exclusions below. 399 flag declarations across 125 files in 36 command areas,
 covering 88 resource types:
 
 | Command area | Flags | Resource type |
@@ -109,6 +109,7 @@ covering 88 resource types:
 | `asc builds` | `--build-id` | `builds` |
 | `asc categories` | `--category-id` | `appCategories` |
 | `asc certificates` | `--pass-type-id` | `passTypeIds` |
+| `asc certificates / merchant-ids certificates create` | `--merchant-id` | `merchantIds` |
 | `asc game-center` | `--app-store-version-id` | `appStoreVersions` |
 | `asc game-center` | `--localization-id` | `gameCenterAchievementLocalizations` |
 | `asc game-center` | `--version-id` | `gameCenterAchievementVersions` |
@@ -276,7 +277,11 @@ they are declared inline as `fs.String("id", ...)` and adopting
   request path carries the extracted ID (webhooks, app events, categories,
   custom product pages, Android-to-iOS mapping, alternative distribution
   domains, merchant IDs, analytics reports, Game Center achievements, App Clip
-  default experiences, build test notes, beta testers), and twenty-four
+  default experiences, build test notes, beta testers), and twenty-six
   rejection rows assert exit 2 with the flag-parse message and no request at
   all, one per resource family plus the `--id` alias, a relationship-path row,
   and an other-host row.
+
+Certificate creation coverage also checks both the general and merchant-scoped
+commands: a merchant self-link becomes the bare ID in the HTTP request
+relationship, and a wrong-type link fails before any request.

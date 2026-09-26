@@ -469,6 +469,10 @@ Examples:
 			requestCtx, cancel := shared.ContextWithTimeout(ctx)
 			defer cancel()
 
+			if _, err := shared.ResolveOwnedAppStoreVersionByID(requestCtx, client, resolvedAppID, strings.TrimSpace(*versionID), ""); err != nil {
+				return fmt.Errorf("migrate export: %w", err)
+			}
+
 			// Fetch all localizations
 			resp, err := client.GetAppStoreVersionLocalizations(requestCtx, strings.TrimSpace(*versionID))
 			if err != nil {
@@ -480,6 +484,7 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("migrate export: %w", err)
 			}
+			defer root.Close()
 			if err := root.MkdirAll("metadata", 0o755); err != nil {
 				return fmt.Errorf("migrate export: failed to create directory: %w", err)
 			}
@@ -544,6 +549,7 @@ Examples:
 						}{
 							{"name.txt", loc.Attributes.Name},
 							{"subtitle.txt", loc.Attributes.Subtitle},
+							{"privacy_url.txt", loc.Attributes.PrivacyPolicyURL},
 						}
 						for _, file := range files {
 							written, err := writeAndCount(root, filepath.Join(localeDir, file.name), file.content)
@@ -754,12 +760,38 @@ func readMetadataFile(root rootfs.Root, name string) (string, error) {
 // permissions, matching the previous in-place write.
 func writeAndCount(root rootfs.Root, name, content string) (int, error) {
 	if content == "" {
+		if err := removeEmptyExportFile(root, name); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	}
 	if err := root.WriteFilePreservingMode(name, []byte(content+"\n"), 0o644); err != nil {
 		return 0, err
 	}
 	return 1, nil
+}
+
+// removeEmptyExportFile removes an old export only after rootfs captures and
+// rechecks the exact rooted regular file identity. A missing destination is
+// already in the desired state; symlinks, directories, replacements, and
+// other identity changes remain errors so an empty provider value cannot
+// delete an unrelated target.
+func removeEmptyExportFile(root rootfs.Root, name string) error {
+	identity, err := root.CaptureFile(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	err = root.RemoveFileIfSameIdentity(name, identity)
+	if errors.Is(err, rootfs.ErrFileIdentityMutationUnsupported) {
+		// Preserve the historical Windows behavior until rootfs can provide an
+		// identity-safe deletion primitive there. Empty values remain skipped,
+		// rather than turning a repeat export into a command failure.
+		return nil
+	}
+	return err
 }
 
 // printMigrateOutput handles output for migrate-specific result types.

@@ -681,11 +681,11 @@ func TestBuildsWaitByBuildNumberRequiresUniqueMatch(t *testing.T) {
 	if runErr == nil {
 		t.Fatal("expected unique build-number lookup error")
 	}
-	if !strings.Contains(runErr.Error(), `multiple builds found for app 123456789 with build number "42"`) {
+	if !strings.Contains(runErr.Error(), `2 builds match build number "42" for platform IOS for app 123456789; pass --build-id with one of:`) {
 		t.Fatalf("expected ambiguity error, got %v", runErr)
 	}
-	if !strings.Contains(runErr.Error(), "add --version, or use --build-id") {
-		t.Fatalf("expected actionable ambiguity hint, got %v", runErr)
+	if !strings.Contains(runErr.Error(), "build-ios") || !strings.Contains(runErr.Error(), "build-macos") {
+		t.Fatalf("expected candidate build IDs in the ambiguity error, got %v", runErr)
 	}
 	if stdout != "" {
 		t.Fatalf("expected empty stdout on ambiguity error, got %q", stdout)
@@ -693,7 +693,7 @@ func TestBuildsWaitByBuildNumberRequiresUniqueMatch(t *testing.T) {
 	if !isUsageClassError(runErr) {
 		t.Fatalf("expected ambiguity to be a usage error, got %v", runErr)
 	}
-	assertUsageDiagnosticFirstLine(t, stderr, `multiple builds found for app 123456789 with build number "42" for platform IOS; add --version, or use --build-id`)
+	assertUsageDiagnosticFirstLine(t, stderr, `2 builds match build number "42" for platform IOS for app 123456789; pass --build-id with one of:`)
 }
 
 func TestBuildsWaitByBuildNumberDiscoveryPollsUntilTimeout(t *testing.T) {
@@ -911,15 +911,25 @@ func TestBuildsWaitFailOnInvalidReturnsError(t *testing.T) {
 		if req.Method != http.MethodGet {
 			t.Fatalf("expected GET, got %s", req.Method)
 		}
-		if req.URL.Path != "/v1/builds/build-1" {
-			t.Fatalf("expected path /v1/builds/build-1, got %s", req.URL.Path)
+		if req.URL.Path == "/v1/builds/build-1" {
+			body := `{"data":{"type":"builds","id":"build-1","attributes":{"processingState":"INVALID","version":"42"}}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
 		}
-		body := `{"data":{"type":"builds","id":"build-1","attributes":{"processingState":"INVALID","version":"42"}}}`
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}, nil
+		// Failure enrichment looks up the build's app and upload. Those lookups
+		// are best-effort; this test only requires the state error.
+		if strings.HasPrefix(req.URL.Path, "/v1/builds/build-1/") || strings.HasPrefix(req.URL.Path, "/v1/apps/") || strings.HasPrefix(req.URL.Path, "/v1/buildUploads") {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"status":"404","code":"NOT_FOUND"}]}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		t.Fatalf("unexpected path %s", req.URL.Path)
+		return nil, nil
 	})
 
 	root := RootCommand("1.2.3")
@@ -963,15 +973,25 @@ func TestBuildsWaitFailedStateReturnsError(t *testing.T) {
 		if req.Method != http.MethodGet {
 			t.Fatalf("expected GET, got %s", req.Method)
 		}
-		if req.URL.Path != "/v1/builds/build-1" {
-			t.Fatalf("expected path /v1/builds/build-1, got %s", req.URL.Path)
+		if req.URL.Path == "/v1/builds/build-1" {
+			body := `{"data":{"type":"builds","id":"build-1","attributes":{"processingState":"FAILED","version":"42"}}}`
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
 		}
-		body := `{"data":{"type":"builds","id":"build-1","attributes":{"processingState":"FAILED","version":"42"}}}`
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}, nil
+		// Failure enrichment looks up the build's app and upload. Those lookups
+		// are best-effort; this test only requires the state error.
+		if strings.HasPrefix(req.URL.Path, "/v1/builds/build-1/") || strings.HasPrefix(req.URL.Path, "/v1/apps/") || strings.HasPrefix(req.URL.Path, "/v1/buildUploads") {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader(`{"errors":[{"status":"404","code":"NOT_FOUND"}]}`)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+		t.Fatalf("unexpected path %s", req.URL.Path)
+		return nil, nil
 	})
 
 	root := RootCommand("1.2.3")

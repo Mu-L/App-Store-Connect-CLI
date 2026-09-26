@@ -236,6 +236,11 @@ Examples:
 					if err := shared.ValidateBuildLocalizationLocale(localeValue); err != nil {
 						return shared.UsageError(err.Error())
 					}
+					normalizedNotes, normalizeErr := shared.NormalizeTestNotesForCommand(os.Stderr, testNotesValue)
+					if normalizeErr != nil {
+						return normalizeErr
+					}
+					testNotesValue = normalizedNotes
 				}
 			}
 
@@ -437,7 +442,8 @@ Examples:
 			}
 
 			if testNotesValue != "" {
-				if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue); err != nil {
+				upsertOpts := shared.UpsertBetaBuildLocalizationOptions{AppID: resolvedPublishAppID, Diagnostics: os.Stderr}
+				if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue, upsertOpts); err != nil {
 					recoveryErr := shared.NewTestNotesRecoveryError(buildResp.Data.ID, localeValue, testNotesValue, err)
 					result.Recovery = recoveryErr.Recovery()
 					return reportPartialFailure(publishFailureStageTestNotes, fmt.Errorf("publish testflight: %w", recoveryErr))
@@ -496,20 +502,24 @@ Examples:
 				betaReviewSubmitted = &value
 			}
 
-			for _, group := range addResult.SkippedInternalAllBuildsGroups {
-				fmt.Fprintf(
-					os.Stderr,
-					"Skipped internal group %q (%s) because it already receives all builds\n",
-					group.NameForDisplay(),
-					group.ID,
-				)
-			}
+			reportSkippedInternalAllBuildsGroups(addResult.SkippedInternalAllBuildsGroups)
 			result.BetaReviewSubmitted = betaReviewSubmitted
 			result.BetaReviewSubmissionID = submissionResult.SubmissionID
 			attachTestFlightLocalPublishResult(result, localBuildResult)
 
 			return shared.PrintOutput(result, *output.Output, *output.Pretty)
 		},
+	}
+}
+
+func reportSkippedInternalAllBuildsGroups(groups []shared.ResolvedBetaGroup) {
+	for _, group := range groups {
+		fmt.Fprintf(
+			os.Stderr,
+			"Skipped internal group %q (%s) because it already receives all builds\n",
+			group.NameForDisplay(),
+			shared.SanitizeTerminal(group.ID),
+		)
 	}
 }
 
@@ -852,11 +862,13 @@ Examples:
 				}
 			}
 
-			attachResult, err := submitcli.EnsureBuildAttached(ctx, client, versionResp.Data.ID, buildResp.Data.ID, false)
-			if err != nil {
-				return fmt.Errorf("publish appstore: %w", err)
+			if !*submit {
+				attachResult, err := submitcli.EnsureBuildAttached(ctx, client, versionResp.Data.ID, buildResp.Data.ID, false)
+				if err != nil {
+					return fmt.Errorf("publish appstore: %w", err)
+				}
+				result.Attached = attachResult.Attached || attachResult.AlreadyAttached
 			}
-			result.Attached = attachResult.Attached || attachResult.AlreadyAttached
 
 			if *submit {
 				if submitRequestTimeout == 0 {
@@ -909,7 +921,7 @@ Examples:
 					BuildID:                  buildResp.Data.ID,
 					Platform:                 normalizedPlatform,
 					RequestTimeout:           submitRequestTimeout,
-					EnsureBuildAttached:      false,
+					EnsureBuildAttached:      true,
 					LookupExistingSubmission: false,
 					DryRun:                   false,
 					Emit: func(message string) {
@@ -918,6 +930,9 @@ Examples:
 				})
 				if err != nil {
 					return fmt.Errorf("publish appstore: %w", err)
+				}
+				if submitResult.BuildAttachment != nil {
+					result.Attached = submitResult.BuildAttachment.Attached || submitResult.BuildAttachment.AlreadyAttached
 				}
 				result.SubmissionID = submitResult.SubmissionID
 				result.Submitted = submitResult.SubmissionID != ""

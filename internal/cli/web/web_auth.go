@@ -25,6 +25,7 @@ import (
 
 const (
 	webPasswordEnv             = "ASC_WEB_PASSWORD"
+	webAppleIDEnv              = "ASC_WEB_APPLE_ID"
 	webDontStorePasswordEnv    = "ASC_WEB_DONT_STORE_PASSWORD"
 	webTwoFactorCodeCommandEnv = "ASC_WEB_2FA_CODE_COMMAND"
 	webTwoFactorCommandTimeout = 60 * time.Second
@@ -53,9 +54,12 @@ var (
 	termReadPasswordFn                       = term.ReadPassword
 	termIsTerminalFn                         = term.IsTerminal
 	tryResumeSessionFn                       = webcore.TryResumeSession
+	tryResumeSessionFromSourceFn             = webcore.TryResumeSessionFromSource
 	tryResumeLastFn                          = webcore.TryResumeLastSession
 	loadCachedSessionFn                      = webcore.LoadCachedSession
+	loadCachedSessionFromSourceFn            = webcore.LoadCachedSessionFromSource
 	loadLastCachedSessionFn                  = webcore.LoadLastCachedSession
+	defaultCachedAppleIDFn                   = webcore.DefaultCachedAppleIDWithSource
 	webLoginWithClientFn                     = webcore.LoginWithClient
 	loadStoredWebPasswordFn                  = webcore.LoadPassword
 	storeStoredWebPasswordFn                 = webcore.StorePassword
@@ -71,6 +75,7 @@ var (
 	twoFactorStatusWriter          io.Writer = os.Stderr
 	sessionExpiredWriter           io.Writer = os.Stderr
 	sessionCacheWarningWriter      io.Writer = os.Stderr
+	sessionDefaultNoticeWriter     io.Writer = os.Stderr
 	passwordStoreWarningWriter     io.Writer = os.Stderr
 	invalidWebPasswordOptOutMu     sync.Mutex
 	invalidWebPasswordOptOutValues = map[string]struct{}{}
@@ -502,6 +507,85 @@ func staleSessionDiscardWarning(err error) error {
 	return fmt.Errorf("discarding the stale cached web session failed: %w", err)
 }
 
+// missingAppleIDUsageError is the usage error for a web command that has no
+// Apple ID to work with: nothing was passed and the session cache holds
+// nothing to default to. It carries errNoCachedWebSession so command-specific
+// session diagnostics can tell a missing session from an expired one.
+func missingAppleIDUsageError() error {
+	return shared.NewErrorWithCause(
+		shared.WithDiagnostic(
+			shared.UsageError("--apple-id is required when no cached web session is available; run 'asc web auth login --apple-id EMAIL'"),
+			shared.DiagnosticRequiredInputMissing,
+			"--apple-id",
+		),
+		errNoCachedWebSession,
+	)
+}
+
+// ambiguousAppleIDUsageError is the usage error for a web command that could
+// default to any of several cached sessions and therefore refuses to guess.
+func ambiguousAppleIDUsageError(appleIDs []string) error {
+	return shared.WithDiagnostic(
+		shared.UsageError(fmt.Sprintf("--apple-id is required: multiple cached web sessions are available (%s); pass --apple-id to choose one", strings.Join(appleIDs, ", "))),
+		shared.DiagnosticRequiredInputMissing,
+		"--apple-id",
+	)
+}
+
+// envAppleID returns the Apple Account named by ASC_WEB_APPLE_ID, the
+// environment fallback for --apple-id. The value is trimmed and an empty one is
+// ignored, so an exported-but-unset CI secret behaves like no variable at all
+// instead of selecting a nameless account.
+func envAppleID() string {
+	return strings.TrimSpace(os.Getenv(webAppleIDEnv))
+}
+
+// printEnvAppleIDNotice announces the account the environment selected. The
+// cached-session default prints the same shape; naming the variable keeps a
+// caller who exported it in one shell profile from mistaking the choice for a
+// cache hit.
+func printEnvAppleIDNotice(appleID string) {
+	if sessionDefaultNoticeWriter == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(sessionDefaultNoticeWriter, "Using web session for %s from %s; pass --apple-id to override\n", shared.SanitizeTerminal(appleID), webAppleIDEnv)
+}
+
+// resolveDefaultCachedAppleID picks the Apple ID of the only cached web session
+// when --apple-id names none. The chosen account is announced on stderr so a
+// caller who later caches several accounts can tell which one served the
+// request. This discovery helper deliberately does not construct usage errors:
+// UsageError writes to stderr, while an empty cache may still be recovered by
+// an interactive prompt. A cache that cannot be listed degrades to the empty
+// result with a warning.
+// The boolean reports the empty-cache case, the only one a command may still
+// answer with an interactive Apple ID prompt.
+func resolveDefaultCachedAppleID() (appleID string, source webcore.CachedSessionSource, cacheEmpty bool, err error) {
+	appleID, source, err = defaultCachedAppleIDFn()
+	if err == nil {
+		appleID = strings.TrimSpace(appleID)
+		if appleID == "" {
+			return "", webcore.CachedSessionSourceUnknown, true, webcore.ErrNoCachedSession
+		}
+		if sessionDefaultNoticeWriter != nil {
+			_, _ = fmt.Fprintf(sessionDefaultNoticeWriter, "Using cached web session for %s; pass --apple-id to override\n", shared.SanitizeTerminal(appleID))
+		}
+		return appleID, source, false, nil
+	}
+	var ambiguous *webcore.AmbiguousCachedSessionError
+	switch {
+	case errors.As(err, &ambiguous):
+		return "", source, false, ambiguous
+	case errors.Is(err, webcore.ErrNoCachedSession):
+		return "", source, true, webcore.ErrNoCachedSession
+	default:
+		if sessionCacheWarningWriter != nil {
+			_, _ = fmt.Fprintf(sessionCacheWarningWriter, "Warning: listing cached web sessions failed: %v\n", err)
+		}
+		return "", source, true, webcore.ErrNoCachedSession
+	}
+}
+
 func printCacheLookupWarning(writer io.Writer, err error) {
 	if writer == nil || err == nil {
 		return
@@ -761,10 +845,31 @@ func resolveKnownWebSession(ctx context.Context, appleID string) (*webcore.AuthS
 	return nil, false, false, fmt.Errorf("checking cached web session failed: %w", err)
 }
 
+func resolveKnownWebSessionFromSource(ctx context.Context, appleID string, source webcore.CachedSessionSource) (*webcore.AuthSession, bool, bool, error) {
+	resumed, ok, err := tryResumeSessionFromSourceFn(ctx, appleID, source)
+	if err == nil {
+		return resumed, ok, false, nil
+	}
+	if errors.Is(err, webcore.ErrCachedSessionExpired) {
+		return nil, false, true, nil
+	}
+	return nil, false, false, fmt.Errorf("checking cached web session failed: %w", err)
+}
+
 func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode string, opts webSessionResolveOptions) (*webcore.AuthSession, string, error) {
 	shared.ApplyRootLoggingOverrides()
 
 	resolvedAppleID := strings.TrimSpace(appleID)
+	// ASC_WEB_APPLE_ID sits between the flag and the cached-session default: it
+	// names the account before any cache lookup, so neither the last-session
+	// pointer nor an ambiguous cache can decide for a caller who already said
+	// which Apple Account this invocation belongs to.
+	if resolvedAppleID == "" {
+		if fromEnv := envAppleID(); fromEnv != "" {
+			resolvedAppleID = fromEnv
+			printEnvAppleIDNotice(resolvedAppleID)
+		}
+	}
 	twoFactorCode = strings.TrimSpace(twoFactorCode)
 	command := strings.TrimSpace(opts.twoFactorCodeCommand)
 	if command == "" {
@@ -863,8 +968,15 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		return fmt.Errorf("%w; the supplied two-factor code was already consumed by the expired session, so the stale cached session was discarded: re-run with a new code, or configure --two-factor-code-command or %s to fetch one automatically", loginErr, webTwoFactorCodeCommandEnv)
 	}
 
-	tryKnownSession := func(targetAppleID string) (*webcore.AuthSession, string, bool, error) {
-		resumed, ok, cacheExpired, err := resolveKnownWebSession(ctx, targetAppleID)
+	tryKnownSession := func(targetAppleID string, source webcore.CachedSessionSource) (*webcore.AuthSession, string, bool, error) {
+		var resumed *webcore.AuthSession
+		var ok, cacheExpired bool
+		var err error
+		if source == webcore.CachedSessionSourceUnknown {
+			resumed, ok, cacheExpired, err = resolveKnownWebSession(ctx, targetAppleID)
+		} else {
+			resumed, ok, cacheExpired, err = resolveKnownWebSessionFromSource(ctx, targetAppleID, source)
+		}
 		if err != nil {
 			printCacheLookupWarning(sessionCacheWarningWriter, err)
 			return nil, "", false, nil
@@ -878,7 +990,11 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 
 		var cachedOK bool
 		if strings.TrimSpace(targetAppleID) != "" {
-			expiredCachedSession, cachedOK, err = loadCachedSessionFn(targetAppleID)
+			if source == webcore.CachedSessionSourceUnknown {
+				expiredCachedSession, cachedOK, err = loadCachedSessionFn(targetAppleID)
+			} else {
+				expiredCachedSession, cachedOK, err = loadCachedSessionFromSourceFn(targetAppleID, source)
+			}
 		} else {
 			expiredCachedSession, cachedOK, err = loadLastCachedSessionFn()
 		}
@@ -950,24 +1066,34 @@ func resolveWebSession(ctx context.Context, appleID, password, twoFactorCode str
 		return nil, "", false, nil
 	}
 
-	if session, source, ok, err := tryKnownSession(resolvedAppleID); err != nil {
+	if session, source, ok, err := tryKnownSession(resolvedAppleID, webcore.CachedSessionSourceUnknown); err != nil {
 		return nil, "", err
 	} else if ok {
 		return session, source, nil
 	}
 
 	if resolvedAppleID == "" {
-		if opts.promptAppleID == nil {
-			return nil, "", shared.NewErrorWithCause(
-				shared.UsageError("--apple-id is required when no cached web session is available"),
-				errNoCachedWebSession,
-			)
+		// The last-session pointer resolved nothing, so fall back to the only
+		// cached account when there is exactly one. Only an empty cache may
+		// still prompt (apps create); an ambiguous cache never guesses.
+		defaultAppleID, defaultSource, cacheEmpty, defaultErr := resolveDefaultCachedAppleID()
+		switch {
+		case defaultErr == nil:
+			resolvedAppleID = defaultAppleID
+		case opts.promptAppleID == nil || !cacheEmpty:
+			var ambiguous *webcore.AmbiguousCachedSessionError
+			if errors.As(defaultErr, &ambiguous) {
+				return nil, "", ambiguousAppleIDUsageError(ambiguous.AppleIDs)
+			}
+			return nil, "", missingAppleIDUsageError()
+		default:
+			if err := opts.promptAppleID(&resolvedAppleID); err != nil {
+				return nil, "", err
+			}
+			resolvedAppleID = strings.TrimSpace(resolvedAppleID)
+			defaultSource = webcore.CachedSessionSourceUnknown
 		}
-		if err := opts.promptAppleID(&resolvedAppleID); err != nil {
-			return nil, "", err
-		}
-		resolvedAppleID = strings.TrimSpace(resolvedAppleID)
-		if session, source, ok, err := tryKnownSession(resolvedAppleID); err != nil {
+		if session, source, ok, err := tryKnownSession(resolvedAppleID, defaultSource); err != nil {
 			return nil, "", err
 		} else if ok {
 			return session, source, nil
@@ -1160,7 +1286,7 @@ Manage Apple web-session authentication used by "asc web" commands.
 func WebAuthLoginCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("web auth login", flag.ExitOnError)
 
-	appleID := fs.String("apple-id", "", "Apple Account email")
+	appleID := fs.String("apple-id", "", "Apple Account email (defaults to "+webAppleIDEnv+", then the last or only cached session)")
 	twoFactorCodeCommand := fs.String("two-factor-code-command", "", "Shell command that prints the 2FA code to stdout if verification is required")
 	providerID := fs.Int64("provider-id", 0, "Numeric App Store Connect provider ID to select for this web session")
 	publicProviderID := fs.String("public-provider-id", "", "Public App Store Connect provider/team ID to select for this web session")
@@ -1168,12 +1294,17 @@ func WebAuthLoginCommand() *ffcli.Command {
 
 	return &ffcli.Command{
 		Name:       "login",
-		ShortUsage: "asc web auth login --apple-id EMAIL [--public-provider-id TEAM_ID]",
+		ShortUsage: "asc web auth login [--apple-id EMAIL] [--public-provider-id TEAM_ID]",
 		ShortHelp:  "Authenticate Apple web session.",
 		LongHelp: fmt.Sprintf(
 			`WEB SESSION WORKFLOWS
 
 Authenticate using Apple web-session behavior for "asc web" workflows.
+
+Apple Account input options:
+  - --apple-id
+  - %s environment variable
+  - the last or only cached web session
 
 Password input options:
   - secure interactive prompt (default; saved in the native credential store after successful login)
@@ -1199,6 +1330,7 @@ Examples:
   asc web auth login --apple-id "user@example.com" --public-provider-id "Z4N6A5FQKW"
   %s asc web auth login --apple-id "user@example.com"
   %s='osascript /path/to/get-apple-2fa-code.scpt' asc web auth login --apple-id "user@example.com"`,
+			webAppleIDEnv,
 			webPasswordEnvDisplay(),
 			webDontStorePasswordEnv,
 			webTwoFactorCodeCommandEnv,

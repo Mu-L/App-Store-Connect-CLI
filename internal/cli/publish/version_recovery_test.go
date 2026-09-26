@@ -158,8 +158,30 @@ func TestFindOrCreatePublishAppStoreVersionRejectsMultipleExactMatches(t *testin
 	client := newPublishCommandTestClient(t)
 
 	_, err := findOrCreatePublishAppStoreVersion(context.Background(), client, "app-1", "1.2.3", asc.PlatformIOS)
-	if err == nil || !strings.Contains(err.Error(), "multiple app store versions found") {
+	if err == nil || !strings.Contains(err.Error(), `2 app store versions match version "1.2.3" on platform "IOS":`) {
 		t.Fatalf("expected multiple-match error, got %v", err)
+	}
+}
+
+func TestFindOrCreatePublishAppStoreVersionRejectsSingleIncompleteMatch(t *testing.T) {
+	requests := 0
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	http.DefaultTransport = publishCommandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.Method != http.MethodGet {
+			return nil, fmt.Errorf("unexpected mutation: %s %s", req.Method, req.URL.RequestURI())
+		}
+		return publishCommandJSONResponse(http.StatusOK, `{"data":[{"type":"appStoreVersions","id":"version-1","attributes":{"versionString":"1.2.3","platform":"IOS"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appStoreVersions?cursor=next"}}`)
+	})
+	client := newPublishCommandTestClient(t)
+
+	_, err := findOrCreatePublishAppStoreVersion(context.Background(), client, "app-1", "1.2.3", asc.PlatformIOS)
+	if err == nil || !strings.Contains(err.Error(), "sample matches") {
+		t.Fatalf("expected incomplete-page ambiguity, got %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected one read and no create, got %d requests", requests)
 	}
 }
 

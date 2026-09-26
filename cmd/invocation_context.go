@@ -126,19 +126,16 @@ func shouldRenderConciseUnknownChild(root *ffcli.Command, analysis invocationAna
 func printConciseUnknownCommand(analysis invocationAnalysis, commandName string) {
 	fmt.Fprintf(os.Stderr, "Error: %s\n", unknownCommandError(analysis, commandName))
 
-	candidates := visibleSubcommandNames(analysis.command)
-	suggestions := suggest.Commands(analysis.unknownToken, candidates)
-	if len(suggestions) > 2 {
-		suggestions = suggestions[:2]
-	}
+	suggestions := unknownChildSuggestions(analysis.command, commandName, analysis.unknownToken)
 	if len(suggestions) > 0 {
 		fmt.Fprintln(os.Stderr, "Try:")
 		for _, suggestion := range suggestions {
-			fmt.Fprintf(os.Stderr, "  %s %s\n", commandName, shared.SanitizeTerminal(suggestion))
+			fmt.Fprintf(os.Stderr, "  %s\n", suggestion)
 		}
 	} else {
-		// A near match already answers the caller. Curated task hints are for the
-		// other case: a plausible verb this group never had.
+		// Nothing was confident enough to name a target. Curated task hints cover
+		// that remaining case: a plausible verb this group never had, in a group
+		// worth describing.
 		printUnknownChildTaskHints(commandName)
 	}
 	fmt.Fprintln(os.Stderr, "For help:")
@@ -148,6 +145,20 @@ func printConciseUnknownCommand(analysis invocationAnalysis, commandName string)
 func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, commandName string, args []string) {
 	flagName := unknownFlagName(analysis)
 	if printRemovedFlagHint(os.Stderr, commandName, flagName, analysis.command.FlagSet) {
+		return
+	}
+	if name, ok := flagLookupName(flagName); ok && name == rootProfileFlagName &&
+		root != nil && root.FlagSet != nil && root.FlagSet.Lookup(name) != nil {
+		// `--profile` is accepted after the command name, so it is never an
+		// unknown flag there and placement is never the failure. It only
+		// reaches this path when no profile name could be read from the
+		// invocation, so report exactly that.
+		fmt.Fprintf(
+			os.Stderr,
+			"Error: `%s` needs a profile name; pass `--%s=NAME`.\nFor help:\n  asc --help\n",
+			shared.SanitizeTerminal(flagName),
+			rootProfileFlagName,
+		)
 		return
 	}
 	fmt.Fprintf(os.Stderr, "Error: %s\n", unknownFlagError(analysis, commandName))
@@ -163,24 +174,11 @@ func printConciseUnknownFlag(root *ffcli.Command, analysis invocationAnalysis, c
 		return
 	}
 
-	visibleFlags := shared.VisibleHelpFlags(analysis.command.FlagSet)
-	candidates := make([]string, 0, len(visibleFlags))
-	for _, item := range visibleFlags {
-		if isDeprecatedFlagHelp(item.Usage) {
-			continue
-		}
-		candidates = append(candidates, item.Name)
-	}
-	suggestions := suggest.Flags(strings.TrimLeft(flagName, "-"), candidates)
-	if len(suggestions) > 2 {
-		suggestions = suggestions[:2]
-	}
-	if len(suggestions) > 0 {
-		fmt.Fprintln(os.Stderr, "Try:")
-		for _, suggestion := range suggestions {
-			fmt.Fprintf(os.Stderr, "  --%s\n", shared.SanitizeTerminal(suggestion))
-		}
-	}
+	printFlagSuggestions(os.Stderr, unknownFlagSuggestions(
+		analysis.command.FlagSet,
+		flagName,
+		unknownFlagSuggestionOptions{allowSelectorFallback: true},
+	))
 	fmt.Fprintln(os.Stderr, "For help:")
 	fmt.Fprintf(os.Stderr, "  %s --help\n", commandName)
 }
@@ -657,15 +655,12 @@ func shellSafeCommandArg(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 }
 
+// preservesLegacyChild reports whether a removed child still runs through the
+// group's own Exec so it can print its migration guidance. Every other unknown
+// child, including the old `get`/`set` spellings of view/edit commands, takes
+// the concise suggester instead of a bare usage dump.
 func preservesLegacyChild(analysis invocationAnalysis, commandName string) bool {
 	token := strings.TrimSpace(analysis.unknownToken)
-	if token == "get" && findDirectSubcommand(analysis.command, "view") != nil {
-		return true
-	}
-	if token == "set" && findDirectSubcommand(analysis.command, "edit") != nil {
-		return true
-	}
-
 	switch commandName {
 	case "asc apps":
 		return token == "create"

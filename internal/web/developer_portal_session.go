@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/readonly"
 )
 
 const (
@@ -83,7 +85,8 @@ func (c *Client) ensureDeveloperPortalSession(ctx context.Context) error {
 	headers := developerPortalHeaders("")
 	headers.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 	headers.Set("Content-Type", "application/x-www-form-urlencoded")
-	body, response, err := c.doDeveloperPortalHTTP(ctx, http.MethodPost, c.developerPortalOrigin()+developerPortalTeamsPath, nil, headers)
+	// Listing teams only establishes Portal context; it changes nothing.
+	body, response, err := c.doDeveloperPortalHTTP(readonly.WithReadIntent(ctx), http.MethodPost, c.developerPortalOrigin()+developerPortalTeamsPath, nil, headers)
 	if err != nil {
 		return err
 	}
@@ -350,6 +353,14 @@ func (c *Client) doDeveloperPortalHTTP(ctx context.Context, method, requestURL s
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Developer Portal proxies logical GETs as POSTs and says so with an
+	// override header; honor that signal so read-only mode keeps reads working.
+	if strings.EqualFold(headers.Get("X-HTTP-Method-Override"), http.MethodGet) {
+		ctx = readonly.WithReadIntent(ctx)
+	}
+	if err := readonly.Check(ctx, method, readonly.Target(requestURL)); err != nil {
+		return nil, nil, err
+	}
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -471,6 +482,19 @@ func (c *Client) developerPortalTeamID() string {
 	return c.developerTeamID
 }
 
+type developerPortalSessionStatusError struct {
+	status int
+	cause  *APIError
+}
+
+func (e *developerPortalSessionStatusError) Error() string {
+	return fmt.Sprintf("web session is unauthorized or expired for Developer Portal (status %d); %s", e.status, developerPortalAuthHint)
+}
+
+func (e *developerPortalSessionStatusError) Unwrap() error {
+	return e.cause
+}
+
 func developerPortalSessionError(status int) error {
-	return fmt.Errorf("web session is unauthorized or expired for Developer Portal (status %d); %s", status, developerPortalAuthHint)
+	return &developerPortalSessionStatusError{status: status, cause: &APIError{Status: status}}
 }

@@ -110,6 +110,18 @@ For complete group membership, page the relationship for each tester:
 asc testflight testers groups list --id TESTER_ID --paginate
 ```
 
+### Inspect TestFlight relationship links
+
+The `links view` commands return related resource IDs. Group links accept
+`betaTesters` or `builds`; tester links accept `apps`, `betaGroups`, or
+`builds`; and pre-release version links accept `app` or `builds`.
+
+```bash  theme={null}
+asc testflight groups links view --group-id GROUP_ID --type betaTesters --paginate
+asc testflight testers links view --tester-id TESTER_ID --type betaGroups --paginate
+asc testflight pre-release links view --id PRE_RELEASE_VERSION_ID --type builds --paginate
+```
+
 `--invite-type`, `--sort`, and `--include` cannot be combined with `--next`. A
 `links.next` URL already carries the query it came from, so those values would
 never reach the request; the command fails instead of dropping them. When the

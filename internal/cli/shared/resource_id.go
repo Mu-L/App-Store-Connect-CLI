@@ -45,6 +45,9 @@ func ResourceIDFromValue(value, resourceType string) (string, error) {
 	if resourceType != "" && linkType != resourceType {
 		return "", fmt.Errorf("expected a self-link of type %s, got %s", resourceType, linkType)
 	}
+	if strings.ContainsAny(id, "?#") {
+		return "", fmt.Errorf("self-link resource ID must not contain URL delimiters")
+	}
 	return id, nil
 }
 

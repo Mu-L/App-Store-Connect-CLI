@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	rootcmd "github.com/rudrankriyam/App-Store-Connect-CLI/cmd"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 )
 
 // The remaining single-value resource ID flags accept an API self-link too, so
@@ -254,6 +255,20 @@ func TestSelfLinkRemainingFlagsRejectWrongType(t *testing.T) {
 			wantErr: "expected a self-link of type marketplaceWebhooks, got webhooks",
 		},
 		{
+			name:    "certificates create rejects apps link for merchant",
+			args:    []string{"certificates", "create"},
+			flag:    "merchant-id",
+			value:   selfLinkTestBase + "/v1/apps/123",
+			wantErr: "expected a self-link of type merchantIds, got apps",
+		},
+		{
+			name:    "merchant-ids certificates create rejects apps link",
+			args:    []string{"merchant-ids", "certificates", "create"},
+			flag:    "merchant-id",
+			value:   selfLinkTestBase + "/v1/apps/123",
+			wantErr: "expected a self-link of type merchantIds, got apps",
+		},
+		{
 			name:    "merchant-ids view rejects apps link",
 			args:    []string{"merchant-ids", "view"},
 			flag:    "merchant-id",
@@ -419,6 +434,33 @@ func TestSelfLinkRemainingFlagsRejectWrongType(t *testing.T) {
 			if !strings.HasPrefix(firstLine, wantPrefix) || !strings.Contains(firstLine, test.wantErr) {
 				t.Fatalf("first stderr line = %q, want prefix %q containing %q", firstLine, wantPrefix, test.wantErr)
 			}
+		})
+	}
+}
+
+func TestSelfLinkCertificateCreateSendsMerchantIDRelationship(t *testing.T) {
+	for _, command := range [][]string{
+		{"certificates", "create"},
+		{"merchant-ids", "certificates", "create"},
+	} {
+		t.Run(strings.Join(command, " "), func(t *testing.T) {
+			setupAuth(t)
+			t.Setenv("ASC_CONFIG_PATH", filepath.Join(t.TempDir(), "nonexistent.json"))
+			var payload asc.CertificateCreateRequest
+			captureCertificateCreateRequest(t, &payload)
+			args := append(append([]string(nil), command...),
+				"--certificate-type", "APPLE_PAY_MERCHANT_IDENTITY",
+				"--merchant-id", selfLinkTestBase+"/v1/merchantIds/merchant-1",
+				"--csr", writeApplePayCSR(t), "--output", "json")
+			_, stderr := captureOutput(t, func() {
+				if code := rootcmd.Run(args, "1.2.3"); code != rootcmd.ExitSuccess {
+					t.Fatalf("exit code = %d, want %d", code, rootcmd.ExitSuccess)
+				}
+			})
+			if stderr != "" {
+				t.Fatalf("expected empty stderr, got %q", stderr)
+			}
+			assertMerchantIDRelationship(t, payload, "APPLE_PAY_MERCHANT_IDENTITY", "merchant-1")
 		})
 	}
 }

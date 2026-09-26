@@ -25,6 +25,12 @@ type ResolveBuildOptions struct {
 
 const buildNumberRequiresPlatformMessage = "--platform is required with --build-number (IOS, MAC_OS, TV_OS, VISION_OS)"
 
+// resolveBuildSinceMaxPages is a final backstop for a provider that keeps
+// returning unique next links without making progress. Build-number queries
+// are expected to be narrow, so this allows a large valid result set while
+// guaranteeing that --since cannot run until its context expires.
+const resolveBuildSinceMaxPages = 1000
+
 type buildNumberSelectionOptions struct {
 	AppID                 string
 	Version               string
@@ -172,7 +178,12 @@ func resolveBuildByNumberSelection(
 		buildOpts = append(buildOpts, asc.WithBuildsProcessingStates(opts.ProcessingStateValues))
 	}
 	if version != "" {
-		preReleaseVersionIDs, err := shared.FindPreReleaseVersionIDs(ctx, client, resolvedAppID, version, platform)
+		var preReleaseVersionIDs []string
+		if opts.Since != nil {
+			preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDsWithMaxPages(ctx, client, resolvedAppID, version, platform, resolveBuildSinceMaxPages)
+		} else {
+			preReleaseVersionIDs, err = shared.FindPreReleaseVersionIDs(ctx, client, resolvedAppID, version, platform)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -213,7 +224,7 @@ func resolveBuildByNumberSelection(
 	}
 
 	if len(buildsResp.Data) > 1 || strings.TrimSpace(buildsResp.Links.Next) != "" {
-		return nil, ambiguousBuildNumberSelection(resolvedAppID, buildNumber, version, platform)
+		return nil, ambiguousBuildNumberSelection(resolvedAppID, buildNumber, version, platform, shared.BuildCandidates(buildsResp.Data), strings.TrimSpace(buildsResp.Links.Next) != "")
 	}
 
 	return &asc.BuildResponse{Data: buildsResp.Data[0], Links: buildsResp.Links}, nil
@@ -230,11 +241,28 @@ func resolveBuildByNumberSelectionSince(
 	threshold := since.UTC()
 	var selected *asc.Resource[asc.BuildAttributes]
 	pageOpts := append([]asc.BuildsOption{}, buildOpts...)
+	seenNext := make(map[string]struct{})
 
-	for {
+	for page := 1; ; page++ {
+		if page > resolveBuildSinceMaxPages {
+			return nil, fmt.Errorf(
+				"failed to paginate builds: exceeded the %d-page safety limit; narrow the build-number query",
+				resolveBuildSinceMaxPages,
+			)
+		}
+
 		buildsResp, err := client.GetBuilds(ctx, appID, pageOpts...)
 		if err != nil {
 			return nil, err
+		}
+
+		nextURL := strings.TrimSpace(buildsResp.Links.Next)
+		if nextURL != "" {
+			nextIdentity := asc.PaginationURLIdentity(nextURL)
+			if _, seen := seenNext[nextIdentity]; seen {
+				return nil, fmt.Errorf("failed to paginate builds: %w: %s", asc.ErrRepeatedPaginationURL, nextURL)
+			}
+			seenNext[nextIdentity] = struct{}{}
 		}
 
 		for _, build := range buildsResp.Data {
@@ -252,14 +280,13 @@ func resolveBuildByNumberSelectionSince(
 				return &asc.BuildResponse{Data: *selected}, nil
 			}
 			if selected != nil {
-				return nil, ambiguousBuildNumberSelection(appID, buildNumber, version, platform)
+				return nil, ambiguousBuildNumberSelection(appID, buildNumber, version, platform, shared.BuildCandidates([]asc.Resource[asc.BuildAttributes]{*selected, build}), true)
 			}
 
 			selectedBuild := build
 			selected = &selectedBuild
 		}
 
-		nextURL := strings.TrimSpace(buildsResp.Links.Next)
 		if nextURL == "" {
 			if selected == nil {
 				if allowEmpty {
@@ -269,7 +296,6 @@ func resolveBuildByNumberSelectionSince(
 			}
 			return &asc.BuildResponse{Data: *selected}, nil
 		}
-
 		pageOpts = []asc.BuildsOption{asc.WithBuildsNextURL(nextURL)}
 	}
 }
@@ -290,16 +316,22 @@ func noBuildFoundForBuildNumber(appID, buildNumber, version, platform string) er
 }
 
 // ambiguousBuildNumberSelection reports a build-number lookup that matched
-// more than one build. The caller has to narrow the selector, so this is a
-// usage error.
-func ambiguousBuildNumberSelection(appID, buildNumber, version, platform string) error {
-	return shared.UsageErrorf(
-		"multiple builds found for app %s with build number %q%s; %s",
-		appID,
-		buildNumber,
-		describeBuildNumberSelectionFilters(version, platform),
-		describeBuildNumberSelectionHint(version, platform),
-	)
+// more than one build. The caller has to narrow the selector, so this stays a
+// usage error, and the message names every matching build ID plus the flag
+// that accepts one of them.
+func ambiguousBuildNumberSelection(appID, buildNumber, version, platform string, candidates []shared.AmbiguousCandidate, candidatesAreSample bool) error {
+	hint := describeBuildNumberSelectionHint(version, platform)
+	if candidatesAreSample {
+		hint = strings.TrimSpace("The listed builds are a sample; additional matches may exist. " + hint)
+	}
+	return shared.AmbiguousUsageError(&shared.AmbiguousSelectionError{
+		Kind:                "build",
+		Description:         fmt.Sprintf("build number %q%s for app %s", buildNumber, describeBuildNumberSelectionFilters(version, platform), appID),
+		Flag:                "--build-id",
+		Candidates:          candidates,
+		CandidatesAreSample: candidatesAreSample,
+		Hint:                hint,
+	})
 }
 
 func describeBuildNumberSelectionFilters(version, platform string) string {
@@ -319,12 +351,12 @@ func describeBuildNumberSelectionFilters(version, platform string) string {
 func describeBuildNumberSelectionHint(version, platform string) string {
 	switch {
 	case strings.TrimSpace(version) == "" && strings.TrimSpace(platform) == "":
-		return "add --version and/or --platform, or use --build-id"
+		return "Or narrow the match with --version and/or --platform."
 	case strings.TrimSpace(version) == "":
-		return "add --version, or use --build-id"
+		return "Or narrow the match with --version."
 	case strings.TrimSpace(platform) == "":
-		return "add --platform, or use --build-id"
+		return "Or narrow the match with --platform."
 	default:
-		return "use --build-id"
+		return ""
 	}
 }

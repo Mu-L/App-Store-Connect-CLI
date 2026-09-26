@@ -122,6 +122,28 @@ func TestResolveAppStoreVersionIDAndState_FallsBackToTrimmedAppStoreState(t *tes
 	}
 }
 
+func TestResolveAppStoreVersionIDAndStateRejectsSingleSample(t *testing.T) {
+	client := newAppResolutionTestClient(t, func(req *http.Request) (*http.Response, error) {
+		return appResolutionJSONResponse(`{"data":[{"type":"appStoreVersions","id":"ver-456","attributes":{"versionString":"1.2.3","platform":"IOS"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appStoreVersions?cursor=next"}}`)
+	})
+
+	_, _, err := ResolveAppStoreVersionIDAndState(context.Background(), client, "app-1", "1.2.3", "IOS")
+	if err == nil || !strings.Contains(err.Error(), "sample matches") {
+		t.Fatalf("expected incomplete-page ambiguity, got %v", err)
+	}
+}
+
+func TestResolveAppStoreVersionIDAndStateRejectsEmptySample(t *testing.T) {
+	client := newAppResolutionTestClient(t, func(req *http.Request) (*http.Response, error) {
+		return appResolutionJSONResponse(`{"data":[],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appStoreVersions?cursor=next"}}`)
+	})
+
+	_, _, err := ResolveAppStoreVersionIDAndState(context.Background(), client, "app-1", "1.2.3", "IOS")
+	if err == nil || !strings.Contains(err.Error(), "sample matches") {
+		t.Fatalf("expected incomplete-page ambiguity, got %v", err)
+	}
+}
+
 func TestResolveAppStoreVersionIDAndState_EmptyCollectionIsNotFound(t *testing.T) {
 	client := newAppResolutionTestClient(t, func(req *http.Request) (*http.Response, error) {
 		return appResolutionJSONResponse(`{"data":[]}`)
@@ -154,6 +176,28 @@ func TestResolveAppInfoID_SingleAppInfo(t *testing.T) {
 	}
 	if id != "info-1" {
 		t.Fatalf("expected info-1, got %q", id)
+	}
+}
+
+func TestResolveAppInfoIDRejectsSingleSample(t *testing.T) {
+	client := newAppResolutionTestClient(t, func(req *http.Request) (*http.Response, error) {
+		return appResolutionJSONResponse(`{"data":[{"type":"appInfos","id":"info-1","attributes":{"state":"READY_FOR_SALE"}}],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appInfos?cursor=next"}}`)
+	})
+
+	_, err := ResolveAppInfoID(context.Background(), client, "app-1", "")
+	if err == nil || !strings.Contains(err.Error(), "sample matches") {
+		t.Fatalf("expected incomplete-page ambiguity, got %v", err)
+	}
+}
+
+func TestResolveAppInfoIDRejectsEmptySample(t *testing.T) {
+	client := newAppResolutionTestClient(t, func(req *http.Request) (*http.Response, error) {
+		return appResolutionJSONResponse(`{"data":[],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps/app-1/appInfos?cursor=next"}}`)
+	})
+
+	_, err := ResolveAppInfoID(context.Background(), client, "app-1", "")
+	if err == nil || !strings.Contains(err.Error(), "sample matches") {
+		t.Fatalf("expected incomplete-page ambiguity, got %v", err)
 	}
 }
 
@@ -195,7 +239,7 @@ func TestResolveAppInfoID_ReturnsErrorWhenMultipleRemainAmbiguous(t *testing.T) 
 				{"type":"appInfos","id":"info-live","attributes":{"state":"READY_FOR_SALE"}},
 				{"type":"appInfos","id":"info-review","attributes":{"state":"IN_REVIEW"}}
 			]}`,
-			wantSubstrings: []string{`multiple app infos found for app "app-1"`, "READY_FOR_SALE", "IN_REVIEW"},
+			wantSubstrings: []string{`2 app infos match app "app-1"; pass --app-info with one of:`, "READY_FOR_SALE", "IN_REVIEW"},
 		},
 		{
 			name: "all live candidates",
@@ -203,7 +247,7 @@ func TestResolveAppInfoID_ReturnsErrorWhenMultipleRemainAmbiguous(t *testing.T) 
 				{"type":"appInfos","id":"info-1","attributes":{"state":"READY_FOR_SALE"}},
 				{"type":"appInfos","id":"info-2","attributes":{"state":"READY_FOR_DISTRIBUTION"}}
 			]}`,
-			wantSubstrings: []string{`multiple app infos found for app "app-1"`, "READY_FOR_SALE", "READY_FOR_DISTRIBUTION"},
+			wantSubstrings: []string{`2 app infos match app "app-1"; pass --app-info with one of:`, "READY_FOR_SALE", "READY_FOR_DISTRIBUTION"},
 		},
 		{
 			name: "multiple prepare for submission candidates",
@@ -211,7 +255,7 @@ func TestResolveAppInfoID_ReturnsErrorWhenMultipleRemainAmbiguous(t *testing.T) 
 				{"type":"appInfos","id":"info-ios","attributes":{"state":"PREPARE_FOR_SUBMISSION"}},
 				{"type":"appInfos","id":"info-macos","attributes":{"state":"PREPARE_FOR_SUBMISSION"}}
 			]}`,
-			wantSubstrings: []string{`multiple app infos found for app "app-1"`, "info-ios", "info-macos", "PREPARE_FOR_SUBMISSION"},
+			wantSubstrings: []string{`2 app infos match app "app-1"; pass --app-info with one of:`, "info-ios", "info-macos", "PREPARE_FOR_SUBMISSION"},
 		},
 	}
 
