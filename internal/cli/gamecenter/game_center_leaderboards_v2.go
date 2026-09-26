@@ -32,6 +32,7 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			GameCenterLeaderboardsV2ListCommand(),
+			GameCenterScoreModerationsCommand(),
 			GameCenterLeaderboardVersionsV2Command(),
 			GameCenterLeaderboardLocalizationsV2Command(),
 			GameCenterLeaderboardImagesV2Command(),
