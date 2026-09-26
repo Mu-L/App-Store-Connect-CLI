@@ -43,6 +43,8 @@ var ageRatingOverrideV2Values = []string{
 
 var koreaAgeRatingOverrideValues = []string{
 	"NONE",
+	"ALL",
+	"TWELVE_PLUS",
 	"FIFTEEN_PLUS",
 	"NINETEEN_PLUS",
 }
@@ -190,7 +192,8 @@ func AgeRatingEditCommand() *ffcli.Command {
 	kidsAgeBand := fs.String("kids-age-band", "", "Kids age band: FIVE_AND_UNDER, SIX_TO_EIGHT, NINE_TO_ELEVEN")
 	ageRatingOverride := fs.String("age-rating-override", "", "Deprecated age rating override: NONE, NINE_PLUS, THIRTEEN_PLUS, SIXTEEN_PLUS, SEVENTEEN_PLUS, UNRATED")
 	ageRatingOverrideV2 := fs.String("age-rating-override-v2", "", "Age rating override v2: NONE, NINE_PLUS, THIRTEEN_PLUS, SIXTEEN_PLUS, EIGHTEEN_PLUS, UNRATED")
-	koreaAgeRatingOverride := fs.String("korea-age-rating-override", "", "Korea age rating override: NONE, FIFTEEN_PLUS, NINETEEN_PLUS")
+	koreaAgeRatingOverride := fs.String("korea-age-rating-override", "", "Korea age rating override: NONE, ALL, TWELVE_PLUS, FIFTEEN_PLUS, NINETEEN_PLUS")
+	gracNumber := fs.String("grac-rating-classification-number", "", "Korea GRAC rating classification number")
 	developerAgeRatingInfoURL := fs.String("developer-age-rating-info-url", "", "Developer age rating information URL")
 
 	output := shared.BindOutputFlags(fs)
@@ -288,12 +291,25 @@ Examples:
 				}
 			}
 
+			if _, err := parseOptionalEnumFlag("--korea-age-rating-override", *koreaAgeRatingOverride, koreaAgeRatingOverrideValues); err != nil {
+				return shared.UsageError(err.Error())
+			}
+			gracProvided := false
+			fs.Visit(func(f *flag.Flag) { gracProvided = gracProvided || f.Name == "grac-rating-classification-number" })
+			gracValue := strings.TrimSpace(*gracNumber)
+			if gracProvided && gracValue == "" {
+				return shared.UsageError("--grac-rating-classification-number must not be empty")
+			}
 			attributes, err := buildAgeRatingAttributes(values)
 			if err != nil {
 				return err
 			}
 			if err := validateAgeRatingDependencies(attributes); err != nil {
 				return err
+			}
+
+			if gracProvided {
+				attributes.GracRatingClassificationNumber = &gracValue
 			}
 
 			if !hasAgeRatingUpdates(attributes) {
@@ -497,6 +513,7 @@ func hasAgeRatingUpdates(attrs asc.AgeRatingDeclarationAttributes) bool {
 		attrs.AgeRatingOverride != nil ||
 		attrs.AgeRatingOverrideV2 != nil ||
 		attrs.KoreaAgeRatingOverride != nil ||
+		attrs.GracRatingClassificationNumber != nil ||
 		attrs.DeveloperAgeRatingInfoURL != nil
 }
 

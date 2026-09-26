@@ -59,6 +59,7 @@ func ageRatingFields(resp *AgeRatingDeclarationResponse) []ageRatingField {
 		{Name: "Age Rating Override", Value: formatOptionalString(attrs.AgeRatingOverride)},
 		{Name: "Age Rating Override V2", Value: formatOptionalString(attrs.AgeRatingOverrideV2)},
 		{Name: "Korea Age Rating Override", Value: formatOptionalString(attrs.KoreaAgeRatingOverride)},
+		{Name: "GRAC Rating Classification Number", Value: formatOptionalString(attrs.GracRatingClassificationNumber)},
 		{Name: "Developer Age Rating Info URL", Value: formatOptionalString(attrs.DeveloperAgeRatingInfoURL)},
 	}
 	return fields
