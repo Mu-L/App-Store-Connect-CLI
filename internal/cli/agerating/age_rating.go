@@ -56,6 +56,7 @@ var kidsAgeBandValues = []string{
 }
 
 var ageRatingSparseFields441 = []string{
+	"gracRatingClassificationNumber",
 	"socialMedia",
 	"socialMediaAgeRestricted",
 }
@@ -94,7 +95,7 @@ func AgeRatingViewCommand() *ffcli.Command {
 	appID := fs.String("app", os.Getenv("ASC_APP_ID"), "App ID (required unless --app-info-id or --version-id is provided)")
 	appInfoID := fs.String("app-info-id", "", "App info ID (optional)")
 	versionID := fs.String("version-id", "", "App Store version ID (optional)")
-	fields := fs.String("fields", "", "Sparse fields: socialMedia, socialMediaAgeRestricted")
+	fields := fs.String("fields", "", "Sparse fields: gracRatingClassificationNumber, socialMedia, socialMediaAgeRestricted")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
