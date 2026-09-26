@@ -308,6 +308,9 @@ func TestWebAuthLoginOmitsPlaintextPasswordAndRemovedTwoFactorCodeFlags(t *testi
 		t.Fatal("expected web auth login command")
 		return
 	}
+	if got, want := cmd.ShortUsage, "asc web auth login [--apple-id EMAIL] [--public-provider-id TEAM_ID]"; got != want {
+		t.Fatalf("ShortUsage = %q, want %q", got, want)
+	}
 	if cmd.FlagSet.Lookup("password") != nil {
 		t.Fatal("did not expect --password flag on web auth login")
 	}

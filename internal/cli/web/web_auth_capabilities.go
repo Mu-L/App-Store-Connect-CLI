@@ -260,6 +260,10 @@ func wrapWebAuthCapabilitiesError(keyID string, err error) error {
 		case 403:
 			return webAuthCapabilitiesError("web auth capabilities failed: capability discovery is not permitted for this account or provider; verify the selected provider and account role", err)
 		}
+		return webAuthCapabilitiesError(
+			fmt.Sprintf("web auth capabilities failed: capability discovery is unavailable; retry or run 'asc web auth login': %s", apiErr.Error()),
+			err,
+		)
 	}
 	return webAuthCapabilitiesError("web auth capabilities failed: capability discovery is unavailable; retry or run 'asc web auth login'", err)
 }
@@ -271,10 +275,12 @@ func wrapWebAuthCapabilitiesSessionError(err error) error {
 	if errors.Is(err, webcore.ErrCachedSessionExpired) {
 		return webAuthCapabilitiesError("web auth capabilities failed: cached web session expired; run 'asc web auth login' and retry", err)
 	}
-	if errors.Is(err, errNoCachedWebSession) {
+	if errors.Is(err, errNoCachedWebSession) || errors.Is(err, flag.ErrHelp) {
 		// The session resolver returns a typed usage error and has already written
-		// its specific --apple-id guidance. Preserve it unchanged so the root
-		// renderer does not emit a second diagnostic.
+		// its specific --apple-id guidance, whether the cache was empty or held
+		// several accounts to choose between. Preserve it unchanged so the root
+		// renderer does not emit a second diagnostic and the command keeps the
+		// usage exit code.
 		return err
 	}
 	var apiErr *webcore.APIError

@@ -18,6 +18,11 @@ var (
 	ErrRepeatedPaginationURL = errors.New("detected repeated pagination URL")
 )
 
+var (
+	ErrMissingPaginationFetcher = errors.New("pagination fetch function is required")
+	ErrNilPaginationPage        = errors.New("pagination page is nil")
+)
+
 type responseBodyReadError struct {
 	err error
 }
@@ -65,6 +70,19 @@ type APIError struct {
 	Detail           string
 	StatusCode       int // HTTP status code that triggered this error (0 if unknown)
 	AssociatedErrors map[string][]APIAssociatedError
+	// AllCodes lists the code of every entry in Apple's errors[] array, in
+	// response order, with Code as the first element. Apple can report several
+	// causes for one status: a duplicate versionString on
+	// POST /v1/appStoreVersions arrives as ENTITY_ERROR.RELATIONSHIP.INVALID
+	// followed by ENTITY_ERROR.ATTRIBUTE.INVALID.DUPLICATE. Callers that
+	// classify a response by code must consult this slice so a cause reported
+	// after the first is not lost. It is empty when the body carried no
+	// parsable errors[] array.
+	AllCodes []string
+	// AllDetails lists every detail from Apple's errors[] array in response
+	// order, including empty details. Callers that classify a response by its
+	// diagnostic text must consult this slice so a later cause is not lost.
+	AllDetails []string
 	// Remediation is operator guidance for error codes whose cause is an
 	// account-level state that no API key permission can satisfy. It is
 	// appended to Error() so the guidance travels with the error itself.
@@ -226,4 +244,30 @@ func hasAPIErrorCodePrefix(code string, prefixes ...string) bool {
 		}
 	}
 	return false
+}
+
+// IsMissingResourceOfType reports whether err is App Store Connect's 404 for a
+// related resource that has not been created yet, such as an app without an
+// availability record or price schedule. It keys on the HTTP status and the
+// resource type named in Apple's detail so a 404 for the parent resource (for
+// example an unknown app ID) is not mistaken for an unconfigured child.
+func IsMissingResourceOfType(err error, resourceType string) bool {
+	resourceType = strings.ToLower(strings.TrimSpace(resourceType))
+	if err == nil || resourceType == "" {
+		return false
+	}
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok || apiErr == nil || apiErr.StatusCode != http.StatusNotFound {
+		return false
+	}
+	detail := strings.ToLower(strings.TrimSpace(apiErr.Detail))
+	if detail == "" {
+		return false
+	}
+	// "There is no resource of type 'appAvailabilities' with id '123'"
+	if strings.Contains(detail, "no resource of type '"+resourceType+"'") {
+		return true
+	}
+	// "No appAvailabilities resource exists"
+	return strings.Contains(detail, "no "+resourceType+" resource")
 }

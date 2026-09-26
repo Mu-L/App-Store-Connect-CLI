@@ -362,6 +362,26 @@ asc iap review-screenshots view \
   --iap-id "IAP_ID" \
   --iap-fields versions
 
+# Update an in-progress upload using the existing screenshot ID
+asc iap review-screenshots update \
+  --screenshot-id "SCREENSHOT_ID" \
+  --file "./replacement.png"
+
+# A completed screenshot cannot be replaced by update. Delete it explicitly,
+# then create the replacement (the delete command requires --confirm).
+asc iap review-screenshots delete \
+  --screenshot-id "SCREENSHOT_ID" \
+  --confirm
+asc iap review-screenshots create \
+  --iap-id "IAP_ID" \
+  --file "./replacement.png"
+
+# Finalize an upload reservation with the API-supported PATCH attributes
+asc iap review-screenshots update \
+  --screenshot-id "SCREENSHOT_ID" \
+  --uploaded true \
+  --checksum "MD5_HASH"
+
 # Delete review screenshot
 asc iap review-screenshots delete \
   --screenshot-id "SCREENSHOT_ID" \

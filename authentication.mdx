@@ -179,12 +179,27 @@ asc web auth import --file ./web-session.json --apple-id "user@example.com"
 asc web auth status
 ```
 
+Set `ASC_WEB_APPLE_ID` to choose the Apple Account for the `asc web` commands
+that resolve or create a session, including `asc web auth login`, without
+repeating `--apple-id`; an explicit flag still wins. The cache-management
+commands above (`status`, `export`, `import`, `logout`) ignore it. See
+[Choosing the Apple Account](/commands/web#choosing-the-apple-account).
+
 Pass `--overwrite` to replace an existing destination file on export, or an
 existing cached session for that Apple Account on import. Isolate tests and
 automation with `ASC_WEB_SESSION_CACHE_DIR` and
 `ASC_WEB_SESSION_CACHE_BACKEND=file` so they cannot read or replace the
 operator's real session cache. An unset or `auto` backend still falls back to
 the keychain when the file cache is empty.
+
+A runner that cannot answer prompts can create the session non-interactively
+instead: `ASC_WEB_PASSWORD` supplies the Apple Account password and
+`ASC_WEB_2FA_CODE_COMMAND` names a shell command that prints the two-factor
+code. Both are read only when a fresh login is required, and a password taken
+from the environment is never written to the saved-password store. Set
+`ASC_WEB_DONT_STORE_PASSWORD=1` to turn off saved-password reads and writes
+altogether. See
+[Web session variables](/configuration/environment-variables#web-session-variables).
 
 ## Manage multiple profiles
 
@@ -281,8 +296,9 @@ By default, `asc` warns and continues with a mixed credential. Use `--strict-aut
   ```
 
   ```bash Force a stored profile theme={null}
-  # Root flags appear before the command group.
+  # --profile is accepted on either side of the command.
   asc --profile "WorkApp" apps list
+  asc apps list --profile "WorkApp"
   ```
 
   ```bash Config or environment only theme={null}
@@ -506,7 +522,7 @@ Ensure your `.p8` file:
 
 * Starts with `-----BEGIN PRIVATE KEY-----`
 * Is ECDSA format (App Store Connect uses P-256/ES256)
-* Has correct permissions: `chmod 600 AuthKey_*.p8`
+* Has correct permissions: `chmod 600 AuthKey_*.p8`, or re-run `asc auth login --fix-permissions` to let asc change an ordinary over-permissive file to `0600` (owner-unreadable files on macOS require a manual `chmod`)
 
 ### JWT generation failed
 

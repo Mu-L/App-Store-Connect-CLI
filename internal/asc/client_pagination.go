@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
+	"strings"
 )
 
 // PaginateFunc is a function that fetches a page of results
@@ -32,9 +34,9 @@ func PaginateAll(ctx context.Context, firstPage PaginatedResponse, fetchNext Pag
 		return nil, nil
 	}
 
-	// Check for typed nil (non-nil interface containing nil pointer).
+	// Check for typed nil (non-nil interface containing a nil value).
 	// Return an empty result of the same type rather than panicking.
-	if reflect.ValueOf(firstPage).IsNil() {
+	if isNilPaginatedResponse(firstPage) {
 		return newEmptyPaginatedResponse(firstPage)
 	}
 
@@ -49,9 +51,13 @@ func PaginateAll(ctx context.Context, firstPage PaginatedResponse, fetchNext Pag
 
 	page := 1
 	seenNext := make(map[string]struct{})
+	included := &rawJSONArrayAccumulator{}
+	// pageErr records a pagination failure that still yields a partial result,
+	// so the accumulated included array is written before returning.
+	var pageErr error
 	for {
 		// Aggregate data from current page using reflection over the Data field.
-		if err := aggregatePageData(result, firstPage); err != nil {
+		if err := aggregatePageData(result, firstPage, included); err != nil {
 			return nil, fmt.Errorf("page %d: %w", page, err)
 		}
 		if page > 1 {
@@ -60,30 +66,54 @@ func PaginateAll(ctx context.Context, firstPage PaginatedResponse, fetchNext Pag
 			}
 		}
 
-		// Check for next page
 		links := firstPage.GetLinks()
 		if links == nil || links.Next == "" {
 			break
 		}
 
-		if _, ok := seenNext[links.Next]; ok {
-			return result, fmt.Errorf("page %d: %w", page+1, ErrRepeatedPaginationURL)
+		nextURL := links.Next
+		nextIdentity := PaginationURLIdentity(nextURL)
+		if _, ok := seenNext[nextIdentity]; ok {
+			pageErr = fmt.Errorf("page %d: %w", page+1, ErrRepeatedPaginationURL)
+			break
 		}
-		seenNext[links.Next] = struct{}{}
+		seenNext[nextIdentity] = struct{}{}
 		page++
 
+		if fetchNext == nil {
+			pageErr = fmt.Errorf("page %d: %w", page, ErrMissingPaginationFetcher)
+			break
+		}
+
 		// Fetch next page
-		nextPage, err := fetchNext(ctx, links.Next)
+		nextPage, err := fetchNext(ctx, nextURL)
 		if err != nil {
-			return result, fmt.Errorf("page %d: %w", page, err)
+			pageErr = fmt.Errorf("page %d: %w", page, err)
+			break
+		}
+		if isNilPaginatedResponse(nextPage) {
+			pageErr = fmt.Errorf("page %d: %w", page, ErrNilPaginationPage)
+			break
 		}
 
 		// Validate that the response type matches
 		if reflect.TypeOf(nextPage) != reflect.TypeOf(firstPage) {
-			return result, fmt.Errorf("page %d: unexpected response type (expected %T, got %T)", page, firstPage, nextPage)
+			pageErr = fmt.Errorf("page %d: unexpected response type (expected %T, got %T)", page, firstPage, nextPage)
+			break
 		}
 
 		firstPage = nextPage
+	}
+
+	// Write the merged included array once, after every page has been collected.
+	if err := setJSONRawArrayField(result, includedFieldName, included); err != nil {
+		if pageErr != nil {
+			return result, pageErr
+		}
+		return nil, err
+	}
+	if pageErr != nil {
+		return result, pageErr
 	}
 	if links := result.GetLinks(); links != nil {
 		links.Next = ""
@@ -95,6 +125,20 @@ func PaginateAll(ctx context.Context, firstPage PaginatedResponse, fetchNext Pag
 // PaginateEach iterates pages and invokes consume for each page without
 // aggregating all page data in memory.
 func PaginateEach(ctx context.Context, firstPage PaginatedResponse, fetchNext PaginateFunc, consume PageConsumer) error {
+	return paginateEach(ctx, firstPage, fetchNext, consume, 0)
+}
+
+// PaginateEachWithMaxPages iterates pages and invokes consume for each page,
+// stopping before it would fetch a page beyond maxPages. A positive limit is
+// required; use PaginateEach when the caller intentionally has no page cap.
+func PaginateEachWithMaxPages(ctx context.Context, firstPage PaginatedResponse, fetchNext PaginateFunc, consume PageConsumer, maxPages int) error {
+	if maxPages <= 0 {
+		return fmt.Errorf("max pages must be greater than zero")
+	}
+	return paginateEach(ctx, firstPage, fetchNext, consume, maxPages)
+}
+
+func paginateEach(ctx context.Context, firstPage PaginatedResponse, fetchNext PaginateFunc, consume PageConsumer, maxPages int) error {
 	if firstPage == nil {
 		return nil
 	}
@@ -102,8 +146,8 @@ func PaginateEach(ctx context.Context, firstPage PaginatedResponse, fetchNext Pa
 		return fmt.Errorf("page consumer is required")
 	}
 
-	// Handle typed nil (non-nil interface containing nil pointer).
-	if reflect.ValueOf(firstPage).IsNil() {
+	// Handle typed nil (non-nil interface containing a nil value).
+	if isNilPaginatedResponse(firstPage) {
 		return nil
 	}
 
@@ -112,6 +156,13 @@ func PaginateEach(ctx context.Context, firstPage PaginatedResponse, fetchNext Pa
 	seenNext := make(map[string]struct{})
 
 	for {
+		// Reject a missing fetcher before invoking the consumer when this page
+		// already advertises another page. Consumers may perform side effects.
+		preflightLinks := current.GetLinks()
+		if preflightLinks != nil && preflightLinks.Next != "" && fetchNext == nil {
+			return fmt.Errorf("page %d: %w", page+1, ErrMissingPaginationFetcher)
+		}
+
 		if err := consume(current); err != nil {
 			return fmt.Errorf("page %d: %w", page, err)
 		}
@@ -120,14 +171,26 @@ func PaginateEach(ctx context.Context, firstPage PaginatedResponse, fetchNext Pa
 		if links == nil || links.Next == "" {
 			return nil
 		}
-		if _, ok := seenNext[links.Next]; ok {
+		if maxPages > 0 && page >= maxPages {
+			return fmt.Errorf("page %d: exceeded the %d-page safety limit", page+1, maxPages)
+		}
+		nextURL := links.Next
+		nextIdentity := PaginationURLIdentity(nextURL)
+		if _, ok := seenNext[nextIdentity]; ok {
 			return fmt.Errorf("page %d: %w", page+1, ErrRepeatedPaginationURL)
 		}
-		seenNext[links.Next] = struct{}{}
+		seenNext[nextIdentity] = struct{}{}
 
-		nextPage, err := fetchNext(ctx, links.Next)
+		if fetchNext == nil {
+			return fmt.Errorf("page %d: %w", page+1, ErrMissingPaginationFetcher)
+		}
+
+		nextPage, err := fetchNext(ctx, nextURL)
 		if err != nil {
 			return fmt.Errorf("page %d: %w", page+1, err)
+		}
+		if isNilPaginatedResponse(nextPage) {
+			return fmt.Errorf("page %d: %w", page+1, ErrNilPaginationPage)
 		}
 		if reflect.TypeOf(nextPage) != reflect.TypeOf(current) {
 			return fmt.Errorf("page %d: unexpected response type (expected %T, got %T)", page+1, current, nextPage)
@@ -138,6 +201,78 @@ func PaginateEach(ctx context.Context, firstPage PaginatedResponse, fetchNext Pa
 	}
 }
 
+func isNilPaginatedResponse(page PaginatedResponse) bool {
+	if page == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(page)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+// PaginationURLIdentity returns the request identity used for cycle
+// detection. It intentionally leaves the URL passed to fetchNext untouched:
+// callers may rely on the provider's exact next-link spelling. Only a
+// same-host HTTPS absolute URL is collapsed to its request URI so it compares
+// equal to the equivalent relative link. Query parameters are decoded and
+// re-encoded to make their order irrelevant. Invalid, insecure, and untrusted
+// absolute URLs retain their trimmed spelling for the caller's validation and
+// error handling.
+func PaginationURLIdentity(nextURL string) string {
+	nextURL = strings.TrimSpace(nextURL)
+	if nextURL == "" {
+		return nextURL
+	}
+
+	parsed, err := url.Parse(nextURL)
+	if err != nil {
+		return nextURL
+	}
+
+	// Match validateNextURL's absolute-URL recognition so this helper cannot
+	// turn a URL that the request path treats as relative into a trusted one.
+	if !strings.HasPrefix(nextURL, "https://") {
+		if !strings.HasPrefix(nextURL, "http://") {
+			return canonicalPaginationRequestURI(parsed, nextURL)
+		}
+		return nextURL
+	}
+
+	baseURL, err := url.Parse(BaseURL)
+	if err != nil || parsed.Scheme != baseURL.Scheme || parsed.Host != baseURL.Host || parsed.User != nil {
+		return nextURL
+	}
+	return canonicalPaginationRequestURI(parsed, nextURL)
+}
+
+func canonicalPaginationRequestURI(parsed *url.URL, fallback string) string {
+	if parsed == nil {
+		return fallback
+	}
+	if parsed.RawQuery != "" {
+		values, err := url.ParseQuery(parsed.RawQuery)
+		if err != nil {
+			return fallback
+		}
+		parsed.RawQuery = values.Encode()
+	}
+	// A trailing '?' does not change the request's empty query. Do not let
+	// URL.Parse's ForceQuery marker split equivalent continuation identities.
+	if parsed.RawQuery == "" {
+		parsed.ForceQuery = false
+	}
+	requestURI := parsed.RequestURI()
+	if requestURI == "" && fallback != "" {
+		return fallback
+	}
+	return requestURI
+}
+
 // newEmptyPaginatedResponse creates a new zero-valued instance of the same
 // concrete type as src. The returned value is a pointer to a new struct that
 // satisfies PaginatedResponse.
@@ -145,6 +280,9 @@ func newEmptyPaginatedResponse(src PaginatedResponse) (PaginatedResponse, error)
 	srcValue := reflect.ValueOf(src)
 	if srcValue.Kind() != reflect.Pointer {
 		return nil, fmt.Errorf("unsupported response type for pagination: %T (expected pointer)", src)
+	}
+	if srcValue.Type().Elem().Kind() != reflect.Struct {
+		return nil, fmt.Errorf("unsupported response type for pagination: %T (expected pointer to struct)", src)
 	}
 
 	// Create a new zero-valued struct of the same type.
@@ -235,7 +373,9 @@ func PageDataLen(page PaginatedResponse) (int, bool) {
 
 // aggregatePageData appends page data to result by reflecting on the shared Data field.
 // This keeps pagination aggregation generic while still validating type compatibility.
-func aggregatePageData(result, page PaginatedResponse) error {
+// The page's included resources are collected into included rather than merged
+// into result, so the aggregated array is marshaled only once.
+func aggregatePageData(result, page PaginatedResponse, included *rawJSONArrayAccumulator) error {
 	if result == nil || page == nil {
 		return fmt.Errorf("page aggregation received nil result or page")
 	}
@@ -274,69 +414,124 @@ func aggregatePageData(result, page PaginatedResponse) error {
 	}
 
 	resultData.Set(reflect.AppendSlice(resultData, pageData))
-	if err := aggregateJSONRawArrayField(resultElem, pageElem, "Included"); err != nil {
+	if err := collectJSONRawArrayField(resultElem, pageElem, includedFieldName, included); err != nil {
 		return err
 	}
 	return nil
 }
 
-func aggregateJSONRawArrayField(resultElem, pageElem reflect.Value, fieldName string) error {
+// includedFieldName is the JSON:API sideloaded-resources field aggregated across pages.
+const includedFieldName = "Included"
+
+var rawJSONMessageType = reflect.TypeOf(json.RawMessage{})
+
+// collectJSONRawArrayField records one page's raw JSON array field in acc. The
+// field is only collected when both the aggregated response and the page expose
+// it as a json.RawMessage.
+func collectJSONRawArrayField(resultElem, pageElem reflect.Value, fieldName string, acc *rawJSONArrayAccumulator) error {
 	resultField := resultElem.FieldByName(fieldName)
 	pageField := pageElem.FieldByName(fieldName)
 	if !resultField.IsValid() || !pageField.IsValid() {
 		return nil
 	}
-
-	rawMessageType := reflect.TypeOf(json.RawMessage{})
-	if resultField.Type() != rawMessageType || pageField.Type() != rawMessageType {
+	if resultField.Type() != rawJSONMessageType || pageField.Type() != rawJSONMessageType {
 		return nil
 	}
 
-	merged, err := mergeRawJSONArray(resultField.Interface().(json.RawMessage), pageField.Interface().(json.RawMessage))
-	if err != nil {
+	if err := acc.add(pageField.Interface().(json.RawMessage)); err != nil {
 		return fmt.Errorf("merge %s: %w", fieldName, err)
 	}
-	resultField.Set(reflect.ValueOf(merged))
 	return nil
 }
 
-func mergeRawJSONArray(dst, src json.RawMessage) (json.RawMessage, error) {
-	switch {
-	case len(src) == 0:
-		return dst, nil
-	case len(dst) == 0:
-		return append(json.RawMessage(nil), src...), nil
+// setJSONRawArrayField writes the array accumulated across pages to the
+// aggregated response, marshaling it a single time.
+func setJSONRawArrayField(result PaginatedResponse, fieldName string, acc *rawJSONArrayAccumulator) error {
+	resultValue := reflect.ValueOf(result)
+	if resultValue.Kind() != reflect.Pointer || resultValue.IsNil() {
+		return nil
+	}
+	field := resultValue.Elem().FieldByName(fieldName)
+	if !field.IsValid() || !field.CanSet() || field.Type() != rawJSONMessageType {
+		return nil
 	}
 
-	var dstItems []json.RawMessage
-	if err := json.Unmarshal(dst, &dstItems); err != nil {
-		return nil, fmt.Errorf("parse existing array: %w", err)
+	merged, err := acc.merged()
+	if err != nil {
+		return fmt.Errorf("merge %s: %w", fieldName, err)
 	}
-	var srcItems []json.RawMessage
-	if err := json.Unmarshal(src, &srcItems); err != nil {
-		return nil, fmt.Errorf("parse incoming array: %w", err)
-	}
+	field.Set(reflect.ValueOf(merged))
+	return nil
+}
 
-	merged := make([]json.RawMessage, 0, len(dstItems)+len(srcItems))
-	seen := make(map[string]struct{}, len(dstItems)+len(srcItems))
-	appendUnique := func(items []json.RawMessage) {
-		for _, item := range items {
-			key := rawJSONArrayItemKey(item)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			merged = append(merged, item)
+// rawJSONArrayAccumulator merges JSON:API arrays such as `included` across
+// pages in linear time. It keeps the raw items collected so far alongside the
+// identity set used for deduplication, instead of reparsing and remarshaling
+// the accumulated array once per page.
+//
+// A lone payload is retained verbatim and never parsed, so a single-page
+// response keeps Apple's array exactly as it arrived.
+type rawJSONArrayAccumulator struct {
+	sole     json.RawMessage
+	items    []json.RawMessage
+	seen     map[string]struct{}
+	expanded bool
+}
+
+// add records one page's array. The first non-empty payload is only parsed once
+// a second payload arrives and the arrays actually have to be merged.
+func (a *rawJSONArrayAccumulator) add(payload json.RawMessage) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	if !a.expanded && a.sole == nil {
+		a.sole = append(json.RawMessage(nil), payload...)
+		return nil
+	}
+	if !a.expanded {
+		if err := a.appendUnique(a.sole, "parse existing array"); err != nil {
+			return err
 		}
+		a.sole = nil
+		a.expanded = true
 	}
-	appendUnique(dstItems)
-	appendUnique(srcItems)
+	return a.appendUnique(payload, "parse incoming array")
+}
 
-	result, err := json.Marshal(merged)
+// merged reports the aggregated array, marshaling the collected items once.
+func (a *rawJSONArrayAccumulator) merged() (json.RawMessage, error) {
+	if !a.expanded {
+		return a.sole, nil
+	}
+
+	merged, err := json.Marshal(a.items)
 	if err != nil {
 		return nil, fmt.Errorf("marshal merged array: %w", err)
 	}
-	return result, nil
+	return merged, nil
+}
+
+func (a *rawJSONArrayAccumulator) appendUnique(payload json.RawMessage, stage string) error {
+	var items []json.RawMessage
+	if err := json.Unmarshal(payload, &items); err != nil {
+		return fmt.Errorf("%s: %w", stage, err)
+	}
+
+	if a.items == nil {
+		a.items = make([]json.RawMessage, 0, len(items))
+	}
+	if a.seen == nil {
+		a.seen = make(map[string]struct{}, len(items))
+	}
+	for _, item := range items {
+		key := rawJSONArrayItemKey(item)
+		if _, ok := a.seen[key]; ok {
+			continue
+		}
+		a.seen[key] = struct{}{}
+		a.items = append(a.items, item)
+	}
+	return nil
 }
 
 // rawJSONArrayItemKey follows JSON:API's resource identity rule when an item

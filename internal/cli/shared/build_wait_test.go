@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -268,6 +269,122 @@ func TestWaitForBuildByNumberOrUploadFailureIncludesProcessingDiagnostics(t *tes
 	}
 	if !strings.Contains(err.Error(), `Invalid Siri Support. App Intent description "Searches Apple Music" cannot contain "apple"`) {
 		t.Fatalf("expected enriched processing details, got %v", err)
+	}
+}
+
+// builds upload --wait, publish --wait, and xcode export --wait wait on
+// processing through this helper and must report the same processing details
+// as builds wait, resolving the app from the build when the caller has none.
+func TestWaitForBuildProcessingWithDetailsIncludesProcessingDetails(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "0")
+
+	var diagnosedUploads []string
+	t.Cleanup(SetBuildUploadFailureDiagnosticsForTesting(func(_ context.Context, _ *asc.Client, appID string, upload *asc.BuildUploadResponse) (string, error) {
+		diagnosedUploads = append(diagnosedUploads, appID+"/"+upload.Data.ID)
+		return "ITMS-90000: processing details", nil
+	}))
+
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/builds/build-1":
+			return buildWaitJSONResponse(`{"data":{"type":"builds","id":"build-1","attributes":{"version":"42","processingState":"FAILED"}}}`)
+		case "/v1/builds/build-1/app":
+			return buildWaitJSONResponse(`{"data":{"type":"apps","id":"app-1"}}`)
+		case "/v1/builds/build-1/preReleaseVersion":
+			return buildWaitJSONResponse(`{"data":{"type":"preReleaseVersions","id":"pre-1","attributes":{"version":"1.2.3","platform":"IOS"}}}`)
+		case "/v1/builds":
+			return buildWaitJSONResponse(`{"data":[{"type":"builds","id":"build-1","attributes":{"version":"42"},"relationships":{"buildUpload":{"data":{"type":"buildUploads","id":"upload-1"}}}}],"links":{}}`)
+		case "/v1/buildUploads/upload-1":
+			return buildWaitJSONResponse(`{"data":{"type":"buildUploads","id":"upload-1","attributes":{"cfBundleShortVersionString":"1.2.3","cfBundleVersion":"42","platform":"IOS"}}}`)
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+	})
+
+	build, err := WaitForBuildProcessingWithDetails(context.Background(), client, "", "build-1", time.Millisecond)
+	if err == nil {
+		t.Fatal("expected processing failure, got nil")
+	}
+	if want := "build processing failed: FAILED; App Store Connect processing details: ITMS-90000: processing details"; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	if build == nil || build.Data.ID != "build-1" {
+		t.Fatalf("build = %#v, want the failed build", build)
+	}
+	if want := []string{"app-1/upload-1"}; !slices.Equal(diagnosedUploads, want) {
+		t.Fatalf("diagnosed uploads = %v, want %v", diagnosedUploads, want)
+	}
+}
+
+func TestWaitForBuildProcessingWithDetailsKeepsStateErrorWhenLookupsFail(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "0")
+
+	diagnosticsCalls := 0
+	t.Cleanup(SetBuildUploadFailureDiagnosticsForTesting(func(context.Context, *asc.Client, string, *asc.BuildUploadResponse) (string, error) {
+		diagnosticsCalls++
+		return "processing details", nil
+	}))
+
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/v1/builds/build-1" {
+			return buildWaitJSONResponse(`{"data":{"type":"builds","id":"build-1","attributes":{"version":"42","processingState":"INVALID"}}}`)
+		}
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"errors":[{"status":"403","code":"FORBIDDEN_ERROR","title":"forbidden"}]}`)),
+		}, nil
+	})
+
+	_, err := WaitForBuildProcessingWithDetails(context.Background(), client, "app-1", "build-1", time.Millisecond)
+	if err == nil || err.Error() != "build processing failed: INVALID" {
+		t.Fatalf("error = %v, want the unmodified state error", err)
+	}
+	if diagnosticsCalls != 0 {
+		t.Fatalf("diagnostics lookups = %d, want 0", diagnosticsCalls)
+	}
+}
+
+func TestWaitForBuildProcessingWithDetailsLeavesValidBuildUntouched(t *testing.T) {
+	requests := 0
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		requests++
+		if req.URL.Path != "/v1/builds/build-1" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		return buildWaitJSONResponse(`{"data":{"type":"builds","id":"build-1","attributes":{"version":"42","processingState":"VALID"}}}`)
+	})
+
+	build, err := WaitForBuildProcessingWithDetails(context.Background(), client, "app-1", "build-1", time.Millisecond)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if build == nil || build.Data.Attributes.ProcessingState != "VALID" || requests != 1 {
+		t.Fatalf("build = %#v after %d requests, want one VALID lookup", build, requests)
+	}
+}
+
+func TestEnrichBuildProcessingFailureSkipsLookupWithoutBundleVersion(t *testing.T) {
+	diagnosticsCalls := 0
+	t.Cleanup(SetBuildUploadFailureDiagnosticsForTesting(func(context.Context, *asc.Client, string, *asc.BuildUploadResponse) (string, error) {
+		diagnosticsCalls++
+		return "processing details", nil
+	}))
+
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("unexpected request: %s", req.URL.Path)
+	})
+
+	baseErr := errors.New("build processing failed with state FAILED")
+	err := EnrichBuildProcessingFailure(context.Background(), client, BuildProcessingFailureContext{AppID: "app-1"}, baseErr)
+	if !errors.Is(err, baseErr) {
+		t.Fatalf("error = %v, want the base error", err)
+	}
+	if got := err.Error(); got != baseErr.Error() {
+		t.Fatalf("error = %q, want %q", got, baseErr.Error())
+	}
+	if diagnosticsCalls != 0 {
+		t.Fatalf("diagnostics lookups = %d, want 0", diagnosticsCalls)
 	}
 }
 
@@ -534,6 +651,55 @@ func TestWaitForBuildByNumberOrUploadFailureFallsBackWhenUploadLookupFails(t *te
 	}
 	if buildResp.Data.ID != "build-123" {
 		t.Fatalf("expected build ID build-123, got %q", buildResp.Data.ID)
+	}
+}
+
+func TestWaitForBuildByNumberOrUploadFailureStopsAfterExhaustedBuildUploadNotFound(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "1ms")
+	asc.ResetConfigCacheForTest()
+	t.Cleanup(asc.ResetConfigCacheForTest)
+
+	uploadCalls := 0
+	fallbackCalls := 0
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/buildUploads/upload-current":
+			uploadCalls++
+			return buildWaitJSONStatusResponse(http.StatusNotFound, `{
+				"errors": [{
+					"status": "404",
+					"code": "NOT_FOUND",
+					"title": "The specified resource does not exist",
+					"detail": "There is no resource of type 'apps' with id 'app-1'"
+				}]
+			}`)
+		case "/v1/preReleaseVersions":
+			fallbackCalls++
+			return buildWaitJSONResponse(`{"data":[],"links":{}}`)
+		default:
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_, err := WaitForBuildByNumberOrUploadFailure(ctx, client, "app-1", "upload-current", "1.2.3", "42", "IOS", time.Millisecond)
+	if err == nil {
+		t.Fatal("expected exhausted build-upload lookup error")
+	}
+	if uploadCalls != 2 {
+		t.Fatalf("build-upload lookup made %d requests, want one attempt plus one retry", uploadCalls)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("build discovery replayed %d times after terminal upload lookup", fallbackCalls)
+	}
+	if !asc.IsNotFound(err) || !asc.IsRetryBudgetExhausted(err) {
+		t.Fatalf("error = %v, want exhausted NOT_FOUND", err)
+	}
+	if !strings.Contains(err.Error(), "There is no resource of type 'apps' with id 'app-1'") {
+		t.Fatalf("error lost Apple's detail: %v", err)
 	}
 }
 
@@ -1061,7 +1227,7 @@ func TestVerifyBuildUploadAfterCommitIgnoresRetryableLookupErrorsUntilBuildLinks
 		}`)
 	})
 
-	err := VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, 50*time.Millisecond)
+	_, err := VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)
 	}
@@ -1107,12 +1273,50 @@ func TestVerifyBuildUploadAfterCommitIgnoresRetryDelayBeyondVerificationBudget(t
 	})
 
 	verifyTimeout := 30 * time.Millisecond
-	err = VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
+	_, err = VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
 	if err != nil {
 		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)
 	}
 	if lookupCalls != 1 {
 		t.Fatalf("expected one best-effort upload lookup before honoring Retry-After, got %d", lookupCalls)
+	}
+}
+
+func TestVerifyBuildUploadAfterCommitStopsAfterExhaustedBuildUploadNotFound(t *testing.T) {
+	t.Setenv("ASC_MAX_RETRIES", "1")
+	t.Setenv("ASC_BASE_DELAY", "1ms")
+	t.Setenv("ASC_MAX_DELAY", "1ms")
+	asc.ResetConfigCacheForTest()
+	t.Cleanup(asc.ResetConfigCacheForTest)
+
+	lookupCalls := 0
+	client := newBuildWaitTestClient(t, func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/v1/buildUploads/upload-current" {
+			return nil, fmt.Errorf("unexpected path: %s", req.URL.Path)
+		}
+		lookupCalls++
+		return buildWaitJSONStatusResponse(http.StatusNotFound, `{
+			"errors": [{
+				"status": "404",
+				"code": "NOT_FOUND",
+				"title": "The specified resource does not exist",
+				"detail": "There is no resource of type 'apps' with id 'app-1'"
+			}]
+		}`)
+	})
+
+	verifyTimeout := 150 * time.Millisecond
+	started := time.Now()
+	_, err := VerifyBuildUploadAfterCommit(context.Background(), client, "app-1", "upload-current", time.Millisecond, verifyTimeout)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("VerifyBuildUploadAfterCommit() error: %v", err)
+	}
+	if lookupCalls != 2 {
+		t.Fatalf("build-upload verification made %d requests, want one attempt plus one retry", lookupCalls)
+	}
+	if elapsed >= verifyTimeout/2 {
+		t.Fatalf("verification replayed a terminal lookup for %v (budget %v)", elapsed, verifyTimeout)
 	}
 }
 

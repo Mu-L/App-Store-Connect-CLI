@@ -117,11 +117,11 @@ func ResolveBetaGroupsFromList(inputGroups []string, groups *asc.BetaGroupsRespo
 					break
 				}
 
-				hint := "Use the group ID to disambiguate."
+				hint := ""
 				if opts.IncludeSkipInternalHint && !opts.SkipInternal && len(externalMatches) == 1 && len(externalMatches) < len(matches) {
-					hint = "Use the group ID to disambiguate, or --skip-internal to exclude internal groups."
+					hint = "Or pass --skip-internal to exclude internal groups."
 				}
-				return nil, fmt.Errorf("%s\n%s", formatAmbiguousBetaGroupError(group, matches, groupInternal), hint)
+				return nil, ambiguousBetaGroupError(group, matches, groupsByID, hint)
 			}
 		}
 
@@ -155,26 +155,14 @@ func ResolveBetaGroupsFromList(inputGroups []string, groups *asc.BetaGroupsRespo
 
 // AddBuildBetaGroups applies resolved beta groups to a build, optionally skipping internal groups.
 func AddBuildBetaGroups(ctx context.Context, client buildBetaGroupsMutationClient, buildID string, groups []ResolvedBetaGroup, opts AddBuildBetaGroupsOptions) (*AddBuildBetaGroupsResult, error) {
-	groupIDsToAdd := make([]string, 0, len(groups))
-	skippedInternalGroups := make([]ResolvedBetaGroup, 0, len(groups))
-	skippedInternalAllBuildsGroups := make([]ResolvedBetaGroup, 0, len(groups))
-	for _, group := range groups {
-		if group.IsInternalGroup && opts.SkipInternal {
-			skippedInternalGroups = append(skippedInternalGroups, group)
-			continue
-		}
-		if group.IsInternalGroup && group.HasAccessToAllBuilds && opts.SkipInternalWithAllBuilds {
-			skippedInternalAllBuildsGroups = append(skippedInternalAllBuildsGroups, group)
-			continue
-		}
-		groupIDsToAdd = append(groupIDsToAdd, group.ID)
-	}
+	plan := PlanBuildBetaGroupAssignment(groups, opts)
+	groupIDsToAdd := plan.GroupIDsToAdd()
 
 	if len(groupIDsToAdd) == 0 {
 		return &AddBuildBetaGroupsResult{
 			AddedGroupIDs:                  []string{},
-			SkippedInternalGroups:          skippedInternalGroups,
-			SkippedInternalAllBuildsGroups: skippedInternalAllBuildsGroups,
+			SkippedInternalGroups:          plan.SkippedInternalGroups,
+			SkippedInternalAllBuildsGroups: plan.SkippedInternalAllBuildsGroups,
 			NotificationAction:             asc.BuildBetaGroupsNotificationActionNone,
 		}, nil
 	}
@@ -186,8 +174,8 @@ func AddBuildBetaGroups(ctx context.Context, client buildBetaGroupsMutationClien
 
 	return &AddBuildBetaGroupsResult{
 		AddedGroupIDs:                  groupIDsToAdd,
-		SkippedInternalGroups:          skippedInternalGroups,
-		SkippedInternalAllBuildsGroups: skippedInternalAllBuildsGroups,
+		SkippedInternalGroups:          plan.SkippedInternalGroups,
+		SkippedInternalAllBuildsGroups: plan.SkippedInternalAllBuildsGroups,
 		NotificationAction:             notificationAction,
 	}, nil
 }
@@ -226,15 +214,25 @@ func filterExternalGroupIDs(matchIDs []string, internalByID map[string]bool) []s
 	return external
 }
 
-func formatAmbiguousBetaGroupError(name string, matchIDs []string, internalByID map[string]bool) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%q matches %d beta groups:", name, len(matchIDs))
+func ambiguousBetaGroupError(name string, matchIDs []string, groupsByID map[string]asc.Resource[asc.BetaGroupAttributes], hint string) error {
+	candidates := make([]AmbiguousCandidate, 0, len(matchIDs))
 	for _, id := range matchIDs {
+		group := groupsByID[id]
 		kind := "external"
-		if internalByID[id] {
+		if group.Attributes.IsInternalGroup {
 			kind = "internal"
 		}
-		fmt.Fprintf(&b, "\n  %s (%s)", id, kind)
+		candidates = append(candidates, AmbiguousCandidate{
+			ID:    id,
+			Label: strings.TrimSpace(group.Attributes.Name),
+			Extra: kind,
+		})
 	}
-	return b.String()
+	return &AmbiguousSelectionError{
+		Kind:        "beta group",
+		Description: fmt.Sprintf("%q", name),
+		Flag:        "--group",
+		Candidates:  candidates,
+		Hint:        hint,
+	}
 }

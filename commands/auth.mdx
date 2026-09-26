@@ -97,6 +97,21 @@ Register and store App Store Connect API key credentials.
   Skip JWT and network validation checks
 </ParamField>
 
+<ParamField path="--fix-permissions" type="boolean" default="false">
+  Change an over-permissive private key file to `0600` before reading it
+</ParamField>
+
+The private key file must not be readable by other users. Without
+`--fix-permissions`, login fails with the `file_permissions_insecure`
+diagnostic. When the path can be displayed safely, it prints an exact,
+shell-quoted `chmod 600` command; otherwise it recommends `--fix-permissions`
+without embedding the path in executable-looking text. With
+`--fix-permissions`, asc changes the file to `0600`, reports the change on
+stderr, and continues through the normal validation path. A symlinked or
+non-regular key path is rejected instead of being changed. If the operating
+system cannot securely open the file for descriptor-bound repair, such as an
+owner-unreadable key on macOS, asc fails without changing it.
+
 **Examples:**
 
 ```bash  theme={null}
@@ -104,6 +119,7 @@ asc auth login --name "MyKey" --key-id "ABC123" --issuer-id "DEF456" --private-k
 asc auth login --name "MyIndividualKey" --key-id "ABC123" --key-type individual --private-key /path/to/AuthKey.p8
 asc auth login --bypass-keychain --local --name "MyKey" --key-id "ABC123" --issuer-id "DEF456" --private-key /path/to/AuthKey.p8
 asc auth login --network --name "MyKey" --key-id "ABC123" --issuer-id "DEF456" --private-key /path/to/AuthKey.p8
+asc auth login --fix-permissions --name "MyKey" --key-id "ABC123" --issuer-id "DEF456" --private-key /path/to/AuthKey.p8
 ```
 
 **Output:**

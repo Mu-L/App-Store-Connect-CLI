@@ -42,6 +42,18 @@ asc builds info --app APP_ID --latest
 asc builds info --app APP_ID --build-number 42 --version 1.2.3 --platform IOS
 ```
 
+### Inspect build relationship links
+
+Use `links view` when you need the IDs connected to a build rather than the
+full related resources. Valid `--type` values are `app`, `appStoreVersion`,
+`betaBuildLocalizations`, `buildBetaDetail`, `diagnosticSignatures`, `icons`,
+`individualTesters`, and `preReleaseVersion`.
+
+```bash  theme={null}
+asc builds links view --build-id BUILD_ID --type app
+asc builds links view --build-id BUILD_ID --type individualTesters --paginate
+```
+
 ### Wait for processing
 
 ```bash  theme={null}
@@ -53,9 +65,18 @@ asc builds wait --app APP_ID --latest
 
 ```bash  theme={null}
 asc builds add-groups --app APP_ID --latest --group "External Testers"
+asc builds add-groups --app APP_ID --latest --group "External Testers" --dry-run
 asc builds add-groups --app APP_ID --latest --group "GROUP_ID" --submit --confirm
 asc builds remove-groups --app APP_ID --latest --group "GROUP_ID" --confirm
 ```
+
+Use `--dry-run` to resolve the build and groups and preview the assignment
+without adding groups or submitting a review. It may show current build and
+external beta state from best-effort reads, but those observations are
+advisory and do not predict whether a later assignment will be accepted.
+JSON output marks the receipt with `dryRun: true` and uses `action: "would-add"`
+or `action: "no-op"` when filtering leaves no groups. `--submit` cannot be
+combined with `--dry-run`.
 
 ### Expire builds
 
@@ -63,7 +84,15 @@ asc builds remove-groups --app APP_ID --latest --group "GROUP_ID" --confirm
 asc builds expire --build-id BUILD_ID --confirm
 asc builds expire-all --app APP_ID --older-than 90d --dry-run
 asc builds expire-all --app APP_ID --keep-latest 5 --confirm
+asc builds expire-all --app APP_ID --version 1.2.3 --keep-latest 1 --confirm
 ```
+
+`asc builds expire-all` always requires `--older-than` or `--keep-latest`. Add
+`--version` to narrow the candidates to one marketing version
+(CFBundleShortVersionString) before those selectors apply, so the example above
+expires the earlier builds of `1.2.3` and keeps its most recently uploaded
+build. Builds of other versions are left untouched, and candidates are ordered
+newest first by uploaded date.
 
 ## Common workflows
 

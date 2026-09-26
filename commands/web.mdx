@@ -93,6 +93,59 @@ Common session commands:
 * `asc web auth import` - load a session bundle into the cache
 * `asc web auth logout` - clear the cached web session
 
+### Choosing the Apple Account
+
+Every `asc web` command that resolves or creates a session accepts `--apple-id`.
+When the flag is omitted, the account is resolved in this order:
+
+1. `--apple-id` on the command line.
+2. The `ASC_WEB_APPLE_ID` environment variable. The value is trimmed and an
+   empty value is ignored, so an unset CI secret behaves like no variable at
+   all. The CLI prints `Using web session for user@example.com from
+   ASC_WEB_APPLE_ID; pass --apple-id to override` on stderr.
+3. The last cached session, as recorded by `asc web auth login` or
+   `asc web auth import`. Keychain-backed caches retain their existing
+   compatibility behavior of reconstructing this remembered account from the
+   most recently updated entry when the stored pointer is missing.
+4. The only cached session, when exactly one account is cached and the
+   last-session pointer no longer resolves (for example after logging out of
+   the most recently used account while another account stays cached). The
+   CLI prints `Using cached web session for user@example.com; pass --apple-id
+   to override` on stderr so the chosen account is visible.
+
+When neither `--apple-id` nor `ASC_WEB_APPLE_ID` selects an account and the
+cache is empty, non-interactive commands exit with code `2` and point to
+`asc web auth login --apple-id EMAIL`; `web apps create` can instead prompt for
+the account in an interactive terminal. When neither source selects an account
+and several sessions are cached, the command lists the cached Apple IDs and
+exits with code `2` only when the existing remembered-account lookup cannot
+select one, so you can pick an account with `--apple-id`.
+
+```bash
+# One cached account: no flag needed
+asc web privacy pull --app "123456789"
+
+# Several cached accounts: name the one to use
+asc web review show --app "123456789" --apple-id "user@example.com"
+
+# Several cached accounts on a CI runner: name it once for every web command
+export ASC_WEB_APPLE_ID="user@example.com"
+asc web review show --app "123456789"
+```
+
+`asc web auth login` resolves `--apple-id` the same way, so a runner that
+exports `ASC_WEB_APPLE_ID` alongside `ASC_WEB_PASSWORD` and
+`ASC_WEB_2FA_CODE_COMMAND` needs no Apple Account on the command line.
+`--session-from-env` never consults the cache or `ASC_WEB_APPLE_ID` and is
+unaffected by this resolution.
+
+The cache-management commands are deliberately outside this resolution and
+ignore `ASC_WEB_APPLE_ID`: `asc web auth status` and `asc web auth export`
+default to the last cached session, `asc web auth logout` requires `--apple-id`
+or `--all`, and `--apple-id` on `asc web auth import` asserts which Apple
+Account the bundle must belong to rather than selecting one. Pass `--apple-id`
+explicitly to those commands.
+
 ## Command families
 
 ### `asc web auth`
@@ -115,6 +168,15 @@ fallback hint when Apple reports a registered phone number. Enter an incorrect
 trusted-device code once; Apple then delivers the phone verification code by
 its configured method (including SMS) and `asc` prompts again. Automated flows
 rerun the configured `--two-factor-code-command` after phone fallback.
+
+For a login with no terminal, set `ASC_WEB_PASSWORD` and
+`ASC_WEB_2FA_CODE_COMMAND`. The password variable is consulted after the
+cached session and before the saved-password store and the interactive prompt,
+and a password supplied that way is used for the login without being saved.
+`--two-factor-code-command` wins over `ASC_WEB_2FA_CODE_COMMAND`, and
+`ASC_WEB_DONT_STORE_PASSWORD=1` disables saved-password reads and writes. The
+web-session and non-interactive-login variables are listed in
+[Web session variables](/configuration/environment-variables#web-session-variables).
 
 #### Moving a session to another machine or to CI
 
@@ -172,7 +234,7 @@ belongs to the named account or remains accepted by Apple.
 
 Isolate tests and automation with `ASC_WEB_SESSION_CACHE_DIR` and
 `ASC_WEB_SESSION_CACHE_BACKEND=file`. An unset or `auto` backend still falls
-back to the keychain when the file cache is empty.
+back to the keychain when the file cache has no usable account identity.
 
 ### Environment sessions without persistence
 
@@ -823,6 +885,15 @@ Available commands:
 * `asc web review iaps` - attach a non-renewing IAP to the next app version review
 * `asc web review reply` - send one confirmed Resolution Center text reply
 
+`asc web review show` auto-downloads attachments from the HTTPS signed URLs
+Apple returns, which must be on its `.apple.com`, `.mzstatic.com`,
+`.amazonaws.com`, or `.cloudfront.net` hosts. A signed URL on any other host is
+refused unless the host is added to `ASC_WEB_ALLOWED_ATTACHMENT_HOSTS` as a
+comma-separated list of exact hosts, `.suffix` patterns, or `*.suffix`
+patterns. The allowlist is checked only against Apple's original signed URL;
+redirect destinations are followed without another host check, so add only
+hosts whose redirects you trust.
+
 Subscription JSON includes both `submitWithNextAppStoreVersion` and
 `submitWithNextAppStoreVersionKnown`. When the presence field is `false`, Apple
 omitted the attachment attribute and the boolean value is not authoritative.
@@ -1026,6 +1097,26 @@ asc web xcode-cloud settings version-aliases delete --product-id "UUID" --id "AL
 Changing the persistent next build number requires the App Store Connect Admin or App Manager role. The set command reads the value before and after the update, and reports an unverified outcome instead of inviting an unsafe retry when a transport failure leaves Apple's result unclear.
 
 `version-aliases list` returns at most 100 aliases without continuation metadata. `view` preserves Apple's raw detail response in JSON. `create` requires `--product-id`, `--name`, `--type macos_version|xcode_version`, `--build`, and `--confirm`; use a supported Apple build value. `update` requires `--product-id`, `--id`, at least one of `--name`, `--type`, `--build`, or `--locked`, and `--confirm`, preserving omitted fields. `delete` requires `--product-id`, `--id`, and `--confirm` and verifies absence afterward. Apple may restrict locked aliases or aliases used by workflows; ambiguous writes are not retried automatically.
+
+## Sign in with Apple private keys
+
+Developer Portal authentication keys are different from App Store Connect API keys.
+Use this family to create a key scoped to a primary Sign in with Apple App ID and save its one-time P8 download.
+
+```bash
+asc web sign-in-keys list --developer-team TEAM_ID --output json
+asc web sign-in-keys view --key-id KEY_ID --developer-team TEAM_ID --output json
+asc web sign-in-keys create --name "My App Sign in with Apple" --bundle-id BUNDLE_RESOURCE_ID --developer-team TEAM_ID --output-dir ./private-keys --confirm
+asc web sign-in-keys download --key-id KEY_ID --developer-team TEAM_ID --output-dir ./private-keys --confirm
+```
+
+`--bundle-id` is the opaque Bundle ID resource ID returned by `asc bundle-ids list`, not the reverse-DNS identifier. Enable Sign in with Apple on that App ID first. Creation requires `--confirm`, verifies the returned key's bundle association before downloading it, and does not duplicate an existing key with the same name. Standalone download also requires `--confirm` because it can consume Apple's one-time download.
+
+`list` includes other Developer Portal authentication-key services and requests up to 1000 keys. `view` exposes service configurations. JSON reads preserve Apple's response envelope. Creation and download print a non-secret receipt containing the key ID and saved path; private bytes are never printed. P8 files are saved with mode 0600 and existing destinations are never overwritten.
+
+Private key creation and download require macOS or Linux with native atomic file publication. Unsupported platforms fail before contacting Apple. If the destination changes during a download, it is preserved and the private key is retained in a mode-0600 recovery file whose path appears in the error.
+
+Apple's private Developer Portal endpoints may change. An uncertain mutation or one-time download is not retried automatically. If creation fails after Apple created the key, inspect `list` and `view`, then use `download` on the existing key rather than creating another. Store the downloaded file securely; Apple may not allow a second download.
 
 ## Session upkeep
 

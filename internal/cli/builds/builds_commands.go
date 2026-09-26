@@ -51,6 +51,9 @@ By default, this command uploads the IPA/PKG to the presigned URLs and commits
 the file immediately. Use --verify-timeout to briefly watch for immediate
 post-commit processing failures, or --wait for full build discovery and
 processing.
+When --wait, --test-notes, or --verify-timeout sees the build App Store Connect
+created from the upload, the receipt includes its buildId. If verification
+ends before the build is visible, a notice on stderr explains how to look it up.
 When --test-notes is set, the command waits only until the build appears, then
 creates or updates the requested localization. Add --wait when the invocation
 must also wait for processing to complete.
@@ -189,6 +192,11 @@ Examples:
 				if err := shared.ValidateBuildLocalizationLocale(localeValue); err != nil {
 					return fmt.Errorf("builds upload: %w", err)
 				}
+				normalizedNotes, normalizeErr := shared.NormalizeTestNotesForCommand(os.Stderr, testNotesValue)
+				if normalizeErr != nil {
+					return fmt.Errorf("builds upload: %w", normalizeErr)
+				}
+				testNotesValue = normalizedNotes
 			}
 			if (*wait || testNotesValue != "") && *pollInterval <= 0 {
 				return fmt.Errorf("builds upload: --poll-interval must be greater than 0")
@@ -362,24 +370,32 @@ Examples:
 					if buildResp == nil {
 						return fmt.Errorf("builds upload: failed to resolve build for version %q build %q", versionValue, buildNumberValue)
 					}
+					result.BuildID = buildResp.Data.ID
 
 					if testNotesValue != "" {
 						fmt.Fprintf(os.Stderr, "Build %s discovered; setting What to Test notes...\n", buildResp.Data.ID)
-						if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue); err != nil {
+						upsertOpts := shared.UpsertBetaBuildLocalizationOptions{AppID: resolvedAppID, Diagnostics: os.Stderr}
+						if _, err := shared.UpsertBetaBuildLocalization(requestCtx, client, buildResp.Data.ID, localeValue, testNotesValue, upsertOpts); err != nil {
 							return fmt.Errorf("builds upload: %w", shared.NewTestNotesRecoveryError(buildResp.Data.ID, localeValue, testNotesValue, err))
 						}
 					}
 
 					if *wait {
 						fmt.Fprintf(os.Stderr, "Build %s discovered; waiting for processing...\n", buildResp.Data.ID)
-						if _, err := client.WaitForBuildProcessing(requestCtx, buildResp.Data.ID, *pollInterval); err != nil {
+						if _, err := shared.WaitForBuildProcessingWithDetails(requestCtx, client, resolvedAppID, buildResp.Data.ID, *pollInterval); err != nil {
 							return fmt.Errorf("builds upload: %w", err)
 						}
 					}
 				} else if *verifyTimeout > 0 {
 					fmt.Fprintf(os.Stderr, "Verifying initial App Store Connect processing for up to %s...\n", verifyTimeout.String())
-					if err := shared.VerifyBuildUploadAfterCommit(ctx, client, resolvedAppID, uploadResp.Data.ID, *pollInterval, *verifyTimeout); err != nil {
+					buildID, err := shared.VerifyBuildUploadAfterCommit(ctx, client, resolvedAppID, uploadResp.Data.ID, *pollInterval, *verifyTimeout)
+					if err != nil {
 						return fmt.Errorf("builds upload: %w", err)
+					}
+					if buildID != "" {
+						result.BuildID = buildID
+					} else {
+						fmt.Fprintf(os.Stderr, "Build ID for upload %s is not available yet: verification ended before App Store Connect exposed the build; look it up later with: asc builds info --app %q --build-number %q --version %q --platform %s\n", uploadResp.Data.ID, resolvedAppID, buildNumberValue, versionValue, platformValue)
 					}
 				}
 			}
@@ -433,7 +449,8 @@ Examples:
   asc builds build-beta-detail view --app "123456789" --latest
   asc builds links view --app "123456789" --latest --type "app"
   asc builds metrics beta-usages --app "123456789" --latest
-  asc builds dsyms --build-id "BUILD_ID" --output-dir "./dsyms"`,
+  asc builds dsyms --build-id "BUILD_ID" --output-dir "./dsyms"
+  asc builds dsyms --app "123456789" --version live --wait`,
 		FlagSet:   fs,
 		UsageFunc: shared.VisibleUsageFunc,
 		Subcommands: []*ffcli.Command{

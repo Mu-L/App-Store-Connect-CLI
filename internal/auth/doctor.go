@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/rootfs"
 )
 
 type DoctorStatus string
@@ -114,7 +115,7 @@ func inspectStorage(options DoctorOptions) DoctorSection {
 		return DoctorSection{Title: "Storage", Checks: checks}
 	}
 
-	info, err := os.Stat(configPath)
+	info, err := os.Lstat(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			checks = append(checks, DoctorCheck{
@@ -129,6 +130,30 @@ func inspectStorage(options DoctorOptions) DoctorSection {
 		}
 		return DoctorSection{Title: "Storage", Checks: checks}
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		checks = append(checks, DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Config path is a symbolic link at %s", configPath),
+			Recommendation: "Configure a regular config file instead of a symbolic link",
+		})
+		return DoctorSection{Title: "Storage", Checks: checks}
+	}
+	if err := rootfs.CheckContainedPath(configPath); err != nil {
+		checks = append(checks, DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Config path cannot be inspected safely at %s: %v", configPath, err),
+			Recommendation: "Configure a regular config file without symbolic links",
+		})
+		return DoctorSection{Title: "Storage", Checks: checks}
+	}
+	if !info.Mode().IsRegular() {
+		checks = append(checks, DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("Config path is not a regular file at %s", configPath),
+			Recommendation: "Configure a regular config file",
+		})
+		return DoctorSection{Title: "Storage", Checks: checks}
+	}
 
 	checks = append(checks, DoctorCheck{
 		Status:  DoctorOK,
@@ -137,12 +162,16 @@ func inspectStorage(options DoctorOptions) DoctorSection {
 
 	if filePermissionsTooPermissive(info.Mode()) {
 		check := DoctorCheck{
-			Status:         DoctorWarn,
-			Message:        fmt.Sprintf("Config file permissions are too permissive (%#o)", info.Mode().Perm()),
-			Recommendation: fmt.Sprintf("Run: chmod 600 %q", configPath),
+			Status:  DoctorWarn,
+			Message: fmt.Sprintf("Config file permissions are too permissive (%#o)", info.Mode().Perm()),
+		}
+		if command, safe := FilePermissionRemediationCommand(configPath); safe {
+			check.Recommendation = fmt.Sprintf("Run: %s", command)
+		} else {
+			check.Recommendation = "Run: asc auth doctor --fix --confirm"
 		}
 		if options.Fix {
-			if err := os.Chmod(configPath, 0o600); err == nil {
+			if err := rootfs.ChmodFileIfSame(configPath, info, 0o600); err == nil {
 				check.Status = DoctorOK
 				check.Message = fmt.Sprintf("Config file permissions fixed to 0600 (%s)", configPath)
 				check.FixApplied = true
@@ -310,7 +339,7 @@ func inspectPrivateKeys(options DoctorOptions) DoctorSection {
 }
 
 func inspectPrivateKeyPath(path string, options DoctorOptions) DoctorCheck {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DoctorCheck{
@@ -321,6 +350,20 @@ func inspectPrivateKeyPath(path string, options DoctorOptions) DoctorCheck {
 		return DoctorCheck{
 			Status:  DoctorFail,
 			Message: fmt.Sprintf("%s - failed to stat file: %v", path, err),
+		}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("%s - path is a symbolic link", path),
+			Recommendation: "Configure a regular private key file instead of a symbolic link",
+		}
+	}
+	if err := rootfs.CheckContainedPath(path); err != nil {
+		return DoctorCheck{
+			Status:         DoctorFail,
+			Message:        fmt.Sprintf("%s - path cannot be inspected safely: %v", path, err),
+			Recommendation: "Configure a regular private key file without symbolic links",
 		}
 	}
 	if info.IsDir() {
@@ -344,9 +387,13 @@ func inspectPrivateKeyPath(path string, options DoctorOptions) DoctorCheck {
 	if filePermissionsTooPermissive(info.Mode()) {
 		check.Status = DoctorWarn
 		check.Message = fmt.Sprintf("%s - permissions %#o (expected 0600)", path, info.Mode().Perm())
-		check.Recommendation = fmt.Sprintf("Run: chmod 600 %q", path)
+		if command, safe := FilePermissionRemediationCommand(path); safe {
+			check.Recommendation = fmt.Sprintf("Run: %s", command)
+		} else {
+			check.Recommendation = "Run: asc auth doctor --fix --confirm"
+		}
 		if options.Fix {
-			if err := os.Chmod(path, 0o600); err == nil {
+			if changed, err := FixPrivateKeyFilePermissions(path); err == nil && changed {
 				check.Status = DoctorOK
 				check.Message = fmt.Sprintf("%s - permissions fixed to 0600", path)
 				check.FixApplied = true

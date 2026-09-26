@@ -2,9 +2,11 @@ package localizations
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -56,9 +58,10 @@ Examples:
 func LocalizationsListCommand() *ffcli.Command {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 
-	versionID := shared.BindResourceIDFlag(fs, "version", "appStoreVersions", "App Store version ID")
+	versionID := shared.BindResourceIDFlag(fs, "version", "appStoreVersions", "App Store version ID, or a version string such as 1.2.3 with --app; defaults to the --app's active editable version, then a developer-removed version, else its live version")
 	appID := fs.String("app", "", "App Store Connect app ID (or ASC_APP_ID env)")
 	appInfoID := fs.String("app-info", "", "App Info ID (optional override)")
+	platform := fs.String("platform", "", "Platform used to pick the version when --version is omitted or is a version string with --app: IOS, MAC_OS, TV_OS, or VISION_OS")
 	locType := fs.String("type", shared.LocalizationTypeVersion, "Localization type: version (default) or app-info")
 	appInfoFields := fs.String("app-info-fields", "", "Sparse app info fields for app-info localizations: kidsAgeBand (deprecated; prefer age-rating data)")
 	include := shared.BindOnceCSVFlag(fs, "include", "Include related resources for version localizations, comma-separated: "+strings.Join(versionLocalizationIncludeList(), ", "))
@@ -74,8 +77,26 @@ func LocalizationsListCommand() *ffcli.Command {
 		ShortHelp:  "List localization metadata for an app or version.",
 		LongHelp: `List localization metadata for an app or version.
 
+For version localizations, omit --version to use the --app's newest active editable
+App Store version (PREPARE_FOR_SUBMISSION, DEVELOPER_REJECTED, REJECTED,
+METADATA_REJECTED, READY_FOR_REVIEW, WAITING_FOR_REVIEW, or INVALID_BINARY),
+then a DEVELOPER_REMOVED_FROM_SALE version, and finally the live version. The selected version is reported on stderr.
+Pass --platform when the app has candidate versions on more than one platform.
+
+--version accepts an App Store version ID. With --app (or ASC_APP_ID), it
+also accepts a version string such as 1.2.3, resolved on the app (pass
+--platform when the same version string exists on more than one platform).
+A value that is not a numeric version string is always treated as a version
+ID.
+
+Table and markdown output include each localization's ID, which is the value
+--version-localization and --localization-id flags expect.
+
 Examples:
+  asc localizations list --app "APP_ID" --version "1.2.3" --output table
   asc localizations list --version "VERSION_ID"
+  asc localizations list --app "APP_ID"
+  asc localizations list --app "APP_ID" --platform IOS
   asc localizations list --app "APP_ID" --type app-info --app-info-fields kidsAgeBand
   asc localizations list --version "VERSION_ID" --locale "en-US,ja"
   asc localizations list --version "VERSION_ID" --include "appScreenshotSets,appPreviewSets"
@@ -96,10 +117,39 @@ Examples:
 			}
 			appInfoFieldsProvided := false
 			includeProvided := false
+			platformProvided := false
 			fs.Visit(func(f *flag.Flag) {
 				appInfoFieldsProvided = appInfoFieldsProvided || f.Name == "app-info-fields"
 				includeProvided = includeProvided || f.Name == "include"
+				platformProvided = platformProvided || f.Name == "platform"
 			})
+			versionValue := strings.TrimSpace(*versionID)
+			// With --app, a numeric dotted value such as 1.2.3 is a version
+			// string to resolve on the app. Version resource IDs are UUIDs,
+			// so every other value keeps its version-ID meaning.
+			versionIsString := normalizedType == shared.LocalizationTypeVersion &&
+				versionValue != "" &&
+				shared.ResolveAppID(*appID) != "" &&
+				appStoreVersionStringPattern.MatchString(versionValue)
+			normalizedPlatform := ""
+			if platformProvided {
+				if normalizedType != shared.LocalizationTypeVersion {
+					return shared.UsageError("--platform requires --type version")
+				}
+				if versionValue != "" && !versionIsString {
+					return shared.UsageError("--platform only applies when --version is omitted or is a version string with --app")
+				}
+				// A links.next cursor already points at one version's page, so
+				// there is no default version left to select.
+				if strings.TrimSpace(*next) != "" {
+					return shared.UsageError("--platform cannot be combined with --next")
+				}
+				value, err := shared.NormalizeAppStoreVersionPlatform(*platform)
+				if err != nil {
+					return shared.UsageError(err.Error())
+				}
+				normalizedPlatform = value
+			}
 			if strings.TrimSpace(*next) != "" && appInfoFieldsProvided {
 				return shared.UsageError("--next cannot be combined with --app-info-fields")
 			}
@@ -134,8 +184,10 @@ Examples:
 
 			switch normalizedType {
 			case shared.LocalizationTypeVersion:
-				if strings.TrimSpace(*versionID) == "" {
-					fmt.Fprintln(os.Stderr, "Error: --version is required for version localizations")
+				resolvedVersionID := strings.TrimSpace(*versionID)
+				resolvedAppID := shared.ResolveAppID(*appID)
+				if resolvedVersionID == "" && resolvedAppID == "" && strings.TrimSpace(*next) == "" {
+					fmt.Fprintln(os.Stderr, "Error: --version is required for version localizations (or pass --app to use the app's editable or live version)")
 					return shared.MissingRequiredUsageError("--version")
 				}
 
@@ -146,6 +198,34 @@ Examples:
 
 				requestCtx, cancel := shared.ContextWithTimeout(ctx)
 				defer cancel()
+
+				// A links.next URL replaces the request path outright, so the
+				// version ID is ignored on continuations. Resolving a default
+				// here would spend a request on a value that cannot be used,
+				// announce a version the page may not belong to, and fail a
+				// valid continuation whenever the app's defaults are ambiguous
+				// or absent.
+				if versionIsString {
+					resolvedVersionID = ""
+					if strings.TrimSpace(*next) == "" {
+						resolvedVersionID, err = resolveLocalizationsListVersionString(requestCtx, client, resolvedAppID, versionValue, normalizedPlatform)
+						if err != nil {
+							if errors.Is(err, flag.ErrHelp) {
+								return err
+							}
+							return fmt.Errorf("localizations list: %w", err)
+						}
+					}
+				} else if resolvedVersionID == "" && strings.TrimSpace(*next) == "" {
+					resolved, err := shared.ResolveAndAnnounceDefaultAppStoreVersion(requestCtx, client, resolvedAppID, normalizedPlatform, "--version")
+					if err != nil {
+						if errors.Is(err, flag.ErrHelp) {
+							return err
+						}
+						return fmt.Errorf("localizations list: %w", err)
+					}
+					resolvedVersionID = resolved.ID
+				}
 
 				opts := []asc.AppStoreVersionLocalizationsOption{
 					asc.WithAppStoreVersionLocalizationsLimit(*limit),
@@ -163,14 +243,14 @@ Examples:
 					// Later pages ride links.next, which preserves include, and
 					// PaginateAll merges the included resources per page.
 					paginateOpts := append(opts, asc.WithAppStoreVersionLocalizationsLimit(200))
-					firstPage, err := client.GetAppStoreVersionLocalizations(requestCtx, strings.TrimSpace(*versionID), paginateOpts...)
+					firstPage, err := client.GetAppStoreVersionLocalizations(requestCtx, resolvedVersionID, paginateOpts...)
 					if err != nil {
 						return fmt.Errorf("localizations list: failed to fetch: %w", err)
 					}
 
 					// Fetch all remaining pages
 					resp, err := asc.PaginateAll(requestCtx, firstPage, func(ctx context.Context, nextURL string) (asc.PaginatedResponse, error) {
-						return client.GetAppStoreVersionLocalizations(ctx, strings.TrimSpace(*versionID), asc.WithAppStoreVersionLocalizationsNextURL(nextURL))
+						return client.GetAppStoreVersionLocalizations(ctx, resolvedVersionID, asc.WithAppStoreVersionLocalizationsNextURL(nextURL))
 					})
 					if err != nil {
 						return fmt.Errorf("localizations list: %w", err)
@@ -178,7 +258,7 @@ Examples:
 					return shared.PrintOutput(resp, *output.Output, *output.Pretty)
 				}
 
-				resp, err := client.GetAppStoreVersionLocalizations(requestCtx, strings.TrimSpace(*versionID), opts...)
+				resp, err := client.GetAppStoreVersionLocalizations(requestCtx, resolvedVersionID, opts...)
 				if err != nil {
 					return fmt.Errorf("localizations list: failed to fetch: %w", err)
 				}
@@ -245,6 +325,55 @@ Examples:
 			}
 		},
 	}
+}
+
+// appStoreVersionStringPattern matches numeric dotted version strings such as
+// 1, 1.0, or 1.2.3. App Store version resource IDs are UUIDs, so a match is
+// never a version ID.
+var appStoreVersionStringPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*$`)
+
+// resolveLocalizationsListVersionString resolves a version string on the app.
+// Without a platform it searches every platform and asks for --platform when
+// the version string exists on more than one.
+func resolveLocalizationsListVersionString(ctx context.Context, client *asc.Client, appID, version, platform string) (string, error) {
+	opts := []asc.AppStoreVersionsOption{
+		asc.WithAppStoreVersionsVersionStrings([]string{version}),
+		asc.WithAppStoreVersionsLimit(200),
+	}
+	if platform != "" {
+		opts = append(opts, asc.WithAppStoreVersionsPlatforms([]string{platform}))
+	}
+	resp, err := client.GetAppStoreVersions(ctx, appID, opts...)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", fmt.Errorf("empty app store versions response")
+	}
+	pageHasNext := strings.TrimSpace(resp.Links.Next) != ""
+	if len(resp.Data) == 0 && !pageHasNext {
+		description := fmt.Sprintf("version %q", version)
+		if platform != "" {
+			description += fmt.Sprintf(" and platform %q", platform)
+		}
+		return "", shared.NewErrorWithCause(
+			fmt.Errorf("app store version not found for %s", description),
+			asc.ErrNotFound,
+		)
+	}
+	if len(resp.Data) > 1 || pageHasNext {
+		ambiguous := shared.AmbiguousAppStoreVersionError(version, platform, resp.Data, "--platform", "--version")
+		if pageHasNext {
+			ambiguous = shared.MarkAmbiguousSelectionSample(ambiguous)
+		}
+		usageKind := shared.UsageErrorOther
+		var selection *shared.AmbiguousSelectionError
+		if errors.As(ambiguous, &selection) && selection.Flag == "--platform" {
+			usageKind = shared.UsageErrorMissingRequired
+		}
+		return "", shared.AmbiguousUsageErrorWithKind(ambiguous, usageKind)
+	}
+	return strings.TrimSpace(resp.Data[0].ID), nil
 }
 
 // versionLocalizationIncludeList reports the relationships the App Store

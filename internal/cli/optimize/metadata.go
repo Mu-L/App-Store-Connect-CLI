@@ -49,10 +49,17 @@ func resolveSearchMetadata(ctx context.Context, appSelector, version, platform, 
 		return resolvedSearchMetadata{}, fmt.Errorf("read version localization %q: %w", locale, err)
 	}
 	if versionLocalizations == nil || len(versionLocalizations.Data) == 0 {
+		if versionLocalizations != nil && strings.TrimSpace(versionLocalizations.Links.Next) != "" {
+			return resolvedSearchMetadata{}, shared.MarkAmbiguousSelectionSample(shared.AmbiguousLocalizationError("version localization", locale, nil))
+		}
 		return resolvedSearchMetadata{}, fmt.Errorf("version localization %q not found", locale)
 	}
-	if len(versionLocalizations.Data) > 1 {
-		return resolvedSearchMetadata{}, fmt.Errorf("multiple version localizations found for locale %q", locale)
+	if len(versionLocalizations.Data) > 1 || strings.TrimSpace(versionLocalizations.Links.Next) != "" {
+		ambiguous := shared.AmbiguousLocalizationError("version localization", locale, shared.LocalizationCandidates(versionLocalizations.Data, func(attributes asc.AppStoreVersionLocalizationAttributes) string { return attributes.Locale }))
+		if strings.TrimSpace(versionLocalizations.Links.Next) != "" {
+			return resolvedSearchMetadata{}, shared.MarkAmbiguousSelectionSample(ambiguous)
+		}
+		return resolvedSearchMetadata{}, ambiguous
 	}
 
 	appInfoCtx, cancel := shared.ContextWithTimeout(ctx)
@@ -74,10 +81,17 @@ func resolveSearchMetadata(ctx context.Context, appSelector, version, platform, 
 		return resolvedSearchMetadata{}, fmt.Errorf("read app info localization %q: %w", locale, err)
 	}
 	if appInfoLocalizations == nil || len(appInfoLocalizations.Data) == 0 {
+		if appInfoLocalizations != nil && strings.TrimSpace(appInfoLocalizations.Links.Next) != "" {
+			return resolvedSearchMetadata{}, shared.MarkAmbiguousSelectionSample(shared.AmbiguousLocalizationError("app info localization", locale, nil))
+		}
 		return resolvedSearchMetadata{}, fmt.Errorf("app info localization %q not found", locale)
 	}
-	if len(appInfoLocalizations.Data) > 1 {
-		return resolvedSearchMetadata{}, fmt.Errorf("multiple app info localizations found for locale %q", locale)
+	if len(appInfoLocalizations.Data) > 1 || strings.TrimSpace(appInfoLocalizations.Links.Next) != "" {
+		ambiguous := shared.AmbiguousLocalizationError("app info localization", locale, shared.LocalizationCandidates(appInfoLocalizations.Data, func(attributes asc.AppInfoLocalizationAttributes) string { return attributes.Locale }))
+		if strings.TrimSpace(appInfoLocalizations.Links.Next) != "" {
+			return resolvedSearchMetadata{}, shared.MarkAmbiguousSelectionSample(ambiguous)
+		}
+		return resolvedSearchMetadata{}, ambiguous
 	}
 
 	return resolvedSearchMetadata{
@@ -102,6 +116,13 @@ func resolveSearchAppInfoID(ctx context.Context, client *asc.Client, appID, appI
 	if err != nil {
 		return "", err
 	}
+	if appInfos == nil {
+		return "", fmt.Errorf("empty app infos response for app %q", appID)
+	}
+	pageHasNext := strings.TrimSpace(appInfos.Links.Next) != ""
+	if pageHasNext {
+		return "", shared.MarkAmbiguousSelectionSample(shared.AmbiguousAppInfoError(appID, "--app-info", asc.AppInfoCandidates(appInfos.Data)))
+	}
 	if len(appInfos.Data) == 0 {
 		return "", fmt.Errorf("no app info found for app %q", appID)
 	}
@@ -112,10 +133,5 @@ func resolveSearchAppInfoID(ctx context.Context, client *asc.Client, appID, appI
 	if resolvedID, ok := asc.AutoResolveAppInfoIDByVersionState(candidates, versionState); ok {
 		return resolvedID, nil
 	}
-	return "", fmt.Errorf(
-		"multiple app infos found for app %q (%s); run `asc apps info list --app %q` and re-run with --app-info",
-		appID,
-		asc.FormatAppInfoCandidates(candidates),
-		appID,
-	)
+	return "", shared.AmbiguousAppInfoError(appID, "--app-info", candidates)
 }
