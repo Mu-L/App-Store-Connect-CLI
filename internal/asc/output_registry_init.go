@@ -530,6 +530,7 @@ func registerAllOutputRenderers() {
 	registerRowsWithSingleResourceAdapter(gameCenterAppVersionsRows)
 	registerRows(gameCenterEnabledVersionsRows)
 	registerRowsWithSingleResourceAdapter(gameCenterDetailsRows)
+	registerRowsWithSingleResourceAdapter(gameCenterDetailPlayersRows)
 	registerRowsWithSingleResourceAdapter(gameCenterMatchmakingQueuesRows)
 	registerRows(gameCenterMatchmakingQueueDeleteResultRows)
 	registerRowsWithSingleResourceAdapter(gameCenterMatchmakingRuleSetsRows)

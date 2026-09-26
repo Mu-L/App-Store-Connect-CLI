@@ -159,6 +159,7 @@ const (
 	ResourceTypeGameCenterScoreModerations                      ResourceType = "gameCenterScoreModerations"
 	ResourceTypeGameCenterDetails                               ResourceType = "gameCenterDetails"
 	ResourceTypeGameCenterAppVersions                           ResourceType = "gameCenterAppVersions"
+	ResourceTypeGameCenterDetailPlayers                         ResourceType = "gameCenterDetailPlayers"
 	ResourceTypeGameCenterEnabledVersions                       ResourceType = "gameCenterEnabledVersions"
 	ResourceTypeGameCenterAchievements                          ResourceType = "gameCenterAchievements"
 	ResourceTypeGameCenterAchievementVersions                   ResourceType = "gameCenterAchievementVersions"
