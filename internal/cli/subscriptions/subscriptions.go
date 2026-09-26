@@ -783,6 +783,8 @@ func SubscriptionsUpdateCommand() *ffcli.Command {
 	var groupLevel optionalInt
 	fs.Var(&groupLevel, "group-level", "Subscription ordering level (positive integer)")
 	familySharable := fs.Bool("family-sharable", false, "Enable Family Sharing (cannot be undone)")
+	marketSettings := fs.String("market-settings", "", "Markets (comma-separated): APP_STORE, APPLE_SCHOOL, APPLE_BUSINESS")
+	multiSeatStatus := fs.String("multi-seat-status", "", "Multi-seat status: ENABLED, DISABLED")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -816,6 +818,19 @@ Examples:
 				fmt.Fprintln(os.Stderr, "Error: --review-note cannot be empty")
 				return flag.ErrHelp
 			}
+			markets, err := normalizeSelectionFlag(fs, strings.ToUpper(*marketSettings), "--market-settings", []string{"APP_STORE", "APPLE_SCHOOL", "APPLE_BUSINESS"})
+			if err != nil {
+				return err
+			}
+			seatStatus := strings.ToUpper(strings.TrimSpace(*multiSeatStatus))
+			if visited["multi-seat-status"] {
+				if seatStatus == "" {
+					return shared.UsageError("--multi-seat-status must not be empty")
+				}
+				if seatStatus != "ENABLED" && seatStatus != "DISABLED" {
+					return shared.UsageError("--multi-seat-status must be one of: ENABLED, DISABLED")
+				}
+			}
 			period, err := normalizeSubscriptionPeriod(*subscriptionPeriod, false)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "Error:", err.Error())
@@ -826,7 +841,7 @@ Examples:
 				return flag.ErrHelp
 			}
 
-			if name == "" && note == "" && period == "" && !*familySharable && !groupLevel.IsSet() {
+			if name == "" && note == "" && period == "" && !*familySharable && !groupLevel.IsSet() && len(markets) == 0 && seatStatus == "" {
 				fmt.Fprintln(os.Stderr, "Error: at least one update flag is required")
 				return shared.MissingRequiredUsageError("")
 			}
@@ -840,6 +855,12 @@ Examples:
 			defer cancel()
 
 			attrs := asc.SubscriptionUpdateAttributes{}
+			if len(markets) > 0 {
+				attrs.MarketSettings = &markets
+			}
+			if seatStatus != "" {
+				attrs.MultiSeatStatus = &seatStatus
+			}
 			if name != "" {
 				attrs.Name = &name
 			}
