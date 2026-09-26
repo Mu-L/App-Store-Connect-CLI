@@ -25,7 +25,7 @@ func appsListFlags(fs *flag.FlagSet) (output shared.OutputFlags, bundleID *strin
 	limit = fs.Int("limit", 0, "Maximum results per page (1-200)")
 	next = fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate = fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
-	appInfoFields = fs.String("app-info-fields", "", "Sparse fields for included app info records: kidsAgeBand (deprecated by Apple; prefer asc age-rating view)")
+	appInfoFields = fs.String("app-info-fields", "", "Sparse fields for included app info records: kidsAgeBand (deprecated; removed from API 4.5; prefer asc age-rating view)")
 	iapFields = fs.String("iap-fields", "", "Sparse fields for included in-app purchases: versions")
 	subscriptionGroupFields = fs.String("subscription-group-fields", "", "Sparse fields for included subscription groups: versions")
 	return
@@ -180,7 +180,7 @@ func AppsGetCommand() *ffcli.Command {
 
 	id := shared.BindResourceIDFlag(fs, "id", "apps", "App Store Connect app ID")
 	fields := fs.String("fields", "", "App attribute fields to return, comma-separated: "+strings.Join(appAttributeFields, ", "))
-	appInfoFields := fs.String("app-info-fields", "", "Sparse fields for included app info records: kidsAgeBand (deprecated by Apple; prefer asc age-rating view)")
+	appInfoFields := fs.String("app-info-fields", "", "Sparse fields for included app info records: kidsAgeBand (deprecated; removed from API 4.5; prefer asc age-rating view)")
 	iapFields := fs.String("iap-fields", "", "Sparse fields for included in-app purchases: versions")
 	subscriptionGroupFields := fs.String("subscription-group-fields", "", "Sparse fields for included subscription groups: versions")
 	output := shared.BindOutputFlags(fs)
@@ -220,6 +220,8 @@ Examples:
 			if err != nil {
 				return shared.UsageError(err.Error())
 			}
+
+			shared.WarnDeprecatedAppInfoFields(appInfoFieldValues, "")
 
 			client, err := shared.GetASCClient()
 			if err != nil {
@@ -415,6 +417,8 @@ func appsList(ctx context.Context, fs *flag.FlagSet, output string, pretty bool,
 	if err != nil {
 		return shared.UsageError(err.Error())
 	}
+
+	shared.WarnDeprecatedAppInfoFields(appInfoFieldValues, next)
 
 	client, err := shared.GetASCClient()
 	if err != nil {
