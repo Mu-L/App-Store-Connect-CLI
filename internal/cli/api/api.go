@@ -285,7 +285,8 @@ func normalizePath(raw string) (string, url.Values, error) {
 // The shared client negotiates `Accept: application/json` and this command
 // prints a JSON envelope, so an operation whose success response declares no
 // `application/json` representation, or only a vendor JSON media type that
-// must be negotiated explicitly, belongs to its dedicated command.
+// must be negotiated explicitly, belongs to its dedicated command. An empty
+// command marks an operation that no dedicated command supports yet.
 type nonJSONOperation struct {
 	mediaType string
 	command   string
@@ -316,6 +317,9 @@ var nonJSONOperations = map[string]nonJSONOperation{
 		mediaType: "application/vnd.apple.xcode-metrics+json",
 		command:   "asc performance metrics list",
 	},
+	"/v1/apps/{id}/performanceOverviews": {
+		mediaType: "application/vnd.apple.xcode-overview+json",
+	},
 	"/v1/builds/{id}/perfPowerMetrics": {
 		mediaType: "application/vnd.apple.xcode-metrics+json",
 		command:   "asc performance metrics view",
@@ -334,10 +338,14 @@ func rejectNonJSONOperation(method, templatePath string) error {
 	if !ok || method != http.MethodGet {
 		return nil
 	}
+	guidance := "no dedicated command supports it yet"
+	if operation.command != "" {
+		guidance = fmt.Sprintf("use `%s` instead", operation.command)
+	}
 	return shared.WithDiagnostic(
 		shared.UsageErrorf(
-			"api: %s %s responds with %s rather than a JSON envelope, which `asc api` cannot pass through; use `%s` instead",
-			method, templatePath, operation.mediaType, operation.command,
+			"api: %s %s responds with %s rather than a JSON envelope, which `asc api` cannot pass through; %s",
+			method, templatePath, operation.mediaType, guidance,
 		),
 		shared.DiagnosticInvalidInput,
 		"",
