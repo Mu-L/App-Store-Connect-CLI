@@ -204,6 +204,11 @@ func TestAPIUsageErrorsRunBeforeAuth(t *testing.T) {
 			wantErr: "api: GET /v1/apps/{id}/perfPowerMetrics responds with application/vnd.apple.xcode-metrics+json rather than a JSON envelope, which `asc api` cannot pass through; use `asc performance metrics list` instead",
 		},
 		{
+			name:    "vendor json endpoint without dedicated command rejected",
+			args:    []string{"api", "GET", "/v1/apps/123/performanceOverviews"},
+			wantErr: "api: GET /v1/apps/{id}/performanceOverviews responds with application/vnd.apple.xcode-overview+json rather than a JSON envelope, which `asc api` cannot pass through; no dedicated command supports it yet",
+		},
+		{
 			name:    "non json endpoint rejected even with allow-unknown-path",
 			args:    []string{"api", "GET", "/v1/diagnosticSignatures/SIG_ID/logs", "--allow-unknown-path"},
 			wantErr: "api: GET /v1/diagnosticSignatures/{id}/logs responds with application/vnd.apple.diagnostic-logs+json rather than a JSON envelope, which `asc api` cannot pass through; use `asc performance diagnostics view` instead",

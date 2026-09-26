@@ -91,7 +91,7 @@ emitting invalid bytes, with or without `--pretty`. An empty response body, such
 the `204` from a `DELETE`, prints nothing. Apple error responses render through
 the same error path and exit codes as every other command.
 
-Seven indexed `GET` operations declare no plain `application/json` success
+Eight indexed `GET` operations declare no plain `application/json` success
 response, so the passthrough cannot serve them and each is a usage error that
 names the command which handles it: the `application/a-gzip` report downloads
 (`/v1/salesReports`, `/v1/financeReports`), the `text/csv` one-time-use code
@@ -99,6 +99,8 @@ values (`/v1/subscriptionOfferCodeOneTimeUseCodes/{id}/values`,
 `/v1/inAppPurchaseOfferCodeOneTimeUseCodes/{id}/values`), and the vendor JSON
 metrics and log endpoints (`/v1/apps/{id}/perfPowerMetrics`,
 `/v1/builds/{id}/perfPowerMetrics`, `/v1/diagnosticSignatures/{id}/logs`).
+The vendor JSON performance overview (`/v1/apps/{id}/performanceOverviews`) has
+no dedicated command yet, so its usage error says so instead.
 The check matches the schema template, so it also applies under
 `--allow-unknown-path`. A test resolves every recommended command through the
 real command tree, so the advice cannot go stale. Every other `text/csv` endpoint in the schema also
