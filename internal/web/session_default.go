@@ -3,6 +3,8 @@ package web
 import (
 	"errors"
 	"fmt"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -123,7 +125,13 @@ func listSessionsBySelectionWithSource(selection backendSelection) ([]persistedS
 	case sessionBackendFile:
 		sessions, err := listSessionsFromFile()
 		if err != nil {
-			return nil, CachedSessionSourceFile, err
+			if !selection.fallbackKeychain || !errors.Is(err, errUnsafeSessionCacheFile) {
+				return nil, CachedSessionSourceFile, err
+			}
+			sessions = nil
+		}
+		if selection.fallbackKeychain {
+			sessions = hydratableSessions(sessions)
 		}
 		if len(cachedSessionAppleIDs(sessions)) > 0 || !selection.fallbackKeychain {
 			return sessions, CachedSessionSourceFile, nil
@@ -134,10 +142,30 @@ func listSessionsBySelectionWithSource(selection backendSelection) ([]persistedS
 			// leaves the empty file result standing instead of failing.
 			return nil, CachedSessionSourceFile, nil
 		}
-		return fallback, CachedSessionSourceKeychain, nil
+		return hydratableSessions(fallback), CachedSessionSourceKeychain, nil
 	default:
 		return nil, CachedSessionSourceUnknown, nil
 	}
+}
+
+func hydratableSessions(sessions []persistedSession) []persistedSession {
+	validationURL, err := url.Parse(olympusSessionURL)
+	if err != nil {
+		return nil
+	}
+	usable := make([]persistedSession, 0, len(sessions))
+	for _, sess := range sessions {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			continue
+		}
+		hydrateCookieJar(jar, sess)
+		if len(jar.Cookies(validationURL)) == 0 {
+			continue
+		}
+		usable = append(usable, sess)
+	}
+	return usable
 }
 
 // listSessionsFromFile reads every well-formed, current-version session entry
@@ -156,6 +184,7 @@ func listSessionsFromFile() ([]persistedSession, error) {
 		return nil, err
 	}
 	var sessions []persistedSession
+	var unsafeEntryErr error
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasPrefix(name, "session-") || !strings.HasSuffix(name, ".json") {
@@ -167,12 +196,21 @@ func listSessionsFromFile() ([]persistedSession, error) {
 			if errors.Is(err, errMalformedSessionFile) {
 				continue
 			}
+			if errors.Is(err, errUnsafeSessionCacheFile) {
+				if unsafeEntryErr == nil {
+					unsafeEntryErr = fmt.Errorf("read cached web session %q: %w", name, err)
+				}
+				continue
+			}
 			return nil, fmt.Errorf("read cached web session %q: %w", name, err)
 		}
 		if !ok {
 			continue
 		}
 		sessions = append(sessions, sess)
+	}
+	if len(sessions) == 0 && unsafeEntryErr != nil {
+		return nil, unsafeEntryErr
 	}
 	return sessions, nil
 }

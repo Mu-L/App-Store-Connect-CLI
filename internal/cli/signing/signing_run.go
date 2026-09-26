@@ -100,12 +100,13 @@ type signingRunInspection struct {
 }
 
 type signingRunProfileInstall struct {
-	Path       string
-	StagedPath string
-	Created    bool
-	Digest     string
-	Device     uint64
-	Inode      uint64
+	Path         string
+	StagedPath   string
+	Created      bool
+	Digest       string
+	StagedDigest string
+	Device       uint64
+	Inode        uint64
 }
 
 type signingRunDeps struct {
@@ -130,15 +131,16 @@ type signingRunDeps struct {
 }
 
 type signingRunJournal struct {
-	SchemaVersion     int    `json:"schemaVersion"`
-	TempDir           string `json:"tempDir"`
-	KeychainPath      string `json:"keychainPath"`
-	ProfilePath       string `json:"profilePath,omitempty"`
-	StagedProfilePath string `json:"stagedProfilePath,omitempty"`
-	ProfileDigest     string `json:"profileDigest,omitempty"`
-	ProfileDevice     uint64 `json:"profileDevice,omitempty"`
-	ProfileInode      uint64 `json:"profileInode,omitempty"`
-	ProfileCreated    bool   `json:"profileCreated,omitempty"`
+	SchemaVersion       int    `json:"schemaVersion"`
+	TempDir             string `json:"tempDir"`
+	KeychainPath        string `json:"keychainPath"`
+	ProfilePath         string `json:"profilePath,omitempty"`
+	StagedProfilePath   string `json:"stagedProfilePath,omitempty"`
+	ProfileDigest       string `json:"profileDigest,omitempty"`
+	StagedProfileDigest string `json:"stagedProfileDigest,omitempty"`
+	ProfileDevice       uint64 `json:"profileDevice,omitempty"`
+	ProfileInode        uint64 `json:"profileInode,omitempty"`
+	ProfileCreated      bool   `json:"profileCreated,omitempty"`
 }
 
 type signingRunMobileProvision struct {
@@ -791,6 +793,7 @@ func runSigningEnvironment(
 		journal.ProfilePath = planned.Path
 		journal.StagedProfilePath = planned.StagedPath
 		journal.ProfileDigest = planned.Digest
+		journal.StagedProfileDigest = planned.StagedDigest
 		journal.ProfileDevice = planned.Device
 		journal.ProfileInode = planned.Inode
 		journal.ProfileCreated = true

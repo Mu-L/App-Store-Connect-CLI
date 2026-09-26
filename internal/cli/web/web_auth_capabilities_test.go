@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/cli/shared"
 	webcore "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web"
 	webref "github.com/rudrankriyam/App-Store-Connect-CLI/internal/web/reference"
@@ -213,6 +215,31 @@ func TestWrapWebAuthCapabilitiesErrorPreservesNonAuthAPIDetails(t *testing.T) {
 				t.Fatalf("expected API cause to remain available for classification, got %v", err)
 			}
 		})
+	}
+}
+
+func TestWrapWebAuthCapabilitiesErrorKeepsHostileAPICauseStructured(t *testing.T) {
+	requestID := "request\x1b[31m\n" + strings.Repeat("é", 200) + string([]byte{0xff})
+	correlationKey := "correlation\u202e" + strings.Repeat("c", 400)
+	cause := &webcore.APIError{
+		Status:         422,
+		AppleRequestID: requestID,
+		CorrelationKey: correlationKey,
+	}
+
+	err := wrapWebAuthCapabilitiesError("KEY", cause)
+	if err == nil {
+		t.Fatal("expected wrapped API error")
+	}
+	if message := err.Error(); !utf8.ValidString(message) || asc.HasInterpretedTerminalSequence(message) {
+		t.Fatalf("wrapped human diagnostic is not terminal-safe UTF-8: %q", message)
+	}
+	var preserved *webcore.APIError
+	if !errors.As(err, &preserved) || preserved != cause {
+		t.Fatalf("expected exact API cause pointer, got %#v", preserved)
+	}
+	if preserved.AppleRequestID != requestID || preserved.CorrelationKey != correlationKey || preserved.HTTPStatusCode() != 422 {
+		t.Fatalf("structured API details changed: %#v", preserved)
 	}
 }
 

@@ -27,3 +27,20 @@ func TestContextWithDownloadTimeoutUsesUploadBudget(t *testing.T) {
 		t.Fatalf("download deadline %s should outlast request deadline %s", deadline, requestDeadline)
 	}
 }
+
+func TestContextWithDownloadTimeoutPreservesParent(t *testing.T) {
+	t.Setenv("ASC_UPLOAD_TIMEOUT", "5m")
+	parent, parentCancel := context.WithTimeout(context.Background(), time.Second)
+	defer parentCancel()
+	download, cancel := ContextWithDownloadTimeout(parent)
+	defer cancel()
+	want, _ := parent.Deadline()
+	got, _ := download.Deadline()
+	if !got.Equal(want) {
+		t.Fatalf("download deadline = %v, want parent deadline %v", got, want)
+	}
+	parentCancel()
+	if download.Err() != context.Canceled {
+		t.Fatalf("download context error = %v, want cancellation", download.Err())
+	}
+}

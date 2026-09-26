@@ -25,12 +25,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/1Password/srp"
 	"golang.org/x/crypto/pbkdf2"
 
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/appleauth"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/asc"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/readonly"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/urlsanitize"
 )
 
@@ -56,6 +58,10 @@ const (
 	webMinRequestIntervalEnv     = "ASC_WEB_MIN_REQUEST_INTERVAL"
 	defaultWebMinRequestInterval = 1 * time.Second
 	minimumWebMinRequestInterval = 200 * time.Millisecond
+
+	webAuthDiagnosticValueMaxBytes = 256
+	webAuthDiagnosticCodeLimit     = 10
+	webAuthDiagnosticMarker        = "..."
 )
 
 var (
@@ -120,6 +126,8 @@ type AuthSession struct {
 	cachedUpdatedAt  time.Time
 	cachedGeneration string
 	cachedSource     CachedSessionSource
+	cachedSession    *persistedSession
+	persistMu        sync.Mutex
 
 	// Prepared 2FA delivery state so callers can request code delivery before prompting.
 	twoFactorMethod        string
@@ -276,13 +284,13 @@ func IsStaleSessionAfterTwoFactor(err error) bool {
 
 func (e *APIError) Error() string {
 	parts := []string{fmt.Sprintf("web api error (status %d)", e.Status)}
-	if e.AppleRequestID != "" {
-		parts = append(parts, fmt.Sprintf("request_id=%s", e.AppleRequestID))
+	if requestID := sanitizeWebAuthDiagnosticValue(e.AppleRequestID); requestID != "" {
+		parts = append(parts, fmt.Sprintf("request_id=%s", requestID))
 	}
-	if e.CorrelationKey != "" {
-		parts = append(parts, fmt.Sprintf("correlation_key=%s", e.CorrelationKey))
+	if correlationKey := sanitizeWebAuthDiagnosticValue(e.CorrelationKey); correlationKey != "" {
+		parts = append(parts, fmt.Sprintf("correlation_key=%s", correlationKey))
 	}
-	if codes := extractServiceErrorCodes(e.rawBody); len(codes) > 0 {
+	if codes := boundedWebAuthDiagnosticCodes(extractServiceErrorCodes(e.rawBody)); len(codes) > 0 {
 		parts = append(parts, fmt.Sprintf("codes=%v", codes))
 	}
 	if reason := strings.TrimSpace(e.portalReason); reason != "" {
@@ -320,13 +328,13 @@ func logWebAuthHTTP(stage string, req *http.Request, resp *http.Response, body [
 	}
 	if resp != nil {
 		fields = append(fields, "status", resp.StatusCode)
-		if requestID := extractAppleRequestID(resp.Header); requestID != "" {
+		if requestID := sanitizeWebAuthDiagnosticValue(extractAppleRequestID(resp.Header)); requestID != "" {
 			fields = append(fields, "request_id", requestID)
 		}
-		if correlationKey := strings.TrimSpace(resp.Header.Get("X-Apple-Jingle-Correlation-Key")); correlationKey != "" {
+		if correlationKey := sanitizeWebAuthDiagnosticValue(resp.Header.Get("X-Apple-Jingle-Correlation-Key")); correlationKey != "" {
 			fields = append(fields, "correlation_key", correlationKey)
 		}
-		if codes := extractServiceErrorCodes(body); len(codes) > 0 {
+		if codes := boundedWebAuthDiagnosticCodes(extractServiceErrorCodes(body)); len(codes) > 0 {
 			fields = append(fields, "codes", strings.Join(codes, ","))
 		}
 	}
@@ -338,6 +346,37 @@ func logWebAuthHTTP(stage string, req *http.Request, resp *http.Response, body [
 		fields = append(fields, "error", errorText)
 	}
 	webDebugLogger.Info("web auth http", fields...)
+}
+
+func sanitizeWebAuthDiagnosticValue(value string) string {
+	value = strings.TrimSpace(asc.SanitizeTerminalText(value))
+	if len(value) <= webAuthDiagnosticValueMaxBytes {
+		return value
+	}
+
+	prefixLimit := webAuthDiagnosticValueMaxBytes - len(webAuthDiagnosticMarker)
+	for prefixLimit > 0 && !utf8.ValidString(value[:prefixLimit]) {
+		prefixLimit--
+	}
+	return value[:prefixLimit] + webAuthDiagnosticMarker
+}
+
+func boundedWebAuthDiagnosticCodes(codes []string) []string {
+	bounded := make([]string, 0, min(len(codes), webAuthDiagnosticCodeLimit+1))
+	omitted := 0
+	for _, code := range codes {
+		if value := sanitizeWebAuthDiagnosticValue(code); value == "" {
+			continue
+		} else if len(bounded) < webAuthDiagnosticCodeLimit {
+			bounded = append(bounded, value)
+		} else {
+			omitted++
+		}
+	}
+	if omitted == 0 {
+		return bounded
+	}
+	return append(bounded, fmt.Sprintf("... and %d more", omitted))
 }
 
 func sanitizeTransactionTaxTransportError(err error) string {
@@ -427,7 +466,7 @@ type twoFAVerificationFailedError struct {
 }
 
 func (e *twoFAVerificationFailedError) Error() string {
-	codes := extractServiceErrorCodes(e.Body)
+	codes := boundedWebAuthDiagnosticCodes(extractServiceErrorCodes(e.Body))
 	if len(codes) > 0 {
 		return fmt.Sprintf("%s 2fa failed (status %d, codes=%v)", e.Kind, e.Status, codes)
 	}
@@ -603,6 +642,16 @@ func LoginWithClient(ctx context.Context, client *http.Client, creds LoginCreden
 	return loginWithHTTPClient(ctx, client, creds)
 }
 
+func ensureSessionCookieTrackingJar(client *http.Client) {
+	if client == nil || client.Jar == nil {
+		return
+	}
+	if _, ok := client.Jar.(*sessionCookieTrackingJar); ok {
+		return
+	}
+	client.Jar = newSessionCookieTrackingJar(client.Jar)
+}
+
 func applySessionInfo(session *AuthSession, info *sessionInfo) {
 	if session == nil || info == nil {
 		return
@@ -621,6 +670,7 @@ func loginWithHTTPClient(ctx context.Context, client *http.Client, creds LoginCr
 	if strings.TrimSpace(creds.Password) == "" {
 		return nil, fmt.Errorf("password is required")
 	}
+	ensureSessionCookieTrackingJar(client)
 
 	serviceKey, err := getAuthServiceKey(ctx, client)
 	if err != nil {
@@ -1811,6 +1861,13 @@ func (c *Client) doRequestBaseWithHTTPClient(client *http.Client, ctx context.Co
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	fullURL := strings.TrimSpace(path)
+	if !strings.HasPrefix(fullURL, "https://") && !strings.HasPrefix(fullURL, "http://") {
+		fullURL = strings.TrimRight(baseURL, "/") + path
+	}
+	if err := readonly.Check(ctx, method, readonly.Target(fullURL)); err != nil {
+		return nil, err
+	}
 	if err := c.waitForRateLimit(ctx); err != nil {
 		return nil, err
 	}
@@ -1824,10 +1881,6 @@ func (c *Client) doRequestBaseWithHTTPClient(client *http.Client, ctx context.Co
 		reqBody = bytes.NewReader(jsonBody)
 	}
 
-	fullURL := strings.TrimSpace(path)
-	if !strings.HasPrefix(fullURL, "https://") && !strings.HasPrefix(fullURL, "http://") {
-		fullURL = strings.TrimRight(baseURL, "/") + path
-	}
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

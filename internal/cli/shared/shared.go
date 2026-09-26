@@ -13,6 +13,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -25,6 +26,7 @@ import (
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/ascterritory"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/auth"
 	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/config"
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/readonly"
 )
 
 // ANSI escape codes for bold text
@@ -48,6 +50,18 @@ const (
 )
 
 var ErrMissingAuth = errors.New("missing authentication")
+
+// RootProfileFlagName is the credential-profile selector bound by
+// BindRootFlags. Only the root flag set binds it, but it is accepted before or
+// after the command name, so surfaces that enumerate a command's accepted
+// flags offer it alongside the command's own flags.
+const RootProfileFlagName = "profile"
+
+// FlagTerminatorSentinel preserves a leading `--` for commands that need to
+// distinguish escaped positional tokens after flag.FlagSet removes the
+// terminator. NUL cannot appear in a real process argument, so it cannot
+// collide with operator input.
+const FlagTerminatorSentinel = "\x00asc-flag-terminator"
 
 var (
 	ascClientFactoryMu sync.RWMutex
@@ -96,12 +110,35 @@ func BindRootFlags(fs *flag.FlagSet) {
 	debug.EnableBoolFlag()
 	apiDebug.EnableBoolFlag()
 
-	fs.StringVar(&selectedProfile, "profile", "", "Use named authentication profile")
+	fs.StringVar(&selectedProfile, RootProfileFlagName, "", "Use named authentication profile (accepted before or after the command name)")
 	fs.BoolVar(&strictAuth, "strict-auth", false, "Fail when credentials are resolved from multiple sources")
 	fs.Var(&retryLog, "retry-log", "Enable retry logging to stderr (overrides ASC_RETRY_LOG/config when set)")
 	fs.Var(&debug, "debug", "Enable debug logging to stderr")
 	fs.Var(&apiDebug, "api-debug", "Enable HTTP debug logging to stderr (redacts sensitive values)")
+	// A fresh root flag set means a fresh invocation: clear any flag-driven
+	// read-only state so it never leaks between parses in one process.
+	readonly.SetFlagEnabled(false)
+	fs.Var(readOnlyFlag{}, readonly.FlagName, "Refuse every mutating request (POST/PATCH/PUT/DELETE) before it is sent; ASC_READ_ONLY=1 has the same effect")
 	BindCIFlags(fs)
+}
+
+// readOnlyFlag enables read-only mode as soon as the root flag is parsed, so
+// every client built afterwards observes it regardless of construction path.
+type readOnlyFlag struct{}
+
+func (readOnlyFlag) String() string { return "false" }
+
+func (readOnlyFlag) IsBoolFlag() bool { return true }
+
+func (readOnlyFlag) Set(value string) error {
+	enabled, err := strconv.ParseBool(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("invalid boolean value %q for --%s", value, readonly.FlagName)
+	}
+	if enabled {
+		readonly.SetFlagEnabled(true)
+	}
+	return nil
 }
 
 // SelectedProfile returns the current profile override.

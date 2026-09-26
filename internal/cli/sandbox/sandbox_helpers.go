@@ -81,7 +81,9 @@ func sandboxRenewalRateValues() []string {
 
 func findSandboxTesterByEmail(ctx context.Context, client *asc.Client, email string) (*asc.SandboxTesterResponse, error) {
 	next := ""
+	seenNext := make(map[string]struct{})
 	matches := make([]asc.Resource[asc.SandboxTesterAttributes], 0, 1)
+	seenIDs := make(map[string]struct{})
 	for {
 		resp, err := client.GetSandboxTesters(
 			ctx,
@@ -96,14 +98,28 @@ func findSandboxTesterByEmail(ctx context.Context, client *asc.Client, email str
 			return nil, fmt.Errorf("empty sandbox testers response")
 		}
 		nextURL := strings.TrimSpace(resp.Links.Next)
-		matches = append(matches, resp.Data...)
+		for _, tester := range resp.Data {
+			id := strings.TrimSpace(tester.ID)
+			if id == "" {
+				return nil, fmt.Errorf("sandbox tester response contains a tester with an empty ID")
+			}
+			if _, seen := seenIDs[id]; seen {
+				continue
+			}
+			seenIDs[id] = struct{}{}
+			tester.ID = id
+			matches = append(matches, tester)
+		}
 		if len(matches) > 1 {
-			candidates := make([]shared.AmbiguousCandidate, 0, len(resp.Data))
+			candidates := make([]shared.AmbiguousCandidate, 0, len(matches))
 			for _, tester := range matches {
 				candidates = append(candidates, shared.AmbiguousCandidate{
 					ID: strings.TrimSpace(tester.ID),
 				})
 			}
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].ID < candidates[j].ID
+			})
 			ambiguous := &shared.AmbiguousSelectionError{
 				Kind:        "sandbox tester",
 				Description: fmt.Sprintf("email %q", strings.TrimSpace(email)),
@@ -124,6 +140,10 @@ func findSandboxTesterByEmail(ctx context.Context, client *asc.Client, email str
 		if err := shared.ValidateNextURL(nextURL); err != nil {
 			return nil, err
 		}
+		if _, ok := seenNext[nextURL]; ok {
+			return nil, asc.ErrRepeatedPaginationURL
+		}
+		seenNext[nextURL] = struct{}{}
 		next = nextURL
 	}
 	return nil, fmt.Errorf("no sandbox tester found for %q", strings.TrimSpace(email))
