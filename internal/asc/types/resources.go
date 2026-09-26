@@ -156,6 +156,7 @@ const (
 	ResourceTypeAlternativeDistributionDomains                  ResourceType = "alternativeDistributionDomains"
 	ResourceTypeAlternativeDistributionKeys                     ResourceType = "alternativeDistributionKeys"
 	ResourceTypeAlternativeDistributionPackages                 ResourceType = "alternativeDistributionPackages"
+	ResourceTypeGameCenterScoreModerations                      ResourceType = "gameCenterScoreModerations"
 	ResourceTypeGameCenterDetails                               ResourceType = "gameCenterDetails"
 	ResourceTypeGameCenterAppVersions                           ResourceType = "gameCenterAppVersions"
 	ResourceTypeGameCenterDetailPlayers                         ResourceType = "gameCenterDetailPlayers"

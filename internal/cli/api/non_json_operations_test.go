@@ -83,8 +83,8 @@ func TestNonJSONOperationsMatchOpenAPISnapshot(t *testing.T) {
 		if len(mediaTypes) != 1 || operation.mediaType != mediaTypes[0] {
 			t.Errorf("GET %s media type = %q, snapshot declares %v", path, operation.mediaType, mediaTypes)
 		}
-		if operation.command != "" && !strings.HasPrefix(operation.command, "asc ") {
-			t.Errorf("GET %s dedicated command = %q, want empty or an `asc ...` command", path, operation.command)
+		if !strings.HasPrefix(operation.command, "asc ") {
+			t.Errorf("GET %s dedicated command = %q, want an `asc ...` command", path, operation.command)
 		}
 	}
 	for path := range nonJSONOperations {

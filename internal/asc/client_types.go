@@ -187,6 +187,7 @@ const (
 	ResourceTypeAlternativeDistributionDomains                  = types.ResourceTypeAlternativeDistributionDomains
 	ResourceTypeAlternativeDistributionKeys                     = types.ResourceTypeAlternativeDistributionKeys
 	ResourceTypeAlternativeDistributionPackages                 = types.ResourceTypeAlternativeDistributionPackages
+	ResourceTypeGameCenterScoreModerations                      = types.ResourceTypeGameCenterScoreModerations
 	ResourceTypeGameCenterDetails                               = types.ResourceTypeGameCenterDetails
 	ResourceTypeGameCenterAppVersions                           = types.ResourceTypeGameCenterAppVersions
 	ResourceTypeGameCenterDetailPlayers                         = types.ResourceTypeGameCenterDetailPlayers
