@@ -640,6 +640,7 @@ func registerAllOutputRenderers() {
 	registerRows(appStoreVersionExperimentTreatmentDeleteResultRows)
 	registerRows(appStoreVersionExperimentTreatmentLocalizationDeleteResultRows)
 	registerRowsErr(perfPowerMetricsRows)
+	registerRowsErr(performanceOverviewRows)
 	registerRows(diagnosticSignaturesRows)
 	registerRowsErr(diagnosticLogsRows)
 	registerRows(performanceDownloadResultRows)
