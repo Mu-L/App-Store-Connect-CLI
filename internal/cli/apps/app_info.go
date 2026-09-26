@@ -66,8 +66,8 @@ func AppsInfoViewCommand() *ffcli.Command {
 	next := fs.String("next", "", "Fetch next page using a links.next URL")
 	paginate := fs.Bool("paginate", false, "Automatically fetch all pages (aggregate results)")
 	include := fs.String("include", "", "Include related resources: "+strings.Join(appInfoIncludeList(), ", "))
-	fields := fs.String("fields", "", "Sparse app info fields: kidsAgeBand (deprecated by Apple; prefer asc age-rating view)")
-	ageRatingFields := fs.String("age-rating-fields", "", "Sparse fields for included age rating declaration: socialMedia, socialMediaAgeRestricted")
+	fields := fs.String("fields", "", "Sparse app info fields: kidsAgeBand (deprecated; removed from API 4.5; prefer asc age-rating view)")
+	ageRatingFields := fs.String("age-rating-fields", "", "Sparse fields for included age rating declaration: gracRatingClassificationNumber, socialMedia, socialMediaAgeRestricted")
 	output := shared.BindOutputFlags(fs)
 
 	return &ffcli.Command{
@@ -169,6 +169,8 @@ Examples:
 					return flag.ErrHelp
 				}
 			}
+
+			shared.WarnDeprecatedAppInfoFields(fieldValues, "")
 
 			client, err := shared.GetASCClient()
 			if err != nil {

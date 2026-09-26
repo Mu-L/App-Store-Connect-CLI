@@ -47,10 +47,12 @@ List localization metadata for an app or version.
 </ParamField>
 
 <ParamField path="--app-info-fields" type="string">
-  Sparse app-info fields for `--type app-info`: the deprecated API 4.4.1
-  `kidsAgeBand` selector. Automatically includes `appInfo`. Prefer
-  `asc age-rating view` for current age-rating data. This flag is rejected for
-  other localization types and cannot be combined with `--next`.
+  Legacy sparse app-info fields for `--type app-info`: `kidsAgeBand`. API 4.5
+  removed this property from `AppInfo`. The CLI forwards the selector for
+  compatibility and emits a deprecation warning on stderr. Automatically
+  includes `appInfo`. Use `asc age-rating view` for current age-rating data.
+  This flag is rejected for other localization types and cannot be combined
+  with `--next`.
 </ParamField>
 
 <ParamField path="--locale" type="string">

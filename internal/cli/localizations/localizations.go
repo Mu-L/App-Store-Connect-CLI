@@ -63,7 +63,7 @@ func LocalizationsListCommand() *ffcli.Command {
 	appInfoID := fs.String("app-info", "", "App Info ID (optional override)")
 	platform := fs.String("platform", "", "Platform used to pick the version when --version is omitted or is a version string with --app: IOS, MAC_OS, TV_OS, or VISION_OS")
 	locType := fs.String("type", shared.LocalizationTypeVersion, "Localization type: version (default) or app-info")
-	appInfoFields := fs.String("app-info-fields", "", "Sparse app info fields for app-info localizations: kidsAgeBand (deprecated; prefer age-rating data)")
+	appInfoFields := fs.String("app-info-fields", "", "Sparse app info fields for app-info localizations: kidsAgeBand (deprecated; removed from API 4.5; prefer age-rating data)")
 	include := shared.BindOnceCSVFlag(fs, "include", "Include related resources for version localizations, comma-separated: "+strings.Join(versionLocalizationIncludeList(), ", "))
 	locale := fs.String("locale", "", "Filter by locale(s), comma-separated")
 	limit := fs.Int("limit", 0, "Maximum results per page (1-200)")
@@ -269,6 +269,8 @@ Examples:
 					fmt.Fprintln(os.Stderr, "Error: --app is required for app-info localizations")
 					return shared.MissingRequiredUsageError("--app")
 				}
+				shared.WarnDeprecatedAppInfoFields(appInfoFieldValues, *next)
+
 				client, err := shared.GetASCClient()
 				if err != nil {
 					return fmt.Errorf("localizations list: %w", err)
