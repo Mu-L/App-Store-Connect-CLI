@@ -37,6 +37,7 @@ Examples:
 		UsageFunc: shared.DefaultUsageFunc,
 		Subcommands: []*ffcli.Command{
 			GameCenterDetailsListCommand(),
+			GameCenterBlockedPlayersCommand(),
 			GameCenterDetailsGetCommand(),
 			GameCenterDetailsCreateCommand(),
 			GameCenterDetailsUpdateCommand(),

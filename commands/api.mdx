@@ -99,8 +99,8 @@ values (`/v1/subscriptionOfferCodeOneTimeUseCodes/{id}/values`,
 `/v1/inAppPurchaseOfferCodeOneTimeUseCodes/{id}/values`), and the vendor JSON
 metrics and log endpoints (`/v1/apps/{id}/perfPowerMetrics`,
 `/v1/builds/{id}/perfPowerMetrics`, `/v1/diagnosticSignatures/{id}/logs`).
-The vendor JSON performance overview (`/v1/apps/{id}/performanceOverviews`) has
-no dedicated command yet, so its usage error says so instead.
+For the vendor JSON performance overview (`/v1/apps/{id}/performanceOverviews`),
+use `asc performance overview --app APP_ID`.
 The check matches the schema template, so it also applies under
 `--allow-unknown-path`. A test resolves every recommended command through the
 real command tree, so the advice cannot go stale. Every other `text/csv` endpoint in the schema also
