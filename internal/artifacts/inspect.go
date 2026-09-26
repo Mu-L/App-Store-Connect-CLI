@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
+
+	"github.com/rudrankriyam/App-Store-Connect-CLI/internal/infoplist"
 
 	"howett.net/plist"
 )
@@ -74,8 +77,8 @@ type bundlePlist struct {
 	Platform         string   `plist:"DTPlatformName"`
 }
 
-// InspectIPA reads a bounded IPA zip and returns a manifest. Missing code
-// signing is reported in Status rather than discarding readable metadata.
+// InspectIPA reads a bounded IPA zip and returns a metadata manifest. A missing
+// embedded profile is reported as unsigned; code signatures are not verified.
 func InspectIPA(data []byte, includeEntitlements, includeProfile bool) (IPAManifest, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -97,19 +100,28 @@ func InspectIPA(data []byte, includeEntitlements, includeProfile bool) (IPAManif
 		if file.FileInfo().IsDir() {
 			continue
 		}
-		if isTopLevelAppInfoPlist(name) && main == nil {
+		if isTopLevelAppInfoPlist(name) {
+			if main != nil {
+				return IPAManifest{Status: "unreadable"}, fmt.Errorf("IPA has multiple top-level app Info.plist entries")
+			}
 			main = file
 			continue
 		}
 		if isNestedInfoPlist(name) {
 			nested = append(nested, file)
 		}
-		if isTopLevelEmbeddedProfile(name) {
-			profile = file
-		}
 	}
 	if main == nil {
 		return IPAManifest{Status: "unreadable"}, fmt.Errorf("IPA has no top-level app Info.plist")
+	}
+	appRoot := strings.TrimSuffix(zipMemberName(main.Name), "Info.plist")
+	for _, file := range reader.File {
+		if zipMemberName(file.Name) == appRoot+"embedded.mobileprovision" {
+			if profile != nil {
+				return IPAManifest{Status: "unreadable"}, fmt.Errorf("IPA has duplicate embedded profiles")
+			}
+			profile = file
+		}
 	}
 	mainPlist, err := readZipPlist(main)
 	if err != nil {
@@ -118,8 +130,12 @@ func InspectIPA(data []byte, includeEntitlements, includeProfile bool) (IPAManif
 	manifest := manifestFromPlist(mainPlist)
 	for _, file := range nested {
 		path := zipMemberName(file.Name)
+		if !strings.HasPrefix(path, appRoot) {
+			continue
+		}
 		parsed, err := readZipPlist(file)
 		if err != nil {
+			manifest.Status = "unreadable"
 			return manifest, fmt.Errorf("read %s: %w", path, err)
 		}
 		manifest.NestedBundles = append(manifest.NestedBundles, NestedBundle{
@@ -131,7 +147,7 @@ func InspectIPA(data []byte, includeEntitlements, includeProfile bool) (IPAManif
 	if profile != nil {
 		summary, entitlements, err := readEmbeddedProfile(profile)
 		if err != nil {
-			manifest.Status = "unsigned"
+			manifest.Status = "unreadable"
 			return manifest, fmt.Errorf("read embedded profile: %w", err)
 		}
 		manifest.Status = "readable"
@@ -184,15 +200,13 @@ func isNestedInfoPlist(name string) bool {
 	if !strings.HasSuffix(name, "/Info.plist") || !strings.HasPrefix(name, "Payload/") {
 		return false
 	}
-	return strings.Contains(name, ".appex/") || strings.Contains(name, ".app/AppClips/")
-}
-
-func isTopLevelEmbeddedProfile(name string) bool {
-	if !strings.HasSuffix(name, "/embedded.mobileprovision") {
-		return false
+	bundlePath := strings.TrimSuffix(name, "/Info.plist")
+	for _, part := range strings.Split(bundlePath, "/") {
+		if part == ".." || part == "." || part == "" {
+			return false
+		}
 	}
-	inner := strings.TrimPrefix(strings.TrimSuffix(name, "/embedded.mobileprovision"), "Payload/")
-	return strings.HasSuffix(inner, ".app") && !strings.Contains(strings.TrimSuffix(inner, ".app"), "/")
+	return strings.HasSuffix(bundlePath, ".appex") || (strings.Contains(bundlePath, ".app/AppClips/") && strings.HasSuffix(bundlePath, ".app"))
 }
 
 func readZipPlist(file *zip.File) (bundlePlist, error) {
@@ -210,6 +224,9 @@ func readZipPlist(file *zip.File) (bundlePlist, error) {
 	}
 	if len(data) > maxPlistBytes {
 		return bundlePlist{}, fmt.Errorf("info.plist exceeds %d bytes", maxPlistBytes)
+	}
+	if err := infoplist.ValidateStructure(data); err != nil {
+		return bundlePlist{}, fmt.Errorf("validate Info.plist: %w", err)
 	}
 	var parsed bundlePlist
 	if _, err := plist.Unmarshal(data, &parsed); err != nil {
@@ -242,17 +259,27 @@ func readEmbeddedProfile(file *zip.File) (*ProfileSummary, map[string]any, error
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := infoplist.ValidateStructure(plistData); err != nil {
+		return nil, nil, fmt.Errorf("validate profile plist: %w", err)
+	}
 	var payload map[string]any
 	if _, err := plist.Unmarshal(plistData, &payload); err != nil {
 		return nil, nil, fmt.Errorf("decode profile plist: %w", err)
 	}
+	entitlements, ok := payload["Entitlements"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("profile Entitlements must be a dictionary")
+	}
+	expirationDate := stringValue(payload["ExpirationDate"])
+	if date, ok := payload["ExpirationDate"].(time.Time); ok {
+		expirationDate = date.UTC().Format(time.RFC3339)
+	}
 	summary := &ProfileSummary{
 		Name:           stringValue(payload["Name"]),
 		UUID:           stringValue(payload["UUID"]),
-		ExpirationDate: fmt.Sprint(payload["ExpirationDate"]),
+		ExpirationDate: expirationDate,
 		ProfileType:    profileType(payload),
 	}
-	entitlements, _ := payload["Entitlements"].(map[string]any)
 	return summary, entitlements, nil
 }
 
@@ -261,7 +288,8 @@ func profileType(payload map[string]any) string {
 		return "enterprise"
 	}
 	if devices, ok := payload["ProvisionedDevices"].([]any); ok && len(devices) > 0 {
-		if debug, ok := payload["Entitlements"].(map[string]any)["get-task-allow"].(bool); ok && debug {
+		entitlements, _ := payload["Entitlements"].(map[string]any)
+		if debug, ok := entitlements["get-task-allow"].(bool); ok && debug {
 			return "development"
 		}
 		return "ad-hoc"
@@ -396,6 +424,7 @@ type xarFile struct {
 
 type xarData struct {
 	Length   int64       `xml:"length"`
+	Size     int64       `xml:"size"`
 	Offset   int64       `xml:"offset"`
 	Encoding xarEncoding `xml:"encoding"`
 }
@@ -409,21 +438,42 @@ func xarFilesFromTOC(toc, heap []byte) (map[string][]byte, error) {
 	if err := xml.Unmarshal(toc, &document); err != nil {
 		return nil, fmt.Errorf("decode xar table of contents: %w", err)
 	}
-	files := make(map[string][]byte, len(document.Files))
+	files := make(map[string][]byte, 1)
 	for _, file := range document.Files {
-		if file.Type != "file" || file.Name == "" {
+		if file.Type != "file" || file.Name != "PackageInfo" {
 			continue
 		}
-		if file.Data.Length < 0 || file.Data.Offset < 0 || file.Data.Length > maxXarFileBytes {
+		if file.Data.Length < 0 || file.Data.Offset < 0 || file.Data.Size < 0 || file.Data.Length > maxXarFileBytes || file.Data.Size > maxXarFileBytes {
 			return nil, fmt.Errorf("xar file %q is outside the read limit", file.Name)
 		}
-		end := file.Data.Offset + file.Data.Length
-		if end > int64(len(heap)) {
+		if file.Data.Offset > int64(len(heap)) || file.Data.Length > int64(len(heap))-file.Data.Offset {
 			return nil, fmt.Errorf("xar file %q is truncated", file.Name)
 		}
+		end := file.Data.Offset + file.Data.Length
 		payload := heap[file.Data.Offset:end]
-		if file.Data.Encoding.Style != "" && file.Data.Encoding.Style != "application/octet-stream" {
+		switch file.Data.Encoding.Style {
+		case "", "application/octet-stream":
+		case "application/x-gzip":
+			reader, err := zlib.NewReader(bytes.NewReader(payload))
+			if err != nil {
+				return nil, fmt.Errorf("open xar PackageInfo: %w", err)
+			}
+			payload, err = io.ReadAll(io.LimitReader(reader, maxXarFileBytes+1))
+			reader.Close()
+			if err != nil {
+				return nil, fmt.Errorf("read xar PackageInfo: %w", err)
+			}
+			if len(payload) > maxXarFileBytes {
+				return nil, fmt.Errorf("xar PackageInfo exceeds the read limit")
+			}
+		default:
 			return nil, fmt.Errorf("xar file %q uses unsupported encoding %q", file.Name, file.Data.Encoding.Style)
+		}
+		if int64(len(payload)) != file.Data.Size {
+			return nil, fmt.Errorf("xar PackageInfo size does not match its declaration")
+		}
+		if _, exists := files[file.Name]; exists {
+			return nil, fmt.Errorf("xar has duplicate PackageInfo entries")
 		}
 		files[file.Name] = append([]byte(nil), payload...)
 	}

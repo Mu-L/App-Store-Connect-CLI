@@ -29,6 +29,7 @@ func IPAInfoCommand() *ffcli.Command {
 		LongHelp: `Inspect a local IPA and print bundle identity, nested bundles, and optional profile fields.
 
 The command does not upload the artifact or call Apple. An unreadable archive or an IPA without an embedded profile exits 1 after writing a receipt.
+Status readable means metadata was parsed. Status unsigned means no embedded profile was found; it is not a code-signature verdict. Signatures and signer identity are not verified, and signatureVerification is always not-verified.
 
 Examples:
   asc ipa-info --path ./App.ipa --output json
@@ -60,6 +61,7 @@ func PKGInfoCommand() *ffcli.Command {
 		LongHelp: `Inspect a local flat xar .pkg and print the product identifier, version, install location, and component bundle identifiers.
 
 The command does not expand the package onto disk or call Apple. An unreadable package exits 1 after writing a receipt.
+Status readable means PackageInfo was parsed. Package signatures and signer identity are not verified, and signatureVerification is always not-verified.
 
 Examples:
   asc pkg-info --path ./App.pkg --output json`,
@@ -99,25 +101,27 @@ func runArtifactInfo(ctx context.Context, args []string, config artifactInfoConf
 	if _, err := shared.ValidateOutputFormat(config.Output, config.Pretty); err != nil {
 		return shared.UsageError(err.Error())
 	}
+	unreadable := func(err error) error {
+		if printErr := shared.PrintOutput(unreadableReceipt(config.Kind, path), config.Output, config.Pretty); printErr != nil {
+			return printErr
+		}
+		return fmt.Errorf("%s: %w", config.Kind, err)
+	}
 	file, err := rootfs.OpenFile(path)
 	if err != nil {
-		receipt := unreadableReceipt(config.Kind, path)
-		_ = shared.PrintOutput(receipt, config.Output, config.Pretty)
-		return fmt.Errorf("%s: %w", config.Kind, err)
+		return unreadable(err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("%s: %w", config.Kind, err)
+		return unreadable(err)
 	}
 	if info.Size() < 0 || info.Size() > 512<<20 {
-		return fmt.Errorf("%s: artifact exceeds the 512 MiB offline inspection limit", config.Kind)
+		return unreadable(fmt.Errorf("artifact exceeds the 512 MiB offline inspection limit"))
 	}
 	data, err := io.ReadAll(io.LimitReader(file, info.Size()+1))
 	if err != nil {
-		receipt := unreadableReceipt(config.Kind, path)
-		_ = shared.PrintOutput(receipt, config.Output, config.Pretty)
-		return fmt.Errorf("%s: %w", config.Kind, err)
+		return unreadable(err)
 	}
 	switch config.Kind {
 	case "ipa-info":
@@ -128,7 +132,7 @@ func runArtifactInfo(ctx context.Context, args []string, config artifactInfoConf
 		}
 		if inspectErr != nil || manifest.Status != "readable" {
 			if inspectErr == nil {
-				inspectErr = fmt.Errorf("IPA is unsigned")
+				inspectErr = fmt.Errorf("IPA has no embedded profile; code signature was not verified")
 			}
 			return fmt.Errorf("ipa-info: %w", inspectErr)
 		}
@@ -153,17 +157,18 @@ func runArtifactInfo(ctx context.Context, args []string, config artifactInfoConf
 
 func ipaReceipt(path string, manifest artifacts.IPAManifest) *asc.ArtifactIPAInfo {
 	info := &asc.ArtifactIPAInfo{
-		Path:             path,
-		BundleID:         manifest.BundleID,
-		Name:             manifest.Name,
-		Version:          manifest.Version,
-		BuildNumber:      manifest.BuildNumber,
-		MinimumOSVersion: manifest.MinimumOSVersion,
-		Platforms:        manifest.Platforms,
-		TeamID:           manifest.TeamID,
-		SignerCommonName: manifest.SignerCommonName,
-		Status:           manifest.Status,
-		NestedBundles:    make([]asc.ArtifactNestedBundle, 0, len(manifest.NestedBundles)),
+		SignatureVerification: "not-verified",
+		Path:                  path,
+		BundleID:              manifest.BundleID,
+		Name:                  manifest.Name,
+		Version:               manifest.Version,
+		BuildNumber:           manifest.BuildNumber,
+		MinimumOSVersion:      manifest.MinimumOSVersion,
+		Platforms:             manifest.Platforms,
+		TeamID:                manifest.TeamID,
+		SignerCommonName:      manifest.SignerCommonName,
+		Status:                manifest.Status,
+		NestedBundles:         make([]asc.ArtifactNestedBundle, 0, len(manifest.NestedBundles)),
 	}
 	for _, nested := range manifest.NestedBundles {
 		info.NestedBundles = append(info.NestedBundles, asc.ArtifactNestedBundle{
@@ -188,19 +193,22 @@ func ipaReceipt(path string, manifest artifacts.IPAManifest) *asc.ArtifactIPAInf
 
 func pkgReceipt(path string, manifest artifacts.PKGManifest) *asc.ArtifactPKGInfo {
 	return &asc.ArtifactPKGInfo{
-		Path:             path,
-		ProductID:        manifest.ProductID,
-		Version:          manifest.Version,
-		InstallLocation:  manifest.InstallLocation,
-		BundleIDs:        manifest.BundleIDs,
-		SignerCommonName: manifest.SignerCommonName,
-		Status:           manifest.Status,
+		SignatureVerification: "not-verified",
+		Path:                  path,
+		ProductID:             manifest.ProductID,
+		Version:               manifest.Version,
+		InstallLocation:       manifest.InstallLocation,
+		BundleIDs:             manifest.BundleIDs,
+		SignerCommonName:      manifest.SignerCommonName,
+		Status:                manifest.Status,
 	}
 }
 
 func unreadableReceipt(kind, path string) any {
 	if kind == "pkg-info" {
-		return &asc.ArtifactPKGInfo{Path: path, Status: "unreadable"}
+		return &asc.ArtifactPKGInfo{
+			SignatureVerification: "not-verified", Path: path, Status: "unreadable",
+		}
 	}
-	return &asc.ArtifactIPAInfo{Path: path, Status: "unreadable"}
+	return &asc.ArtifactIPAInfo{SignatureVerification: "not-verified", Path: path, Status: "unreadable"}
 }
