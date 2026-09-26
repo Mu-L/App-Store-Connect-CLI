@@ -139,7 +139,14 @@ Use `--grac-rating-classification-number` to set the GRAC classification number:
 asc age-rating edit --id "DECLARATION_ID" --korea-age-rating-override TWELVE_PLUS --grac-rating-classification-number "CLASSIFICATION_NUMBER"
 ```
 
-The classification number must be nonempty. Omit the flag to leave it unchanged.
+The classification number must be nonempty. Omit both GRAC flags to leave it
+unchanged. Use `--clear-grac-rating-classification-number` to remove it with an
+explicit JSON `null`; the set and clear flags cannot be combined.
+
+```bash
+asc age-rating edit --id "DECLARATION_ID" --clear-grac-rating-classification-number
+```
+
 Declaration responses include the number in JSON, table, and Markdown output.
 
 Read the GRAC number directly or through an included age-rating declaration:

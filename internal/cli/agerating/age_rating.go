@@ -195,6 +195,7 @@ func AgeRatingEditCommand() *ffcli.Command {
 	ageRatingOverrideV2 := fs.String("age-rating-override-v2", "", "Age rating override v2: NONE, NINE_PLUS, THIRTEEN_PLUS, SIXTEEN_PLUS, EIGHTEEN_PLUS, UNRATED")
 	koreaAgeRatingOverride := fs.String("korea-age-rating-override", "", "Korea age rating override: NONE, ALL, TWELVE_PLUS, FIFTEEN_PLUS, NINETEEN_PLUS")
 	gracNumber := fs.String("grac-rating-classification-number", "", "Korea GRAC rating classification number")
+	clearGracNumber := fs.Bool("clear-grac-rating-classification-number", false, "Clear the Korea GRAC rating classification number")
 	developerAgeRatingInfoURL := fs.String("developer-age-rating-info-url", "", "Developer age rating information URL")
 
 	output := shared.BindOutputFlags(fs)
@@ -297,6 +298,9 @@ Examples:
 			}
 			gracProvided := false
 			fs.Visit(func(f *flag.Flag) { gracProvided = gracProvided || f.Name == "grac-rating-classification-number" })
+			if gracProvided && *clearGracNumber {
+				return shared.UsageError("--grac-rating-classification-number cannot be combined with --clear-grac-rating-classification-number")
+			}
 			gracValue := strings.TrimSpace(*gracNumber)
 			if gracProvided && gracValue == "" {
 				return shared.UsageError("--grac-rating-classification-number must not be empty")
@@ -310,7 +314,10 @@ Examples:
 			}
 
 			if gracProvided {
-				attributes.GracRatingClassificationNumber = &gracValue
+				attributes.GracRatingClassificationNumber = &asc.NullableString{Value: &gracValue}
+			}
+			if *clearGracNumber {
+				attributes.GracRatingClassificationNumber = &asc.NullableString{}
 			}
 
 			if !hasAgeRatingUpdates(attributes) {
