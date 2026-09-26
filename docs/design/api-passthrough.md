@@ -59,7 +59,7 @@ trailing `--paginate GET` is never rewritten into `--paginate=GET`.
 4. Non-JSON operations. The shared client negotiates
    `Accept: application/json` and this command prints a JSON envelope, so an
    operation whose 2xx responses declare no plain `application/json`
-   representation is a usage error naming the command that handles it. Seven
+   representation is a usage error naming the command that handles it. Eight
    operations qualify in `docs/openapi/latest.json`: the `application/a-gzip`
    reports (`/v1/salesReports` -> `asc analytics sales`, `/v1/financeReports`
    -> `asc finance reports`), the `text/csv` one-time-use code values
@@ -71,7 +71,9 @@ trailing `--paginate GET` is never rewritten into `--paginate=GET`.
    `/v1/builds/{id}/perfPowerMetrics` -> `asc performance metrics`,
    `/v1/diagnosticSignatures/{id}/logs` ->
    `asc performance diagnostics view`), which need an explicit vendor `Accept`
-   header the shared retrying request path does not carry. The check keys off
+   header the shared retrying request path does not carry. The vendor JSON
+   performance overview (`/v1/apps/{id}/performanceOverviews`) has no
+   dedicated command yet, so its usage error says that instead of naming one. The check keys off
    the matched schema template, so it applies under `--allow-unknown-path` too:
    the limitation is the response representation, not a gap in the index.
    `TestNonJSONOperationsMatchOpenAPISnapshot` re-derives this set from the
