@@ -225,7 +225,7 @@ Use `asc <command> --help` for subcommands and flags.
 - `ASC_PROFILE` - Default auth profile
 - `ASC_READ_ONLY` - Refuse every mutating request; refusals exit `6`
 - `ASC_TIMEOUT`, `ASC_TIMEOUT_SECONDS` - Request timeout
-- `ASC_UPLOAD_TIMEOUT`, `ASC_UPLOAD_TIMEOUT_SECONDS` - Upload timeout
+- `ASC_UPLOAD_TIMEOUT`, `ASC_UPLOAD_TIMEOUT_SECONDS` - Upload and streamed download timeout
 - `ASC_DEBUG` - Debug output (`api` enables HTTP logs)
 - `ASC_STOREKIT_KEY_ID`, `ASC_STOREKIT_ISSUER_ID`, `ASC_STOREKIT_PRIVATE_KEY_PATH` - StoreKit In-App Purchase API authentication
 - `ASC_STOREKIT_PRIVATE_KEY`, `ASC_STOREKIT_PRIVATE_KEY_B64` - Inline StoreKit private key alternatives

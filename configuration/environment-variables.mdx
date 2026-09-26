@@ -276,13 +276,16 @@ For `subscriptions offers introductory create`, an explicit request timeout also
 </ParamField>
 
 <ParamField path="ASC_UPLOAD_TIMEOUT" type="string">
-  Upload timeout for large files (e.g., `60s`, `5m`)
+  Upload and streamed download timeout for large files (e.g., `60s`, `5m`).
+  Applies to the sales, finance, analytics report, performance diagnostic, screenshot,
+  preview, and dSYM download commands. Each file gets its own budget; parent cancellation and earlier
+  deadlines still apply. Listing and metadata requests use `ASC_TIMEOUT`.
 
   Default: `5m`
 </ParamField>
 
 <ParamField path="ASC_UPLOAD_TIMEOUT_SECONDS" type="number">
-  Upload timeout in seconds (alternative to `ASC_UPLOAD_TIMEOUT`)
+  Upload and streamed download timeout in seconds (alternative to `ASC_UPLOAD_TIMEOUT`)
 </ParamField>
 
 ## Retry and debugging variables

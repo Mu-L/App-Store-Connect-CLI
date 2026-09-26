@@ -21,8 +21,8 @@ import (
 )
 
 // dsymHTTPClient is the HTTP client used for dSYM downloads.
-// No client-level timeout — the request context (from ContextWithTimeout /
-// ASC_TIMEOUT) controls cancellation so the CLI timeout contract is honored.
+// No client-level timeout — the request context (from ContextWithDownloadTimeout /
+// ASC_UPLOAD_TIMEOUT) controls cancellation so the CLI timeout contract is honored.
 // Tests can replace this via SetDSYMHTTPClient.
 var dsymHTTPClient = &http.Client{}
 
@@ -192,7 +192,7 @@ func downloadDSYMSelection(ctx context.Context, client *asc.Client, selection ds
 		if err := os.MkdirAll(dirValue, 0o755); err != nil {
 			return fmt.Errorf("builds dsyms: failed to create output directory: %w", err)
 		}
-		saved, err := saveDSYMBundles(ctx, downloadable, target, dirValue, selection.Wait || selection.Multi, selection.Multi)
+		saved, err := saveDSYMBundles(ctx, downloadable, target, dirValue, selection.Multi)
 		files = append(files, saved...)
 		if err != nil {
 			downloadErr = err
@@ -281,7 +281,7 @@ func loadDSYMBundles(ctx context.Context, client *asc.Client, buildID string) ([
 	return bundles, nil
 }
 
-func saveDSYMBundles(ctx context.Context, bundles []dsymBundleInfo, target dsymTarget, dirValue string, useUploadTimeout, multi bool) ([]asc.DSYMDownloadFile, error) {
+func saveDSYMBundles(ctx context.Context, bundles []dsymBundleInfo, target dsymTarget, dirValue string, multi bool) ([]asc.DSYMDownloadFile, error) {
 	downloadable := filterBundlesWithDSYM(bundles)
 	files := make([]asc.DSYMDownloadFile, 0, len(downloadable))
 	used := map[string]struct{}{}
@@ -295,7 +295,7 @@ func saveDSYMBundles(ctx context.Context, bundles []dsymBundleInfo, target dsymT
 		}
 		fileName = uniqueDSYMFileName(fileName, target.ID, used)
 		filePath := filepath.Join(dirValue, fileName)
-		size, sum, skipped, err := saveOneDSYM(ctx, *bundle.DSYMURL, filePath, useUploadTimeout)
+		size, sum, skipped, err := saveOneDSYM(ctx, *bundle.DSYMURL, filePath)
 		if err != nil {
 			return files, fmt.Errorf("builds dsyms: failed to download %s: %w", fileName, err)
 		}
@@ -340,18 +340,12 @@ func uniqueDSYMFileName(name, buildID string, used map[string]struct{}) string {
 	}
 }
 
-func saveOneDSYM(ctx context.Context, rawURL, destPath string, useUploadTimeout bool) (int64, string, bool, error) {
+func saveOneDSYM(ctx context.Context, rawURL, destPath string) (int64, string, bool, error) {
 	size, sum, exists, err := hashRegularFile(destPath)
 	if err != nil {
 		return 0, "", false, err
 	}
-	var downloadCtx context.Context
-	var cancel context.CancelFunc
-	if useUploadTimeout {
-		downloadCtx, cancel = shared.ContextWithUploadTimeout(ctx)
-	} else {
-		downloadCtx, cancel = shared.ContextWithTimeout(ctx)
-	}
+	downloadCtx, cancel := shared.ContextWithDownloadTimeout(ctx)
 	defer cancel()
 	if exists {
 		length, remoteSum, err := hashRemoteDSYM(downloadCtx, rawURL)

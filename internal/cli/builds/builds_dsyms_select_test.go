@@ -99,7 +99,7 @@ func TestSaveSingleDSYMVerifiesExistingFileContent(t *testing.T) {
 			defer server.Close()
 			target := dsymTarget{ID: "build", AppVersion: "1.0", BuildNumber: "42"}
 			bundles := []dsymBundleInfo{{BundleID: "com.example.app", DSYMURL: &server.URL}}
-			files, err := saveDSYMBundles(t.Context(), bundles, target, dir, false, false)
+			files, err := saveDSYMBundles(t.Context(), bundles, target, dir, false)
 			if remote != "ios" {
 				if err == nil || !strings.Contains(err.Error(), "already exists") {
 					t.Fatalf("different single-build artifact was trusted: files=%#v err=%v", files, err)
