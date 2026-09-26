@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
@@ -116,16 +115,9 @@ func runArtifactInfo(ctx context.Context, args []string, config artifactInfoConf
 	if err != nil {
 		return unreadable(err)
 	}
-	if info.Size() < 0 || info.Size() > 512<<20 {
-		return unreadable(fmt.Errorf("artifact exceeds the 512 MiB offline inspection limit"))
-	}
-	data, err := io.ReadAll(io.LimitReader(file, info.Size()+1))
-	if err != nil {
-		return unreadable(err)
-	}
 	switch config.Kind {
 	case "ipa-info":
-		manifest, inspectErr := artifacts.InspectIPA(data, config.IncludeEntitlements, config.IncludeProfile)
+		manifest, inspectErr := artifacts.InspectIPA(file, info.Size(), config.IncludeEntitlements, config.IncludeProfile)
 		receipt := ipaReceipt(path, manifest)
 		if printErr := shared.PrintOutput(receipt, config.Output, config.Pretty); printErr != nil {
 			return printErr
@@ -138,7 +130,7 @@ func runArtifactInfo(ctx context.Context, args []string, config artifactInfoConf
 		}
 		return nil
 	case "pkg-info":
-		manifest, inspectErr := artifacts.InspectPKG(data)
+		manifest, inspectErr := artifacts.InspectPKG(file, info.Size())
 		receipt := pkgReceipt(path, manifest)
 		if printErr := shared.PrintOutput(receipt, config.Output, config.Pretty); printErr != nil {
 			return printErr

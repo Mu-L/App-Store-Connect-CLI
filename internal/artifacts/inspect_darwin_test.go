@@ -1,6 +1,7 @@
 package artifacts
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,7 @@ func TestInspectPKGNativeComponentPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, err := InspectPKG(data)
+	manifest, err := InspectPKG(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}

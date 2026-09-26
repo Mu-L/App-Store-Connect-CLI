@@ -58,7 +58,7 @@ func TestRunArtifactInfoReceipts(t *testing.T) {
 		{"missing path", []string{"ipa-info", "--output", "json"}, "", cmd.ExitUsage, "--path is required"},
 		{"unsigned", []string{"ipa-info", "--path", unsigned, "--output", "json"}, "unsigned", cmd.ExitError, "embedded profile"},
 		{"missing file", []string{"pkg-info", "--path", filepath.Join(dir, "missing.pkg"), "--output", "json"}, "unreadable", cmd.ExitError, "pkg-info:"},
-		{"oversized", []string{"pkg-info", "--path", oversized, "--output", "json"}, "unreadable", cmd.ExitError, "512 MiB"},
+		{"oversized", []string{"pkg-info", "--path", oversized, "--output", "json"}, "unreadable", cmd.ExitError, "not a flat xar package"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

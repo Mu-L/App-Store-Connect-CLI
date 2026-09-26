@@ -79,8 +79,13 @@ type bundlePlist struct {
 
 // InspectIPA reads a bounded IPA zip and returns a metadata manifest. A missing
 // embedded profile is reported as unsigned; code signatures are not verified.
-func InspectIPA(data []byte, includeEntitlements, includeProfile bool) (IPAManifest, error) {
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+func InspectIPA(source io.ReaderAt, size int64, includeEntitlements, includeProfile bool) (IPAManifest, error) {
+	if err := validateZIPDirectory(source, size); err != nil {
+		return IPAManifest{Status: "unreadable"}, fmt.Errorf("open IPA: %w", err)
+	}
+	bounded := &zipDirectoryReader{ReaderAt: source, remaining: maxZIPDirectoryBytes + (512 << 10)}
+	reader, err := zip.NewReader(bounded, size)
+	bounded.remaining = -1
 	if err != nil {
 		return IPAManifest{Status: "unreadable"}, fmt.Errorf("open IPA: %w", err)
 	}
@@ -329,8 +334,8 @@ func stringValue(value any) string {
 }
 
 // InspectPKG reads PackageInfo from a flat xar component package.
-func InspectPKG(data []byte) (PKGManifest, error) {
-	files, err := readXarFiles(data)
+func InspectPKG(source io.ReaderAt, size int64) (PKGManifest, error) {
+	files, err := readXarFiles(source, size)
 	if err != nil {
 		return PKGManifest{Status: "unreadable"}, err
 	}
@@ -378,12 +383,19 @@ func parsePackageInfo(data []byte) (PKGManifest, error) {
 	}, nil
 }
 
-func readXarFiles(data []byte) (map[string][]byte, error) {
-	if len(data) < 28 || string(data[:4]) != "xar!" {
+func readXarFiles(source io.ReaderAt, size int64) (map[string][]byte, error) {
+	data := make([]byte, 28)
+	if size < 28 {
 		return nil, fmt.Errorf("not a flat xar package")
 	}
-	headerSize := int(binary.BigEndian.Uint16(data[4:6]))
-	if headerSize < 28 || headerSize > len(data) {
+	if _, err := source.ReadAt(data, 0); err != nil {
+		return nil, fmt.Errorf("read xar header: %w", err)
+	}
+	if string(data[:4]) != "xar!" {
+		return nil, fmt.Errorf("not a flat xar package")
+	}
+	headerSize := int64(binary.BigEndian.Uint16(data[4:6]))
+	if headerSize < 28 || headerSize > size {
 		return nil, fmt.Errorf("invalid xar header size")
 	}
 	tocCompressed := binary.BigEndian.Uint64(data[8:16])
@@ -391,11 +403,10 @@ func readXarFiles(data []byte) (map[string][]byte, error) {
 	if tocCompressed > maxXarTOCBytes || tocUncompressed > maxXarTOCBytes {
 		return nil, fmt.Errorf("xar table of contents exceeds the limit")
 	}
-	tocEnd := headerSize + int(tocCompressed)
-	if tocEnd > len(data) {
+	if int64(tocCompressed) > size-headerSize {
 		return nil, fmt.Errorf("xar table of contents is truncated")
 	}
-	tocReader, err := zlib.NewReader(bytes.NewReader(data[headerSize:tocEnd]))
+	tocReader, err := zlib.NewReader(io.NewSectionReader(source, headerSize, int64(tocCompressed)))
 	if err != nil {
 		return nil, fmt.Errorf("open xar table of contents: %w", err)
 	}
@@ -407,8 +418,8 @@ func readXarFiles(data []byte) (map[string][]byte, error) {
 	if uint64(len(toc)) > tocUncompressed {
 		return nil, fmt.Errorf("xar table of contents exceeds the declared size")
 	}
-	heap := data[tocEnd:]
-	return xarFilesFromTOC(toc, heap)
+	tocEnd := headerSize + int64(tocCompressed)
+	return xarFilesFromTOC(toc, io.NewSectionReader(source, tocEnd, size-tocEnd), size-tocEnd)
 }
 
 type xarDocument struct {
@@ -433,7 +444,7 @@ type xarEncoding struct {
 	Style string `xml:"style,attr"`
 }
 
-func xarFilesFromTOC(toc, heap []byte) (map[string][]byte, error) {
+func xarFilesFromTOC(toc []byte, heap io.ReaderAt, heapSize int64) (map[string][]byte, error) {
 	var document xarDocument
 	if err := xml.Unmarshal(toc, &document); err != nil {
 		return nil, fmt.Errorf("decode xar table of contents: %w", err)
@@ -446,11 +457,13 @@ func xarFilesFromTOC(toc, heap []byte) (map[string][]byte, error) {
 		if file.Data.Length < 0 || file.Data.Offset < 0 || file.Data.Size < 0 || file.Data.Length > maxXarFileBytes || file.Data.Size > maxXarFileBytes {
 			return nil, fmt.Errorf("xar file %q is outside the read limit", file.Name)
 		}
-		if file.Data.Offset > int64(len(heap)) || file.Data.Length > int64(len(heap))-file.Data.Offset {
+		if file.Data.Offset > heapSize || file.Data.Length > heapSize-file.Data.Offset {
 			return nil, fmt.Errorf("xar file %q is truncated", file.Name)
 		}
-		end := file.Data.Offset + file.Data.Length
-		payload := heap[file.Data.Offset:end]
+		payload := make([]byte, int(file.Data.Length))
+		if _, err := heap.ReadAt(payload, file.Data.Offset); err != nil {
+			return nil, fmt.Errorf("read xar PackageInfo: %w", err)
+		}
 		switch file.Data.Encoding.Style {
 		case "", "application/octet-stream":
 		case "application/x-gzip":
